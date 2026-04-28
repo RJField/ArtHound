@@ -6,6 +6,7 @@ const config   = require('../config');
 
 const router          = express.Router();
 const SCREENSHOTS_DIR = path.join(__dirname, '..', 'public', 'reviews');
+const SERVER_URL      = process.env.SERVER_URL || `http://localhost:${process.env.PORT || 3000}`;
 
 if (!fs.existsSync(SCREENSHOTS_DIR)) fs.mkdirSync(SCREENSHOTS_DIR, { recursive: true });
 
@@ -13,6 +14,18 @@ if (!fs.existsSync(SCREENSHOTS_DIR)) fs.mkdirSync(SCREENSHOTS_DIR, { recursive: 
 router.post('/submit', async (req, res, next) => {
   try {
     const { assetName, sceneFile, artist, notes, screenshot } = req.body;
+
+    // Resolve the asset name to a linked record ID
+    let assetLink = [];
+    if (assetName) {
+      const escaped = assetName.replace(/"/g, '\\"');
+      const matches = await selectAll(config.tables.assets, {
+        filterByFormula: `{Name} = "${escaped}"`,
+        maxRecords: 1,
+        fields: ['Name'],
+      });
+      if (matches.length) assetLink = [matches[0].id];
+    }
 
     let screenshotFile = null;
     if (screenshot) {
@@ -22,14 +35,14 @@ router.post('/submit', async (req, res, next) => {
     }
 
     const fields = {
-      'Asset Name':   assetName   || '',
       'Scene File':   sceneFile   || '',
       'Artist':       artist      || '',
       'Notes':        notes       || '',
       'Status':       'Pending',
       'Submitted At': new Date().toISOString(),
     };
-    if (screenshotFile) fields['Screenshot'] = screenshotFile;
+    if (assetLink.length)  fields['Assets']      = assetLink;
+    if (screenshotFile)    fields['Attachments'] = [{ url: `${SERVER_URL}/reviews/${screenshotFile}` }];
 
     const records = await createRecords(config.tables.reviews, [fields]);
     res.json({ ok: true, id: records[0].id });
@@ -44,16 +57,37 @@ router.get('/', async (req, res, next) => {
     const records = await selectAll(config.tables.reviews, {
       sort: [{ field: 'Submitted At', direction: 'desc' }],
     });
-    res.json(records.map(r => ({
-      id:          r.id,
-      assetName:   r.fields['Asset Name']   || '',
-      sceneFile:   r.fields['Scene File']   || '',
-      artist:      r.fields['Artist']       || '',
-      notes:       r.fields['Notes']        || '',
-      status:      r.fields['Status']       || 'Pending',
-      submittedAt: r.fields['Submitted At'] || '',
-      screenshot:  r.fields['Screenshot']  || null,
-    })));
+
+    // Resolve linked asset IDs → names in one batch request
+    const assetIds = [...new Set(
+      records.flatMap(r => r.fields['Assets'] || [])
+    )];
+    const assetNameMap = new Map();
+    if (assetIds.length) {
+      const formula = assetIds.map(id => `RECORD_ID()="${id}"`).join(',');
+      const assetRecords = await selectAll(config.tables.assets, {
+        filterByFormula: `OR(${formula})`,
+        fields: ['Name'],
+      });
+      assetRecords.forEach(r => assetNameMap.set(r.id, r.fields['Name'] || ''));
+    }
+
+    res.json(records.map(r => {
+      const linkedIds = r.fields['Assets'] || [];
+      const assetName = linkedIds.map(id => assetNameMap.get(id) || id).join(', ');
+      const attachment = (r.fields['Attachments'] || [])[0];
+      return {
+        id:          r.id,
+        assetName,
+        assetIds:    linkedIds,
+        sceneFile:   r.fields['Scene File']   || '',
+        artist:      r.fields['Artist']       || '',
+        notes:       r.fields['Notes']        || '',
+        status:      r.fields['Status']       || 'Pending',
+        submittedAt: r.fields['Submitted At'] || '',
+        screenshot:  attachment?.url ?? null,
+      };
+    }));
   } catch (err) {
     next(err);
   }
