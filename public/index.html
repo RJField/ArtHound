@@ -7,118 +7,213 @@
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <div class="layout">
 
-    <aside class="sidebar">
-      <div class="sidebar-header">
-        <div class="logo">
-          <span class="logo-icon">◈</span>
-          <span class="logo-text">ArtHound</span>
-          <button class="icon-btn" id="schema-btn" title="View base schema">⊞</button>
-          <button class="icon-btn" id="setup-btn" title="Estimation engine setup">⚙</button>
-          <button class="icon-btn" id="csv-import-btn" title="Import estimate CSV">⬆</button>
-        </div>
-        <div class="search-wrapper">
-          <input type="search" id="search-input" placeholder="Search assets…" autocomplete="off">
-        </div>
+  <!-- ── HOME VIEW ── -->
+  <div id="view-home" class="view">
+    <div class="home-wrap">
+      <div class="home-brand">
+        <img src="arthound_logo.png" alt="ArtHound" class="home-brand-img">
       </div>
-      <div class="asset-list" id="asset-list">
-        <div class="list-state">Loading…</div>
-      </div>
-    </aside>
+      <nav class="home-cards">
+        <button class="home-card" id="nav-assets">
+          <div class="home-card-icon">⊞</div>
+          <div class="home-card-body">
+            <div class="home-card-title">Asset Manager</div>
+            <div class="home-card-desc">Generate workback schedules and manage production assets</div>
+          </div>
+          <div class="home-card-arrow">→</div>
+        </button>
+        <button class="home-card" id="nav-estimates">
+          <div class="home-card-icon">⚙</div>
+          <div class="home-card-body">
+            <div class="home-card-title">Estimates</div>
+            <div class="home-card-desc">Configure the estimation engine and import estimate values from CSV</div>
+          </div>
+          <div class="home-card-arrow">→</div>
+        </button>
+        <button class="home-card" id="nav-workflows">
+          <div class="home-card-icon">⇄</div>
+          <div class="home-card-body">
+            <div class="home-card-title">Workflows</div>
+            <div class="home-card-desc">Manage and automate production workflows</div>
+          </div>
+          <div class="home-card-arrow">→</div>
+        </button>
+      </nav>
+    </div>
+    <footer class="home-footer">
+      <img src="cutool-logo.png" alt="Cu-TOOL-u" class="home-footer-logo">
+    </footer>
+  </div>
 
-    <main class="main">
+  <!-- ── ESTIMATES VIEW ── -->
+  <div id="view-estimates" class="view" style="display:none">
 
-      <div class="empty-state" id="empty-state">
-        <div class="empty-icon">◈</div>
-        <div class="empty-title">Select an asset</div>
-        <div class="empty-subtitle">Choose an asset from the sidebar to generate a workback schedule</div>
-      </div>
+    <div class="section-nav">
+      <button class="icon-btn" id="estimates-home-btn" title="Back to home">←</button>
+      <span class="section-nav-title">Estimates</span>
+    </div>
 
-      <div class="asset-panel" id="asset-panel">
-        <div class="panel-header" id="panel-header"></div>
-        <div class="meta-grid" id="meta-grid"></div>
+    <div class="section-content">
+      <div class="section-cards">
 
-        <div class="panel-actions">
-          <button class="btn btn-primary" id="preview-btn">Preview Schedule</button>
+        <div class="section-card">
+          <div class="section-card-icon">⚙</div>
+          <div class="section-card-body">
+            <div class="section-card-title">Estimation Engine Setup</div>
+            <div class="section-card-desc">Configure variable fields and combinations that drive task estimates. Creates and manages columns in Airtable.</div>
+          </div>
+          <button class="btn btn-primary" id="est-setup-btn">Open Setup</button>
         </div>
 
-        <div class="schedule-section" id="schedule-section">
-          <div class="schedule-header">
-            <h2>Workback Schedule</h2>
-            <span class="badge" id="task-count"></span>
-            <div class="view-toggle" id="view-toggle">
-              <button class="view-btn active" data-view="table">Table</button>
-              <button class="view-btn" data-view="timeline">Timeline</button>
+        <div class="section-card">
+          <div class="section-card-icon">⬆</div>
+          <div class="section-card-body">
+            <div class="section-card-title">Import Estimates CSV</div>
+            <div class="section-card-desc">Upload a filled-in estimate CSV to write day values back to the Task Templates table in Airtable.</div>
+          </div>
+          <button class="btn btn-secondary" id="est-csv-import-btn">Import CSV</button>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Setup wizard modal -->
+    <div class="modal-overlay" id="setup-overlay">
+      <div class="modal modal-wide">
+        <div class="modal-header">
+          <div class="wizard-header-left">
+            <h2>Estimation Engine Setup</h2>
+            <div class="wizard-steps" id="wizard-steps"></div>
+          </div>
+          <button class="icon-btn" id="setup-close">✕</button>
+        </div>
+        <div class="modal-body" id="setup-body">
+          <div class="list-state">Loading…</div>
+        </div>
+        <div class="wizard-footer" id="wizard-footer"></div>
+      </div>
+    </div>
+
+    <!-- CSV Import modal -->
+    <div class="modal-overlay" id="csv-overlay">
+      <div class="modal">
+        <div class="modal-header">
+          <h2>Import Estimate CSV</h2>
+          <button class="icon-btn" id="csv-modal-close">✕</button>
+        </div>
+        <div class="modal-body" id="csv-body"></div>
+        <div class="wizard-footer" id="csv-footer"></div>
+      </div>
+    </div>
+
+  </div><!-- /#view-estimates -->
+
+  <!-- ── WORKFLOWS VIEW ── -->
+  <div id="view-workflows" class="view" style="display:none">
+    <div class="section-nav">
+      <button class="icon-btn" id="workflows-home-btn" title="Back to home">←</button>
+      <span class="section-nav-title">Workflows</span>
+    </div>
+    <div class="construction-body">
+      <div class="construction-icon">🚧</div>
+      <div class="construction-title">Under Construction</div>
+      <div class="construction-sub">This section is coming soon.</div>
+    </div>
+  </div>
+
+  <!-- ── ASSET MANAGER VIEW ── -->
+  <div id="view-assets" class="view" style="display:none">
+
+    <div class="layout">
+
+      <aside class="sidebar">
+        <div class="sidebar-header">
+          <div class="logo">
+            <button class="icon-btn" id="home-btn" title="Back to home">←</button>
+            <span class="logo-icon">◈</span>
+            <span class="logo-text">Asset Manager</span>
+            <button class="icon-btn" id="schema-btn" title="View base schema">⊞</button>
+          </div>
+          <div class="search-wrapper">
+            <input type="search" id="search-input" placeholder="Search assets…" autocomplete="off">
+          </div>
+        </div>
+        <div class="asset-list" id="asset-list">
+          <div class="list-state">Loading…</div>
+        </div>
+      </aside>
+
+      <main class="main">
+
+        <div class="empty-state" id="empty-state">
+          <div class="empty-icon">◈</div>
+          <div class="empty-title">Select an asset</div>
+          <div class="empty-subtitle">Choose an asset from the sidebar to generate a workback schedule</div>
+        </div>
+
+        <div class="asset-panel" id="asset-panel">
+          <div class="panel-header" id="panel-header"></div>
+          <div class="meta-grid" id="meta-grid"></div>
+
+          <div class="panel-actions">
+            <button class="btn btn-primary" id="preview-btn">Preview Schedule</button>
+            <button class="btn btn-secondary" id="name-btn">Generate Name</button>
+            <div class="name-output" id="name-output" style="display:none">
+              <span id="name-text"></span>
+              <button class="btn-copy" id="name-copy" title="Copy to clipboard">⧉</button>
             </div>
           </div>
-          <div class="table-wrapper" id="table-view">
-            <table class="schedule-table">
-              <thead>
-                <tr>
-                  <th>Task</th>
-                  <th>Craft</th>
-                  <th class="col-num">Est. (days)</th>
-                  <th class="col-date">Start Date</th>
-                  <th class="col-date">End Date</th>
-                </tr>
-              </thead>
-              <tbody id="schedule-tbody"></tbody>
-            </table>
-          </div>
-          <div id="timeline-view" style="display:none"></div>
-          <div class="schedule-actions">
-            <button class="btn btn-success" id="generate-btn">Write to Airtable</button>
-            <span class="status-msg" id="status-msg"></span>
+
+          <div class="schedule-section" id="schedule-section">
+            <div class="schedule-header">
+              <h2>Workback Schedule</h2>
+              <span class="badge" id="task-count"></span>
+              <div class="view-toggle" id="view-toggle">
+                <button class="view-btn active" data-view="table">Table</button>
+                <button class="view-btn" data-view="timeline">Timeline</button>
+              </div>
+            </div>
+            <div class="table-wrapper" id="table-view">
+              <table class="schedule-table">
+                <thead>
+                  <tr>
+                    <th>Task</th>
+                    <th>Craft</th>
+                    <th class="col-num">Est. (days)</th>
+                    <th class="col-date">Start Date</th>
+                    <th class="col-date">End Date</th>
+                  </tr>
+                </thead>
+                <tbody id="schedule-tbody"></tbody>
+              </table>
+            </div>
+            <div id="timeline-view" style="display:none"></div>
+            <div class="schedule-actions">
+              <button class="btn btn-success" id="generate-btn">Write to Airtable</button>
+              <span class="status-msg" id="status-msg"></span>
+            </div>
           </div>
         </div>
-      </div>
 
-    </main>
-  </div>
+      </main>
+    </div>
 
-  <!-- Setup wizard -->
-  <div class="modal-overlay" id="setup-overlay">
-    <div class="modal modal-wide">
-      <div class="modal-header">
-        <div class="wizard-header-left">
-          <h2>Estimation Engine Setup</h2>
-          <div class="wizard-steps" id="wizard-steps"></div>
+    <!-- Schema modal -->
+    <div class="modal-overlay" id="schema-overlay">
+      <div class="modal">
+        <div class="modal-header">
+          <h2>Base Schema</h2>
+          <button class="icon-btn" id="schema-close">✕</button>
         </div>
-        <button class="icon-btn" id="setup-close">✕</button>
+        <div class="modal-tabs" id="schema-tabs"></div>
+        <div class="modal-body" id="schema-body">
+          <div class="list-state">Loading…</div>
+        </div>
       </div>
-      <div class="modal-body" id="setup-body">
-        <div class="list-state">Loading…</div>
-      </div>
-      <div class="wizard-footer" id="wizard-footer"></div>
     </div>
-  </div>
 
-  <!-- CSV Import modal -->
-  <div class="modal-overlay" id="csv-overlay">
-    <div class="modal">
-      <div class="modal-header">
-        <h2>Import Estimate CSV</h2>
-        <button class="icon-btn" id="csv-modal-close">✕</button>
-      </div>
-      <div class="modal-body" id="csv-body"></div>
-      <div class="wizard-footer" id="csv-footer"></div>
-    </div>
-  </div>
-
-  <!-- Schema modal -->
-  <div class="modal-overlay" id="schema-overlay">
-    <div class="modal">
-      <div class="modal-header">
-        <h2>Base Schema</h2>
-        <button class="icon-btn" id="schema-close">✕</button>
-      </div>
-      <div class="modal-tabs" id="schema-tabs"></div>
-      <div class="modal-body" id="schema-body">
-        <div class="list-state">Loading…</div>
-      </div>
-    </div>
-  </div>
+  </div><!-- /#view-assets -->
 
   <div class="toast" id="toast"></div>
   <script src="app.js"></script>

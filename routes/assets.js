@@ -1,5 +1,5 @@
 const express = require('express');
-const { selectAll, findRecord } = require('../lib/airtable');
+const { selectAll, findRecord, updateRecords } = require('../lib/airtable');
 const config = require('../config');
 
 const router = express.Router();
@@ -41,7 +41,9 @@ function normalizeAsset(r, productNames = new Map(), itemTypeNames = new Map()) 
 
   return {
     id:          r.id,
+    assetNumber: r.fields['ID'] ?? null,
     name:        resolveName(r.fields['Name']) ?? null,
+    devName:     resolveName(r.fields['Dev Name']) ?? null,
     product:     productId   ? (productNames.get(productId)   ?? productId)   : null,
     itemType:    itemTypeId  ? (itemTypeNames.get(itemTypeId) ?? itemTypeId)  : null,
     team:        resolveName(r.fields['Team (from Product)']) ?? null,
@@ -53,7 +55,7 @@ function normalizeAsset(r, productNames = new Map(), itemTypeNames = new Map()) 
 router.get('/', async (req, res, next) => {
   try {
     const options = {
-      fields: ['Name', 'Product', 'Item Type', 'Team (from Product)', 'Priority', 'Milestone 4 [Dates]'],
+      fields: ['Name', 'ID', 'Dev Name', 'Product', 'Item Type', 'Team (from Product)', 'Priority', 'Milestone 4 [Dates]'],
       sort: [{ field: 'Name', direction: 'asc' }],
     };
     if (req.query.search) {
@@ -81,6 +83,17 @@ router.get('/:id', async (req, res, next) => {
       fetchItemTypeNames(),
     ]);
     res.json(normalizeAsset(record, productNames, itemTypeNames));
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.patch('/:id/name', async (req, res, next) => {
+  try {
+    const { name } = req.body;
+    if (!name || typeof name !== 'string') return res.status(400).json({ error: 'name is required' });
+    await updateRecords(config.tables.assets, [{ id: req.params.id, fields: { Name: name } }]);
+    res.json({ ok: true });
   } catch (err) {
     next(err);
   }

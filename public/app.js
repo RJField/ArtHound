@@ -21,6 +21,26 @@ const $taskCount    = $('task-count');
 const $generateBtn  = $('generate-btn');
 const $statusMsg    = $('status-msg');
 const $toast        = $('toast');
+const $nameBtn      = $('name-btn');
+const $nameOutput   = $('name-output');
+const $nameText     = $('name-text');
+const $nameCopy     = $('name-copy');
+
+// -- Navigation --
+
+function navigate(view) {
+  document.querySelectorAll('.view').forEach(v => { v.style.display = 'none'; });
+  const el = document.getElementById(`view-${view}`);
+  el.style.display = (view === 'home' || view === 'estimates' || view === 'workflows') ? 'flex' : 'block';
+  if (view === 'assets' && !state.assets.length) loadAssets();
+}
+
+document.getElementById('nav-assets').addEventListener('click', () => navigate('assets'));
+document.getElementById('nav-estimates').addEventListener('click', () => navigate('estimates'));
+document.getElementById('nav-workflows').addEventListener('click', () => navigate('workflows'));
+document.getElementById('home-btn').addEventListener('click', () => navigate('home'));
+document.getElementById('estimates-home-btn').addEventListener('click', () => navigate('home'));
+document.getElementById('workflows-home-btn').addEventListener('click', () => navigate('home'));
 
 // -- Utilities --
 
@@ -137,6 +157,7 @@ function selectAsset(id) {
   $previewBtn.disabled    = false;
   $previewBtn.textContent = 'Preview Schedule';
   $statusMsg.innerHTML    = '';
+  $nameOutput.style.display = 'none';
 }
 
 // -- Preview --
@@ -158,6 +179,41 @@ $previewBtn.addEventListener('click', async () => {
     $previewBtn.disabled    = false;
     $previewBtn.textContent = 'Preview Schedule';
   }
+});
+
+// -- Generate name --
+
+$nameBtn.addEventListener('click', async () => {
+  if (!state.selected) return;
+  const a = state.selected;
+  const parts = [a.devName, a.itemType, a.product, a.assetNumber].filter(p => p != null && p !== '');
+  const name = parts.join(' - ');
+  $nameText.textContent = name;
+  $nameOutput.style.display = '';
+  $nameBtn.disabled = true;
+  try {
+    await apiFetch(`/api/assets/${a.id}/name`, {
+      method: 'PATCH',
+      body: JSON.stringify({ name }),
+    });
+    state.selected.name = name;
+    $panelHeader.innerHTML = `
+      <h1 class="asset-title">${esc(name)}</h1>
+      <span class="asset-type-badge">${esc(a.itemType || 'Unknown')}</span>
+    `;
+    await loadAssets($search.value);
+    showToast('Name written to Airtable', 'info');
+  } catch (err) {
+    showToast(`Failed to write name: ${err.message}`, 'error');
+  } finally {
+    $nameBtn.disabled = false;
+  }
+});
+
+$nameCopy.addEventListener('click', () => {
+  const text = $nameText.textContent;
+  if (!text) return;
+  navigator.clipboard.writeText(text).then(() => showToast('Name copied to clipboard', 'info'));
 });
 
 // -- View toggle --
@@ -310,7 +366,7 @@ $generateBtn.addEventListener('click', async () => {
 // -- Setup wizard --
 
 const $setupOverlay = $('setup-overlay');
-const $setupBtn     = $('setup-btn');
+const $setupBtn     = $('est-setup-btn');
 const $setupClose   = $('setup-close');
 const $setupBody    = $('setup-body');
 const $wizardSteps  = $('wizard-steps');
@@ -873,8 +929,8 @@ function renderTableFields(table, allTableNames) {
 
 // -- CSV Import --
 
-const $csvOverlay   = $('csv-overlay');
-const $csvImportBtn = $('csv-import-btn');
+const $csvOverlay    = $('csv-overlay');
+const $csvImportBtn  = $('est-csv-import-btn');
 const $csvModalClose = $('csv-modal-close');
 const $csvBody      = $('csv-body');
 const $csvFooter    = $('csv-footer');
@@ -1065,4 +1121,3 @@ async function applyCsvImport() {
 $search.addEventListener('input', debounce(e => loadAssets(e.target.value.trim()), 300));
 
 $assetPanel.style.display = 'none';
-loadAssets();
