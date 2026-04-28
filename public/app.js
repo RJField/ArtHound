@@ -41,6 +41,17 @@ document.getElementById('nav-estimates').addEventListener('click', () => navigat
 document.getElementById('nav-workflows').addEventListener('click', () => navigate('workflows'));
 document.getElementById('nav-reviews').addEventListener('click', () => navigate('reviews'));
 document.getElementById('nav-todos').addEventListener('click', () => navigate('todos'));
+fetch('/api/config')
+  .then(r => r.json())
+  .then(({ airtableUrl }) => {
+    const btn = document.getElementById('nav-airtable');
+    if (airtableUrl) {
+      btn.addEventListener('click', () => window.open(airtableUrl, '_blank', 'noopener'));
+    } else {
+      btn.disabled = true;
+      btn.title = 'AIRTABLE_BASE_ID not configured';
+    }
+  });
 document.getElementById('home-btn').addEventListener('click', () => navigate('home'));
 document.getElementById('estimates-home-btn').addEventListener('click', () => navigate('home'));
 document.getElementById('workflows-home-btn').addEventListener('click', () => navigate('home'));

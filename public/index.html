@@ -10,55 +10,97 @@
 
   <!-- ── HOME VIEW ── -->
   <div id="view-home" class="view">
-    <div class="home-wrap">
-      <div class="home-brand">
-        <img src="arthound_logo.png" alt="ArtHound" class="home-brand-img">
+    <div class="home-layout">
+      <div class="home-pillars">
+        <div class="home-pillar home-pillar-left">
+          <div class="home-brand">
+            <img src="arthound_logo.png" alt="ArtHound" class="home-brand-img">
+          </div>
+          <nav class="home-cards">
+            <button class="home-card" id="nav-assets">
+              <div class="home-card-icon">⊞</div>
+              <div class="home-card-body">
+                <div class="home-card-title">Asset Manager</div>
+                <div class="home-card-desc">View Asset intel, generate tasking and update naming.</div>
+              </div>
+              <div class="home-card-arrow">→</div>
+            </button>
+            <button class="home-card" id="nav-estimates">
+              <div class="home-card-icon">⚙</div>
+              <div class="home-card-body">
+                <div class="home-card-title">Estimates</div>
+                <div class="home-card-desc">Configure the estimation engine and update estimate values from CSV</div>
+              </div>
+              <div class="home-card-arrow">→</div>
+            </button>
+            <button class="home-card" id="nav-workflows">
+              <div class="home-card-icon">⇄</div>
+              <div class="home-card-body">
+                <div class="home-card-title">Workflows</div>
+                <div class="home-card-desc">Create and manage production workflow steps</div>
+              </div>
+              <div class="home-card-arrow">→</div>
+            </button>
+            <button class="home-card" id="nav-reviews">
+              <div class="home-card-icon">✦</div>
+              <div class="home-card-body">
+                <div class="home-card-title">Asset Reviews</div>
+                <div class="home-card-desc">Review and approve assets across the production pipeline</div>
+              </div>
+              <div class="home-card-arrow">→</div>
+            </button>
+          </nav>
+          <button class="home-card home-card-sm home-card-bottom" id="nav-todos">
+            <div class="home-card-icon">✓</div>
+            <div class="home-card-body">
+              <div class="home-card-title">ToDos</div>
+            </div>
+            <div class="home-card-arrow">→</div>
+          </button>
+        </div>
+        <div class="home-pillar-divider"></div>
+        <div class="home-pillar home-pillar-right">
+          <img src="cutool-logo.png" alt="Cu-TOOL-u" class="home-cutool-logo">
+          <nav class="home-cards">
+            <button class="home-card home-card-sm" disabled>
+              <div class="home-card-icon">◈</div>
+              <div class="home-card-body">
+                <div class="home-card-title">NumberBot</div>
+              </div>
+              <div class="home-card-arrow">→</div>
+            </button>
+            <button class="home-card home-card-sm" disabled>
+              <div class="home-card-icon">✦</div>
+              <div class="home-card-body">
+                <div class="home-card-title">LoreBot</div>
+              </div>
+              <div class="home-card-arrow">→</div>
+            </button>
+            <button class="home-card home-card-sm" disabled>
+              <div class="home-card-icon">⚙</div>
+              <div class="home-card-body">
+                <div class="home-card-title">OpsBot</div>
+              </div>
+              <div class="home-card-arrow">→</div>
+            </button>
+            <button class="home-card home-card-sm" disabled>
+              <div class="home-card-icon">⊕</div>
+              <div class="home-card-body">
+                <div class="home-card-title">ATCBot</div>
+              </div>
+              <div class="home-card-arrow">→</div>
+            </button>
+          </nav>
+          <button class="home-card home-card-sm home-card-bottom" id="nav-airtable">
+            <div class="home-card-icon">⊞</div>
+            <div class="home-card-body">
+              <div class="home-card-title">Airtable Base</div>
+            </div>
+            <div class="home-card-arrow">↗</div>
+          </button>
+        </div>
       </div>
-      <nav class="home-cards">
-        <button class="home-card" id="nav-assets">
-          <div class="home-card-icon">⊞</div>
-          <div class="home-card-body">
-            <div class="home-card-title">Asset Manager</div>
-            <div class="home-card-desc">View Asset intel, generate tasking and update naming.</div>
-          </div>
-          <div class="home-card-arrow">→</div>
-        </button>
-        <button class="home-card" id="nav-estimates">
-          <div class="home-card-icon">⚙</div>
-          <div class="home-card-body">
-            <div class="home-card-title">Estimates</div>
-            <div class="home-card-desc">Configure the estimation engine and update estimate values from CSV</div>
-          </div>
-          <div class="home-card-arrow">→</div>
-        </button>
-        <button class="home-card" id="nav-workflows">
-          <div class="home-card-icon">⇄</div>
-          <div class="home-card-body">
-            <div class="home-card-title">Workflows</div>
-            <div class="home-card-desc">Create and manage production workflow steps</div>
-          </div>
-          <div class="home-card-arrow">→</div>
-        </button>
-        <button class="home-card" id="nav-reviews">
-          <div class="home-card-icon">✦</div>
-          <div class="home-card-body">
-            <div class="home-card-title">Asset Reviews</div>
-            <div class="home-card-desc">Review and approve assets across the production pipeline</div>
-          </div>
-          <div class="home-card-arrow">→</div>
-        </button>
-        <button class="home-card home-card-sm" id="nav-todos">
-          <div class="home-card-icon">✓</div>
-          <div class="home-card-body">
-            <div class="home-card-title">ToDos</div>
-          </div>
-          <div class="home-card-arrow">→</div>
-        </button>
-      </nav>
     </div>
-    <footer class="home-footer">
-      <img src="cutool-logo.png" alt="Cu-TOOL-u" class="home-footer-logo">
-    </footer>
   </div>
 
   <!-- ── ESTIMATES VIEW ── -->
@@ -153,6 +195,30 @@
           <p>The engine capture for games assets is particularly strong — a video of the asset in-engine as the review artifact is far more useful than a render, and no current tool makes that easy to submit.</p>
           <p>This also means your buyer conversation just got more interesting. You're not just selling to the production lead, you're selling something artists will actually want to use. Bottom-up adoption plus top-down value prop is a much easier sale than tools that only serve one side.</p>
           <p>The DCC button is probably a later build given the SDK work involved, but the review submission flow itself — even as a simple web form with file upload — is achievable soon and gets you the workflow. The Maya/engine integration is the polish layer on top of a process that already works.</p>
+        </div>
+      </div>
+      <div class="notes-card">
+        <div class="notes-label">Positioning</div>
+        <div class="notes-body">
+          <p>Art Hound is the world's first Asset-Centric Intelligence platform. We replace fragmented task-tracking with a unified Asset Payload—integrating matrix-driven estimations, automated metadata audits, and real-time investment tracking into a single, scalable output.</p>
+        </div>
+      </div>
+      <div class="notes-card">
+        <div class="notes-label">Intelligence Layer</div>
+        <div class="notes-body">
+          <p><strong>1. The Contextual Pivot (LoreBot)</strong></p>
+          <p>Standard tools treat every task the same. LoreBot allows you to justify "inefficiency." If a specific asset is taking 3x longer than the matrix suggested, LoreBot can flag that it's because it's a "Legendary Tier" item with complex brand requirements. It turns a "red flag" into an "informed choice."</p>
+          <p><strong>2. The Predictive Guardrail (NumbersBot)</strong></p>
+          <p>Because it looks at tasking changes (extensions) in real-time, NumbersBot isn't just a reporter; it's a Forecaster. It can warn a producer: "Based on current status extensions, you will exhaust the Investment payload for this milestone 4 days early."</p>
+          <p><strong>3. The Friction Remover (ProcessBot)</strong></p>
+          <p>This is where you solve the human element. If an asset has been "In Review" for 48 hours but the "Development" was only 4 hours, ProcessBot exposes the invisible cost of waiting.</p>
+          <p><strong>Strategic Positioning: "The Narrative Ledger"</strong></p>
+          <p>You are essentially building a Narrative Ledger for every asset.</p>
+          <ul>
+            <li><strong>The Ledger:</strong> Art Hound Schema</li>
+            <li><strong>The Audit:</strong> NumbersBot + ProcessBot</li>
+            <li><strong>The Justification:</strong> LoreBot</li>
+          </ul>
         </div>
       </div>
     </div>

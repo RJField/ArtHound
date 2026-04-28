@@ -1193,14 +1193,54 @@ body {
   background: var(--bg);
 }
 
-.home-wrap {
+.home-layout {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 20px;
+  width: 100%;
+  max-width: 1100px;
+  padding: 40px 32px;
+}
+
+.home-card-bottom {
+  margin-top: auto;
+  width: 100%;
+}
+
+.home-pillars {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  justify-content: center;
+  width: 100%;
+  gap: 0;
+}
+
+.home-pillar {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 52px;
-  width: 100%;
-  max-width: 640px;
-  padding: 40px 24px;
+  justify-content: flex-start;
+  gap: 40px;
+}
+
+.home-pillar-left {
+  flex: 3;
+  min-width: 0;
+}
+
+.home-pillar-right {
+  flex: 2;
+  min-width: 0;
+}
+
+.home-pillar-divider {
+  width: 1px;
+  align-self: stretch;
+  background: var(--border);
+  margin: 0 48px;
+  flex-shrink: 0;
 }
 
 .home-brand {
@@ -1211,8 +1251,14 @@ body {
 }
 
 .home-brand-img {
-  width: 340px;
-  max-width: 90vw;
+  width: 300px;
+  max-width: 100%;
+  height: auto;
+}
+
+.home-cutool-logo {
+  width: 80%;
+  max-width: 300px;
   height: auto;
 }
 
@@ -1239,6 +1285,14 @@ body {
 .home-card:hover {
   border-color: var(--accent);
   background: var(--surface-2);
+}
+.home-card:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.home-card:disabled:hover {
+  border-color: var(--border);
+  background: var(--surface);
 }
 
 .home-card-icon {
@@ -1272,7 +1326,6 @@ body {
   transition: color 0.15s, transform 0.15s;
 }
 .home-card-sm {
-  grid-column: 1 / -1;
   padding: 14px 20px;
 }
 .home-card-sm .home-card-icon { font-size: 18px; width: 28px; }
@@ -1281,23 +1334,4 @@ body {
 .home-card:hover .home-card-arrow {
   color: var(--accent);
   transform: translateX(3px);
-}
-
-.home-footer {
-  position: fixed;
-  bottom: 24px;
-  left: 0;
-  right: 0;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  opacity: 0.45;
-  transition: opacity 0.2s;
-}
-.home-footer:hover { opacity: 0.8; }
-
-.home-footer-logo {
-  width: 50%;
-  max-width: 320px;
-  height: auto;
 }

@@ -18,6 +18,11 @@ app.use('/api/schema',   schemaRouter);
 app.use('/api/setup',    setupRouter);
 app.use('/api/reviews',  reviewsRouter);
 
+app.get('/api/config', (req, res) => {
+  const baseId = process.env.AIRTABLE_BASE_ID || '';
+  res.json({ airtableUrl: baseId ? `https://airtable.com/${baseId}` : null });
+});
+
 // Temporary debug route — remove once auth is confirmed working
 app.get('/api/debug', async (req, res) => {
   const { AIRTABLE_TOKEN, AIRTABLE_BASE_ID } = process.env;
