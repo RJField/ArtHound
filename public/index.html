@@ -47,8 +47,12 @@
           <div class="schedule-header">
             <h2>Workback Schedule</h2>
             <span class="badge" id="task-count"></span>
+            <div class="view-toggle" id="view-toggle">
+              <button class="view-btn active" data-view="table">Table</button>
+              <button class="view-btn" data-view="timeline">Timeline</button>
+            </div>
           </div>
-          <div class="table-wrapper">
+          <div class="table-wrapper" id="table-view">
             <table class="schedule-table">
               <thead>
                 <tr>
@@ -62,6 +66,7 @@
               <tbody id="schedule-tbody"></tbody>
             </table>
           </div>
+          <div id="timeline-view" style="display:none"></div>
           <div class="schedule-actions">
             <button class="btn btn-success" id="generate-btn">Write to Airtable</button>
             <span class="status-msg" id="status-msg"></span>

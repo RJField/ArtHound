@@ -1,8 +1,9 @@
 const state = {
-  assets:   [],
-  selected: null,
-  schedule: null,
-  writing:  false,
+  assets:       [],
+  selected:     null,
+  schedule:     null,
+  writing:      false,
+  scheduleView: 'table',
 };
 
 const $ = id => document.getElementById(id);
@@ -159,6 +160,17 @@ $previewBtn.addEventListener('click', async () => {
   }
 });
 
+// -- View toggle --
+
+document.getElementById('view-toggle').addEventListener('click', e => {
+  const btn = e.target.closest('.view-btn');
+  if (!btn) return;
+  state.scheduleView = btn.dataset.view;
+  document.querySelectorAll('.view-btn').forEach(b => b.classList.toggle('active', b === btn));
+  document.getElementById('table-view').style.display    = state.scheduleView === 'table'    ? '' : 'none';
+  document.getElementById('timeline-view').style.display = state.scheduleView === 'timeline' ? '' : 'none';
+});
+
 function renderSchedule() {
   if (!state.schedule) return;
 
@@ -167,7 +179,6 @@ function renderSchedule() {
   );
 
   const col = state.schedule.asset?.estimateCol;
-
   $taskCount.textContent = `${tasks.length} task${tasks.length !== 1 ? 's' : ''}`;
 
   if (tasks.length === 0) {
@@ -190,12 +201,83 @@ function renderSchedule() {
     `).join('');
     $generateBtn.disabled    = false;
     $generateBtn.textContent = 'Write to Airtable';
+    renderTimeline(tasks);
   }
+
+  // Respect current view toggle state
+  document.getElementById('table-view').style.display    = state.scheduleView === 'table'    ? '' : 'none';
+  document.getElementById('timeline-view').style.display = state.scheduleView === 'timeline' ? '' : 'none';
 
   $schedSection.style.display = 'block';
   $previewBtn.disabled        = false;
   $previewBtn.textContent     = 'Refresh Schedule';
   $statusMsg.innerHTML        = '';
+}
+
+// -- Timeline --
+
+const TL_PALETTE = ['#7c6af4','#34d399','#60a5fa','#fbbf24','#f97316','#e879f9','#94a3b8','#f87171'];
+
+function renderTimeline(tasks) {
+  const $tl = document.getElementById('timeline-view');
+
+  const parsed = tasks.map(t => ({
+    ...t,
+    s: new Date(t.startDate),
+    e: new Date(t.endDate),
+  }));
+
+  const minMs  = Math.min(...parsed.map(t => +t.s));
+  const maxMs  = Math.max(...parsed.map(t => +t.e));
+  const spanMs = maxMs - minMs || 1;
+
+  function leftPct(ms)     { return ((ms - minMs) / spanMs * 100).toFixed(3); }
+  function widthPct(s, e)  { return (Math.max(+e - +s, spanMs * 0.008) / spanMs * 100).toFixed(3); }
+
+  // Assign a stable color per craft name
+  const craftColor = {};
+  let ci = 0;
+  parsed.forEach(t => { if (t.craft && !craftColor[t.craft]) craftColor[t.craft] = TL_PALETTE[ci++ % TL_PALETTE.length]; });
+
+  // Month markers: first of each month spanning the range
+  const markers = [];
+  const cur = new Date(new Date(minMs).getFullYear(), new Date(minMs).getMonth(), 1);
+  while (+cur <= maxMs) {
+    markers.push({ ms: +cur, label: cur.toLocaleDateString('en-US', { month: 'short', year: '2-digit' }) });
+    cur.setMonth(cur.getMonth() + 1);
+  }
+
+  $tl.innerHTML = `
+    <div class="tl-chart">
+      <div class="tl-labels">
+        <div class="tl-label-hdr"></div>
+        ${parsed.map(t => `<div class="tl-label" title="${esc(t.taskName)}">${esc(t.taskName)}</div>`).join('')}
+      </div>
+      <div class="tl-canvas">
+        <div class="tl-month-row">
+          ${markers.map(m => `
+            <span class="tl-month-marker" style="left:${Math.max(0, leftPct(m.ms))}%">${esc(m.label)}</span>
+          `).join('')}
+        </div>
+        ${markers.map(m => +m.ms >= minMs
+          ? `<span class="tl-vline" style="left:${leftPct(m.ms)}%"></span>`
+          : '').join('')}
+        <div class="tl-rows">
+          ${parsed.map(t => {
+            const color = craftColor[t.craft] || TL_PALETTE[0];
+            return `
+              <div class="tl-row">
+                <div class="tl-bar" style="left:${leftPct(t.s)}%;width:${widthPct(t.s, t.e)}%;background:${color}"
+                     title="${esc(t.taskName)} · ${t.estimate}d · ${t.startDate} → ${t.endDate}">
+                  <span class="tl-bar-label">${esc(t.craft)}</span>
+                </div>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      </div>
+    </div>
+  `;
 }
 
 // -- Write to Airtable --

@@ -565,6 +565,115 @@ body {
   border-top: 2px solid var(--border) !important;
 }
 
+/* ---- Schedule view toggle ---- */
+
+.schedule-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+.view-toggle { display: flex; margin-left: auto; }
+.view-btn {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.view-btn:first-child { border-radius: 5px 0 0 5px; border-right: none; }
+.view-btn:last-child  { border-radius: 0 5px 5px 0; }
+.view-btn.active { background: var(--surface-3); color: var(--text); border-color: var(--accent); }
+.view-btn:not(.active):hover { background: var(--surface-2); color: var(--text); }
+
+/* ---- Timeline ---- */
+
+.tl-chart {
+  display: flex;
+  overflow-x: auto;
+  padding-bottom: 8px;
+}
+.tl-labels {
+  width: 200px;
+  min-width: 200px;
+  flex-shrink: 0;
+}
+.tl-label-hdr { height: 30px; }
+.tl-label {
+  height: 42px;
+  display: flex;
+  align-items: center;
+  padding-right: 14px;
+  font-size: 12px;
+  color: var(--text-muted);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  border-bottom: 1px solid var(--border);
+}
+.tl-canvas {
+  flex: 1;
+  min-width: 480px;
+  position: relative;
+}
+.tl-month-row {
+  height: 30px;
+  position: relative;
+  border-bottom: 1px solid var(--border);
+}
+.tl-month-marker {
+  position: absolute;
+  top: 7px;
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  transform: translateX(-2px);
+  pointer-events: none;
+}
+.tl-vline {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--border);
+  pointer-events: none;
+  z-index: 0;
+}
+.tl-rows { position: relative; z-index: 1; }
+.tl-row {
+  position: relative;
+  height: 42px;
+  border-bottom: 1px solid var(--border);
+}
+.tl-bar {
+  position: absolute;
+  top: 8px;
+  height: 26px;
+  border-radius: 5px;
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  cursor: default;
+  opacity: 0.82;
+  transition: opacity 0.12s, filter 0.12s;
+  min-width: 6px;
+  overflow: hidden;
+  z-index: 2;
+}
+.tl-bar:hover { opacity: 1; filter: brightness(1.15); }
+.tl-bar-label {
+  font-size: 11px;
+  font-weight: 500;
+  color: rgba(255,255,255,0.9);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
 /* ---- CSV Import ---- */
 
 .csv-dropzone {
