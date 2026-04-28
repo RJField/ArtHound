@@ -166,22 +166,35 @@ function renderSchedule() {
     a.startDate.localeCompare(b.startDate)
   );
 
+  const col = state.schedule.asset?.estimateCol;
+
   $taskCount.textContent = `${tasks.length} task${tasks.length !== 1 ? 's' : ''}`;
-  $tbody.innerHTML = tasks.map(t => `
-    <tr>
-      <td>${esc(t.taskName)}</td>
-      <td>${esc(t.craft)}</td>
-      <td class="col-num">${t.estimate}</td>
-      <td class="col-date">${fmtDate(t.startDate)}</td>
-      <td class="col-date">${fmtDate(t.endDate)}</td>
-    </tr>
-  `).join('');
+
+  if (tasks.length === 0) {
+    $tbody.innerHTML = `
+      <tr><td colspan="5" class="schedule-empty-hint">
+        No tasks with estimates found.
+        ${col ? `Looking for column <code>${esc(col)}</code> in Task Templates — create it via the ⚙ wizard or add it directly in Airtable and fill in day values.` : ''}
+      </td></tr>
+    `;
+    $generateBtn.disabled = true;
+  } else {
+    $tbody.innerHTML = tasks.map(t => `
+      <tr>
+        <td>${esc(t.taskName)}</td>
+        <td>${esc(t.craft)}</td>
+        <td class="col-num">${t.estimate}</td>
+        <td class="col-date">${fmtDate(t.startDate)}</td>
+        <td class="col-date">${fmtDate(t.endDate)}</td>
+      </tr>
+    `).join('');
+    $generateBtn.disabled    = false;
+    $generateBtn.textContent = 'Write to Airtable';
+  }
 
   $schedSection.style.display = 'block';
   $previewBtn.disabled        = false;
   $previewBtn.textContent     = 'Refresh Schedule';
-  $generateBtn.disabled       = false;
-  $generateBtn.textContent    = 'Write to Airtable';
   $statusMsg.innerHTML        = '';
 }
 

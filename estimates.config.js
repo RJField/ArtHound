@@ -5,9 +5,5 @@
 // To regenerate, re-run the ⚙ setup wizard in the app.
 
 module.exports = {
-  _variableFields: ["Item Type","Priority","Team (from Product)"],
-
-  'Axe|2|Live Content': 'Axe_2_LiveContent',
-  'Axe|2|Maps': 'Axe_2_Maps',
-  'Axe|3|Characters': 'Axe_3_Characters',
+  _variableFields: ["Item Type","Team (from Product)","Priority"],
 };
