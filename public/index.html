@@ -39,6 +39,21 @@
           </div>
           <div class="home-card-arrow">→</div>
         </button>
+        <button class="home-card" id="nav-reviews">
+          <div class="home-card-icon">✦</div>
+          <div class="home-card-body">
+            <div class="home-card-title">Asset Reviews</div>
+            <div class="home-card-desc">Review and approve assets across the production pipeline</div>
+          </div>
+          <div class="home-card-arrow">→</div>
+        </button>
+        <button class="home-card home-card-sm" id="nav-todos">
+          <div class="home-card-icon">✓</div>
+          <div class="home-card-body">
+            <div class="home-card-title">ToDos</div>
+          </div>
+          <div class="home-card-arrow">→</div>
+        </button>
       </nav>
     </div>
     <footer class="home-footer">
@@ -119,6 +134,41 @@
       <div class="construction-icon">🚧</div>
       <div class="construction-title">Under Construction</div>
       <div class="construction-sub">This section is coming soon.</div>
+    </div>
+  </div>
+
+  <!-- ── TODOS VIEW ── -->
+  <div id="view-todos" class="view" style="display:none">
+    <div class="section-nav">
+      <button class="icon-btn" id="todos-home-btn" title="Back to home">←</button>
+      <span class="section-nav-title">ToDos</span>
+      <span class="section-nav-badge">🚧 Under Construction</span>
+    </div>
+    <div class="notes-content">
+      <div class="notes-card">
+        <div class="notes-label">Design Notes</div>
+        <div class="notes-body">
+          <p>That's the DCC integration piece from your original three pillars coming back around. And in this context it makes complete sense — the review submission is the natural trigger point for that integration, not some abstract spec payload.</p>
+          <p>Artist hits a button in Maya, screenshot captures, review ticket created, linked to the asset, lands in the lead's morning dashboard. Zero context switching, zero manual entry. That's the workflow that actually gets adopted because it removes friction at the point where friction currently kills compliance.</p>
+          <p>The engine capture for games assets is particularly strong — a video of the asset in-engine as the review artifact is far more useful than a render, and no current tool makes that easy to submit.</p>
+          <p>This also means your buyer conversation just got more interesting. You're not just selling to the production lead, you're selling something artists will actually want to use. Bottom-up adoption plus top-down value prop is a much easier sale than tools that only serve one side.</p>
+          <p>The DCC button is probably a later build given the SDK work involved, but the review submission flow itself — even as a simple web form with file upload — is achievable soon and gets you the workflow. The Maya/engine integration is the polish layer on top of a process that already works.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── ASSET REVIEWS VIEW ── -->
+  <div id="view-reviews" class="view" style="display:none">
+    <div class="section-nav">
+      <button class="icon-btn" id="reviews-home-btn" title="Back to home">←</button>
+      <span class="section-nav-title">Asset Reviews</span>
+      <button class="btn btn-sm" id="reviews-refresh-btn" style="margin-left:auto">↻ Refresh</button>
+    </div>
+    <div class="section-content">
+      <div id="reviews-list" class="reviews-list">
+        <div class="list-state">Loading…</div>
+      </div>
     </div>
   </div>
 

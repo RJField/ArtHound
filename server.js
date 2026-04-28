@@ -6,15 +6,17 @@ const assetsRouter   = require('./routes/assets');
 const scheduleRouter = require('./routes/schedule');
 const schemaRouter   = require('./routes/schema');
 const setupRouter    = require('./routes/setup');
+const reviewsRouter  = require('./routes/reviews');
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 app.use('/api/assets',   assetsRouter);
 app.use('/api/schedule', scheduleRouter);
 app.use('/api/schema',   schemaRouter);
 app.use('/api/setup',    setupRouter);
+app.use('/api/reviews',  reviewsRouter);
 
 // Temporary debug route — remove once auth is confirmed working
 app.get('/api/debug', async (req, res) => {

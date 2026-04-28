@@ -31,16 +31,21 @@ const $nameCopy     = $('name-copy');
 function navigate(view) {
   document.querySelectorAll('.view').forEach(v => { v.style.display = 'none'; });
   const el = document.getElementById(`view-${view}`);
-  el.style.display = (view === 'home' || view === 'estimates' || view === 'workflows') ? 'flex' : 'block';
-  if (view === 'assets' && !state.assets.length) loadAssets();
+  el.style.display = (view === 'home' || view === 'estimates' || view === 'workflows' || view === 'reviews' || view === 'todos') ? 'flex' : 'block';
+  if (view === 'assets') { if (!state.assets.length) loadAssets(); }
+  if (view === 'reviews') loadReviews();
 }
 
 document.getElementById('nav-assets').addEventListener('click', () => navigate('assets'));
 document.getElementById('nav-estimates').addEventListener('click', () => navigate('estimates'));
 document.getElementById('nav-workflows').addEventListener('click', () => navigate('workflows'));
+document.getElementById('nav-reviews').addEventListener('click', () => navigate('reviews'));
+document.getElementById('nav-todos').addEventListener('click', () => navigate('todos'));
 document.getElementById('home-btn').addEventListener('click', () => navigate('home'));
 document.getElementById('estimates-home-btn').addEventListener('click', () => navigate('home'));
 document.getElementById('workflows-home-btn').addEventListener('click', () => navigate('home'));
+document.getElementById('reviews-home-btn').addEventListener('click', () => navigate('home'));
+document.getElementById('todos-home-btn').addEventListener('click', () => navigate('home'));
 
 // -- Utilities --
 
@@ -1115,6 +1120,69 @@ async function applyCsvImport() {
   document.getElementById('csv-reimport').addEventListener('click', openCsvImport);
   document.getElementById('csv-done').addEventListener('click', () => $csvOverlay.classList.remove('open'));
 }
+
+// -- Asset Reviews --
+
+const STATUS_COLORS = {
+  'Pending':           '#fbbf24',
+  'Approved':          '#34d399',
+  'Changes Requested': '#f87171',
+};
+
+async function loadReviews() {
+  const $list = $('reviews-list');
+  $list.innerHTML = '<div class="list-state">Loading…</div>';
+  try {
+    const reviews = await apiFetch('/api/reviews');
+    if (!reviews.length) {
+      $list.innerHTML = '<div class="list-state">No reviews yet. Submit one from Maya.</div>';
+      return;
+    }
+    $list.innerHTML = reviews.map(r => {
+      const color  = STATUS_COLORS[r.status] || '#6b748a';
+      const imgSrc = r.screenshot ? `/reviews/${r.screenshot}` : null;
+      const date   = r.submittedAt ? new Date(r.submittedAt).toLocaleString() : '—';
+      return `
+        <div class="review-card" data-id="${esc(r.id)}">
+          ${imgSrc ? `<img class="review-thumb" src="${esc(imgSrc)}" alt="screenshot">` : '<div class="review-thumb review-thumb-empty">No screenshot</div>'}
+          <div class="review-meta">
+            <div class="review-asset">${esc(r.assetName || '—')}</div>
+            <div class="review-detail">${esc(r.sceneFile)} · ${esc(r.artist)} · ${esc(date)}</div>
+            ${r.notes ? `<div class="review-notes">${esc(r.notes)}</div>` : ''}
+          </div>
+          <div class="review-actions">
+            <span class="review-status" style="color:${color}">${esc(r.status)}</span>
+            <select class="review-status-select" data-id="${esc(r.id)}">
+              <option value="Pending"           ${r.status === 'Pending'           ? 'selected' : ''}>Pending</option>
+              <option value="Approved"          ${r.status === 'Approved'          ? 'selected' : ''}>Approved</option>
+              <option value="Changes Requested" ${r.status === 'Changes Requested' ? 'selected' : ''}>Changes Requested</option>
+            </select>
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    $list.querySelectorAll('.review-status-select').forEach(sel => {
+      sel.addEventListener('change', async () => {
+        const id = sel.dataset.id;
+        try {
+          await apiFetch(`/api/reviews/${id}/status`, {
+            method: 'PATCH',
+            body: JSON.stringify({ status: sel.value }),
+          });
+          showToast('Status updated', 'info');
+          loadReviews();
+        } catch (err) {
+          showToast(err.message, 'error');
+        }
+      });
+    });
+  } catch (err) {
+    $('reviews-list').innerHTML = `<div class="list-state error">${esc(err.message)}</div>`;
+  }
+}
+
+document.getElementById('reviews-refresh-btn').addEventListener('click', loadReviews);
 
 // -- Init --
 

@@ -5,5 +5,6 @@ module.exports = {
     tasks:     process.env.TABLE_TASKS      || 'Tasking',
     templates: process.env.TABLE_TEMPLATES  || 'Task Templates',
     itemTypes: process.env.TABLE_ITEM_TYPES || 'Item Types',
+    reviews:   process.env.TABLE_REVIEWS    || 'Asset Reviews',
   },
 };
