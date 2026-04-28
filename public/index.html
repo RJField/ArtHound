@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ArtHound</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="layout">
+
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <div class="logo">
+          <span class="logo-icon">◈</span>
+          <span class="logo-text">ArtHound</span>
+          <button class="icon-btn" id="schema-btn" title="View base schema">⊞</button>
+          <button class="icon-btn" id="setup-btn" title="Estimation engine setup">⚙</button>
+          <button class="icon-btn" id="csv-import-btn" title="Import estimate CSV">⬆</button>
+        </div>
+        <div class="search-wrapper">
+          <input type="search" id="search-input" placeholder="Search assets…" autocomplete="off">
+        </div>
+      </div>
+      <div class="asset-list" id="asset-list">
+        <div class="list-state">Loading…</div>
+      </div>
+    </aside>
+
+    <main class="main">
+
+      <div class="empty-state" id="empty-state">
+        <div class="empty-icon">◈</div>
+        <div class="empty-title">Select an asset</div>
+        <div class="empty-subtitle">Choose an asset from the sidebar to generate a workback schedule</div>
+      </div>
+
+      <div class="asset-panel" id="asset-panel">
+        <div class="panel-header" id="panel-header"></div>
+        <div class="meta-grid" id="meta-grid"></div>
+
+        <div class="panel-actions">
+          <button class="btn btn-primary" id="preview-btn">Preview Schedule</button>
+        </div>
+
+        <div class="schedule-section" id="schedule-section">
+          <div class="schedule-header">
+            <h2>Workback Schedule</h2>
+            <span class="badge" id="task-count"></span>
+          </div>
+          <div class="table-wrapper">
+            <table class="schedule-table">
+              <thead>
+                <tr>
+                  <th>Task</th>
+                  <th>Craft</th>
+                  <th class="col-num">Est. (days)</th>
+                  <th class="col-date">Start Date</th>
+                  <th class="col-date">End Date</th>
+                </tr>
+              </thead>
+              <tbody id="schedule-tbody"></tbody>
+            </table>
+          </div>
+          <div class="schedule-actions">
+            <button class="btn btn-success" id="generate-btn">Write to Airtable</button>
+            <span class="status-msg" id="status-msg"></span>
+          </div>
+        </div>
+      </div>
+
+    </main>
+  </div>
+
+  <!-- Setup wizard -->
+  <div class="modal-overlay" id="setup-overlay">
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <div class="wizard-header-left">
+          <h2>Estimation Engine Setup</h2>
+          <div class="wizard-steps" id="wizard-steps"></div>
+        </div>
+        <button class="icon-btn" id="setup-close">✕</button>
+      </div>
+      <div class="modal-body" id="setup-body">
+        <div class="list-state">Loading…</div>
+      </div>
+      <div class="wizard-footer" id="wizard-footer"></div>
+    </div>
+  </div>
+
+  <!-- CSV Import modal -->
+  <div class="modal-overlay" id="csv-overlay">
+    <div class="modal">
+      <div class="modal-header">
+        <h2>Import Estimate CSV</h2>
+        <button class="icon-btn" id="csv-modal-close">✕</button>
+      </div>
+      <div class="modal-body" id="csv-body"></div>
+      <div class="wizard-footer" id="csv-footer"></div>
+    </div>
+  </div>
+
+  <!-- Schema modal -->
+  <div class="modal-overlay" id="schema-overlay">
+    <div class="modal">
+      <div class="modal-header">
+        <h2>Base Schema</h2>
+        <button class="icon-btn" id="schema-close">✕</button>
+      </div>
+      <div class="modal-tabs" id="schema-tabs"></div>
+      <div class="modal-body" id="schema-body">
+        <div class="list-state">Loading…</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+  <script src="app.js"></script>
+</body>
+</html>
