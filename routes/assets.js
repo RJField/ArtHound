@@ -44,6 +44,7 @@ function normalizeAsset(r, productNames = new Map(), itemTypeNames = new Map()) 
     assetNumber: r.fields['ID'] ?? null,
     name:        resolveName(r.fields['Name']) ?? null,
     devName:     resolveName(r.fields['Dev Name']) ?? null,
+    productId,
     product:     productId   ? (productNames.get(productId)   ?? productId)   : null,
     itemType:    itemTypeId  ? (itemTypeNames.get(itemTypeId) ?? itemTypeId)  : null,
     team:        resolveName(r.fields['Team (from Product)']) ?? null,
@@ -52,16 +53,24 @@ function normalizeAsset(r, productNames = new Map(), itemTypeNames = new Map()) 
   };
 }
 
+router.get('/products', async (req, res, next) => {
+  try {
+    const records = await selectAll(config.tables.products, {
+      fields: ['Product'],
+      sort: [{ field: 'Product', direction: 'asc' }],
+    });
+    res.json(records.map(r => ({ id: r.id, name: r.fields['Product'] || r.id })));
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.get('/', async (req, res, next) => {
   try {
     const options = {
       fields: ['Name', 'ID', 'Dev Name', 'Product', 'Item Type', 'Team (from Product)', 'Priority', 'Milestone 4 [Dates]'],
       sort: [{ field: 'Name', direction: 'asc' }],
     };
-    if (req.query.search) {
-      const q = req.query.search.replace(/["'\\]/g, '');
-      options.filterByFormula = `SEARCH("${q}", {Name})`;
-    }
 
     const [records, productNames, itemTypeNames] = await Promise.all([
       selectAll(config.tables.assets, options),
@@ -69,7 +78,12 @@ router.get('/', async (req, res, next) => {
       fetchItemTypeNames(),
     ]);
 
-    res.json(records.map(r => normalizeAsset(r, productNames, itemTypeNames)));
+    let assets = records.map(r => normalizeAsset(r, productNames, itemTypeNames));
+    if (req.query.productId) {
+      assets = assets.filter(a => a.productId === req.query.productId);
+    }
+
+    res.json(assets);
   } catch (err) {
     next(err);
   }

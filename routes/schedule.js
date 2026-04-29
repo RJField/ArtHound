@@ -39,4 +39,40 @@ router.post('/generate', async (req, res, next) => {
   }
 });
 
+router.post('/generate-bulk', async (req, res, next) => {
+  try {
+    const { assetIds } = req.body;
+    if (!Array.isArray(assetIds) || !assetIds.length) {
+      return res.status(400).json({ error: 'assetIds array is required' });
+    }
+
+    const results = await Promise.allSettled(assetIds.map(id => buildSchedule(id)));
+
+    const allRecords = [];
+    const failed = [];
+
+    results.forEach((result, i) => {
+      if (result.status === 'fulfilled') {
+        result.value.tasks.forEach(task => {
+          allRecords.push({
+            'Asset':      [assetIds[i]],
+            'Task':       task.taskName,
+            'Estimate':   task.estimate,
+            'Craft':      task.capCraftIds,
+            'Start Date': task.startDate,
+            'End Date':   task.endDate,
+          });
+        });
+      } else {
+        failed.push({ id: assetIds[i], error: result.reason?.message ?? 'Unknown error' });
+      }
+    });
+
+    const created = allRecords.length ? await createRecords(config.tables.tasks, allRecords) : [];
+    res.json({ created: created.length, failed });
+  } catch (err) {
+    next(err);
+  }
+});
+
 module.exports = router;

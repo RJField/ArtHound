@@ -83,5 +83,8 @@ app.use((err, req, res, _next) => {
   res.status(500).json({ error: err.message });
 });
 
+process.on('uncaughtException',  err => console.error('[uncaughtException]',  err.stack || err.message));
+process.on('unhandledRejection', err => console.error('[unhandledRejection]', err?.stack || err));
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`ArtHound running at http://localhost:${PORT}`));
