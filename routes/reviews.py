@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import os
 import random
@@ -65,12 +66,28 @@ async def submit_review(body: ReviewSubmitBody):
     return {"ok": True, "id": records[0]["id"]}
 
 
+@router.get("")
 @router.get("/")
 async def get_reviews():
-    records = await select_all(
-        config.tables["reviews"],
-        {"sort": [{"field": "Submitted At", "direction": "desc"}]},
+    # Two parallel calls: main (JSON) preserves types for linked-record IDs and
+    # ISO dates; display (string) resolves lookup-of-linked-record fields to
+    # their human-readable primary field values instead of raw record IDs.
+    records, display_records = await asyncio.gather(
+        select_all(
+            config.tables["reviews"],
+            {"sort": [{"field": "Submitted At", "direction": "desc"}]},
+        ),
+        select_all(
+            config.tables["reviews"],
+            {
+                "cellFormat": "string",
+                "timeZone": "America/Los_Angeles",
+                "userLocale": "en-us",
+            },
+        ),
     )
+
+    display_map: dict = {r["id"]: r.get("fields", {}) for r in display_records}
 
     asset_ids = list({
         aid for r in records for aid in (r["fields"].get("Assets") or [])
@@ -91,17 +108,21 @@ async def get_reviews():
         asset_name = ", ".join(asset_name_map.get(aid, aid) for aid in linked_ids)
         attachments = r["fields"].get("Attachments") or []
         screenshot = attachments[0].get("url") if attachments else None
+        f = r["fields"]
+        dn = display_map.get(r["id"], {})
         result.append(
             {
                 "id": r["id"],
                 "assetName": asset_name,
                 "assetIds": linked_ids,
-                "sceneFile": r["fields"].get("Scene File", ""),
-                "artist": r["fields"].get("Artist", ""),
-                "notes": r["fields"].get("Notes", ""),
-                "status": r["fields"].get("Status", "Pending"),
-                "submittedAt": r["fields"].get("Submitted At", ""),
+                "status": f.get("Status", "Pending"),
+                "artist": f.get("Artist", ""),
+                "notes": f.get("Notes", ""),
+                "submittedAt": f.get("Submitted At", ""),
                 "screenshot": screenshot,
+                # All Airtable fields as display strings — rendered dynamically in the UI.
+                # Lookup fields return resolved names; collaborators return display name.
+                "fields": dn,
             }
         )
     return result

@@ -55,6 +55,7 @@ async def get_products():
     return [{"id": r["id"], "name": r["fields"].get("Product", r["id"])} for r in records]
 
 
+@router.get("")
 @router.get("/")
 async def get_assets(productId: Optional[str] = Query(None)):
     records, product_names, item_type_names = await asyncio.gather(

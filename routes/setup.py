@@ -7,9 +7,8 @@ from typing import Any, List, Optional
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from fastapi.responses import Response
 from pydantic import BaseModel
-import httpx
 
-from lib.airtable import select_all, update_records
+from lib.airtable import select_all, update_records, http_client
 from lib.utils import link_id
 import config
 
@@ -46,17 +45,16 @@ def to_config_key(combo: dict, variable_fields: list) -> str:
 async def fetch_base_schema() -> list:
     token = os.environ.get("AIRTABLE_TOKEN")
     base_id = os.environ.get("AIRTABLE_BASE_ID")
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        r = await client.get(
-            f"https://api.airtable.com/v0/meta/bases/{base_id}/tables",
-            headers={"Authorization": f"Bearer {token}"},
+    r = await http_client.get(
+        f"https://api.airtable.com/v0/meta/bases/{base_id}/tables",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    if not r.is_success:
+        body = r.json()
+        raise ValueError(
+            body.get("error", {}).get("message") or f"Schema API returned {r.status_code}"
         )
-        if not r.is_success:
-            body = r.json()
-            raise ValueError(
-                body.get("error", {}).get("message") or f"Schema API returned {r.status_code}"
-            )
-        return r.json().get("tables", [])
+    return r.json().get("tables", [])
 
 
 async def fetch_records_direct(table_id: str, fields: list = []) -> list:
@@ -64,56 +62,53 @@ async def fetch_records_direct(table_id: str, fields: list = []) -> list:
     base_id = os.environ.get("AIRTABLE_BASE_ID")
     records = []
     offset = None
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        while True:
-            params: list[tuple[str, Any]] = [("fields[]", f) for f in fields]
-            if offset:
-                params.append(("offset", offset))
-            r = await client.get(
-                f"https://api.airtable.com/v0/{base_id}/{table_id}",
-                headers={"Authorization": f"Bearer {token}"},
-                params=params,
-            )
-            r.raise_for_status()
-            data = r.json()
-            records.extend(data.get("records", []))
-            offset = data.get("offset")
-            if not offset:
-                break
+    while True:
+        params: list[tuple[str, Any]] = [("fields[]", f) for f in fields]
+        if offset:
+            params.append(("offset", offset))
+        r = await http_client.get(
+            f"https://api.airtable.com/v0/{base_id}/{table_id}",
+            headers={"Authorization": f"Bearer {token}"},
+            params=params,
+        )
+        r.raise_for_status()
+        data = r.json()
+        records.extend(data.get("records", []))
+        offset = data.get("offset")
+        if not offset:
+            break
     return records
 
 
 async def patch_records(table_id: str, updates: list) -> None:
     token = os.environ.get("AIRTABLE_TOKEN")
     base_id = os.environ.get("AIRTABLE_BASE_ID")
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        for i in range(0, len(updates), 10):
-            if i > 0:
-                await asyncio.sleep(0.3)
-            batch = updates[i : i + 10]
-            print(f"[patch_records] batch {i}–{i + len(batch) - 1} of {len(updates)}")
-            r = await client.patch(
-                f"https://api.airtable.com/v0/{base_id}/{table_id}",
-                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-                json={"records": batch},
-            )
-            r.raise_for_status()
+    for i in range(0, len(updates), 10):
+        if i > 0:
+            await asyncio.sleep(0.3)
+        batch = updates[i : i + 10]
+        print(f"[patch_records] batch {i}–{i + len(batch) - 1} of {len(updates)}")
+        r = await http_client.patch(
+            f"https://api.airtable.com/v0/{base_id}/{table_id}",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json={"records": batch},
+        )
+        r.raise_for_status()
 
 
 async def delete_field(table_id: str, field_id: str) -> None:
     token = os.environ.get("AIRTABLE_TOKEN")
     base_id = os.environ.get("AIRTABLE_BASE_ID")
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        r = await client.delete(
-            f"https://api.airtable.com/v0/meta/bases/{base_id}/tables/{table_id}/fields/{field_id}",
-            headers={"Authorization": f"Bearer {token}"},
+    r = await http_client.delete(
+        f"https://api.airtable.com/v0/meta/bases/{base_id}/tables/{table_id}/fields/{field_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    if not r.is_success:
+        body = r.json()
+        raise ValueError(
+            body.get("error", {}).get("message")
+            or f"Failed to delete field {field_id}: {r.status_code}"
         )
-        if not r.is_success:
-            body = r.json()
-            raise ValueError(
-                body.get("error", {}).get("message")
-                or f"Failed to delete field {field_id}: {r.status_code}"
-            )
 
 
 async def add_field_to_table(
@@ -121,19 +116,18 @@ async def add_field_to_table(
 ) -> dict:
     token = os.environ.get("AIRTABLE_TOKEN")
     base_id = os.environ.get("AIRTABLE_BASE_ID")
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        r = await client.post(
-            f"https://api.airtable.com/v0/meta/bases/{base_id}/tables/{table_id}/fields",
-            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-            json={"name": name, "type": field_type, "options": options},
+    r = await http_client.post(
+        f"https://api.airtable.com/v0/meta/bases/{base_id}/tables/{table_id}/fields",
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        json={"name": name, "type": field_type, "options": options},
+    )
+    body = r.json()
+    if not r.is_success:
+        raise ValueError(
+            body.get("error", {}).get("message")
+            or f'Failed to add field "{name}": {r.status_code}'
         )
-        body = r.json()
-        if not r.is_success:
-            raise ValueError(
-                body.get("error", {}).get("message")
-                or f'Failed to add field "{name}": {r.status_code}'
-            )
-        return body
+    return body
 
 
 # ---------------------------------------------------------------------------

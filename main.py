@@ -2,19 +2,27 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import os
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.exceptions import HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-import httpx
 
+from lib.airtable import http_client
 from routes.assets import router as assets_router
 from routes.schedule import router as schedule_router
 from routes.schema import router as schema_router
 from routes.setup import router as setup_router
 from routes.reviews import router as reviews_router
 
-app = FastAPI()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
+    await http_client.aclose()
+
+
+app = FastAPI(lifespan=lifespan)
 
 app.include_router(assets_router, prefix="/api/assets")
 app.include_router(schedule_router, prefix="/api/schedule")
@@ -36,41 +44,40 @@ async def debug():
     headers = {"Authorization": f"Bearer {token}"}
     results = {}
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        try:
-            r = await client.get("https://api.airtable.com/v0/meta/whoami", headers=headers)
-            results["whoami"] = {"status": r.status_code, "body": r.json()}
-        except Exception as e:
-            results["whoami"] = {"error": str(e)}
+    try:
+        r = await http_client.get("https://api.airtable.com/v0/meta/whoami", headers=headers)
+        results["whoami"] = {"status": r.status_code, "body": r.json()}
+    except Exception as e:
+        results["whoami"] = {"error": str(e)}
 
-        try:
-            r = await client.get("https://api.airtable.com/v0/meta/bases", headers=headers)
-            results["bases"] = {"status": r.status_code, "body": r.json()}
-        except Exception as e:
-            results["bases"] = {"error": str(e)}
+    try:
+        r = await http_client.get("https://api.airtable.com/v0/meta/bases", headers=headers)
+        results["bases"] = {"status": r.status_code, "body": r.json()}
+    except Exception as e:
+        results["bases"] = {"error": str(e)}
 
-        try:
-            r = await client.get(
-                f"https://api.airtable.com/v0/meta/bases/{base_id}/tables", headers=headers
-            )
-            body = r.json()
-            results["tables"] = {
-                "status": r.status_code,
-                "names": [t["name"] for t in body.get("tables", [])] if "tables" in body else body,
-            }
-        except Exception as e:
-            results["tables"] = {"error": str(e)}
+    try:
+        r = await http_client.get(
+            f"https://api.airtable.com/v0/meta/bases/{base_id}/tables", headers=headers
+        )
+        body = r.json()
+        results["tables"] = {
+            "status": r.status_code,
+            "names": [t["name"] for t in body.get("tables", [])] if "tables" in body else body,
+        }
+    except Exception as e:
+        results["tables"] = {"error": str(e)}
 
-        try:
-            table = os.environ.get("TABLE_ASSETS", "[Robin] Assets")
-            r = await client.get(
-                f"https://api.airtable.com/v0/{base_id}/{table}",
-                headers=headers,
-                params={"maxRecords": "1"},
-            )
-            results["records"] = {"status": r.status_code, "body": r.json()}
-        except Exception as e:
-            results["records"] = {"error": str(e)}
+    try:
+        table = os.environ.get("TABLE_ASSETS", "[Robin] Assets")
+        r = await http_client.get(
+            f"https://api.airtable.com/v0/{base_id}/{table}",
+            headers=headers,
+            params={"maxRecords": "1"},
+        )
+        results["records"] = {"status": r.status_code, "body": r.json()}
+    except Exception as e:
+        results["records"] = {"error": str(e)}
 
     return {
         "token_prefix": token[:20] + "…" if token else "",

@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ArtHound</title>
-  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="styles.css?v=2">
 </head>
 <body>
 
@@ -407,10 +407,24 @@
       <span class="section-nav-title">Asset Reviews</span>
       <button class="btn btn-sm" id="reviews-refresh-btn" style="margin-left:auto">↻ Refresh</button>
     </div>
-    <div class="section-content">
-      <div id="reviews-list" class="reviews-list">
-        <div class="list-state">Loading…</div>
+    <div class="rv-body">
+
+      <!-- Sidebar -->
+      <div class="rv-sidebar">
+        <div class="rv-filters" id="rv-filters"></div>
+        <div id="rv-list" class="rv-list"><div class="list-state">Loading…</div></div>
       </div>
+
+      <!-- Detail panel -->
+      <div class="rv-main">
+        <div class="rv-placeholder" id="rv-placeholder">← Select a review to view details</div>
+        <div class="rv-detail" id="rv-detail" style="display:none">
+          <div class="rv-screenshot-wrap" id="rv-screenshot-wrap"></div>
+          <div class="rv-actions-bar" id="rv-actions-bar"></div>
+          <div class="rv-fields" id="rv-fields"></div>
+        </div>
+      </div>
+
     </div>
   </div>
 
@@ -465,6 +479,6 @@
   </div><!-- /#view-assets -->
 
   <div class="toast" id="toast"></div>
-  <script src="app.js"></script>
+  <script src="app.js?v=4"></script>
 </body>
 </html>

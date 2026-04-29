@@ -1633,59 +1633,208 @@ const STATUS_COLORS = {
   'Approved':          '#34d399',
   'Changes Requested': '#f87171',
 };
+const STATUS_BG = {
+  'Pending':           'rgba(251,191,36,0.12)',
+  'Approved':          'rgba(52,211,153,0.12)',
+  'Changes Requested': 'rgba(248,113,113,0.12)',
+};
+
+const rvState = {
+  reviews:  [],
+  selected: null,
+  filters:  { status: new Set(), artist: new Set() },
+};
 
 async function loadReviews() {
-  const $list = $('reviews-list');
-  $list.innerHTML = '<div class="list-state">Loading…</div>';
+  $('rv-list').innerHTML = '<div class="list-state">Loading…</div>';
+  renderRvFilters();
   try {
-    const reviews = await apiFetch('/api/reviews');
-    if (!reviews.length) {
-      $list.innerHTML = '<div class="list-state">No reviews yet. Submit one from Maya.</div>';
-      return;
-    }
-    $list.innerHTML = reviews.map(r => {
-      const color  = STATUS_COLORS[r.status] || '#6b748a';
-      const imgSrc = r.screenshot ? `/reviews/${r.screenshot}` : null;
-      const date   = r.submittedAt ? new Date(r.submittedAt).toLocaleString() : '—';
-      return `
-        <div class="review-card" data-id="${esc(r.id)}">
-          ${imgSrc ? `<img class="review-thumb" src="${esc(imgSrc)}" alt="screenshot">` : '<div class="review-thumb review-thumb-empty">No screenshot</div>'}
-          <div class="review-meta">
-            <div class="review-asset">${esc(r.assetName || '—')}</div>
-            <div class="review-detail">${esc(r.sceneFile)} · ${esc(r.artist)} · ${esc(date)}</div>
-            ${r.notes ? `<div class="review-notes">${esc(r.notes)}</div>` : ''}
-          </div>
-          <div class="review-actions">
-            <span class="review-status" style="color:${color}">${esc(r.status)}</span>
-            <select class="review-status-select" data-id="${esc(r.id)}">
-              <option value="Pending"           ${r.status === 'Pending'           ? 'selected' : ''}>Pending</option>
-              <option value="Approved"          ${r.status === 'Approved'          ? 'selected' : ''}>Approved</option>
-              <option value="Changes Requested" ${r.status === 'Changes Requested' ? 'selected' : ''}>Changes Requested</option>
-            </select>
-          </div>
-        </div>
-      `;
-    }).join('');
-
-    $list.querySelectorAll('.review-status-select').forEach(sel => {
-      sel.addEventListener('change', async () => {
-        const id = sel.dataset.id;
-        try {
-          await apiFetch(`/api/reviews/${id}/status`, {
-            method: 'PATCH',
-            body: JSON.stringify({ status: sel.value }),
-          });
-          showToast('Status updated', 'info');
-          loadReviews();
-        } catch (err) {
-          showToast(err.message, 'error');
-        }
-      });
-    });
+    rvState.reviews = await apiFetch('/api/reviews');
+    rvState.selected = null;
+    $('rv-detail').style.display = 'none';
+    $('rv-placeholder').style.display = 'flex';
+    renderRvFilters();
+    renderRvList();
   } catch (err) {
-    $('reviews-list').innerHTML = `<div class="list-state error">${esc(err.message)}</div>`;
+    $('rv-list').innerHTML = `<div class="list-state error">${esc(err.message)}</div>`;
   }
 }
+
+function getRvFiltered() {
+  const { status, artist } = rvState.filters;
+  return rvState.reviews.filter(r => {
+    if (status.size && !status.has(r.status)) return false;
+    if (artist.size && !artist.has(r.artist)) return false;
+    return true;
+  });
+}
+
+function buildRvDropdown(key, label, options, activeSet) {
+  const isFiltered = activeSet.size > 0 && activeSet.size < options.length;
+  const summary = activeSet.size === 0 || activeSet.size === options.length
+    ? 'All'
+    : activeSet.size === 1
+      ? [...activeSet][0]
+      : `${activeSet.size} selected`;
+  return `
+    <div class="mf-dropdown" data-rv-filter="${key}">
+      <button class="mf-dropdown-trigger${isFiltered ? ' mf-filtered' : ''}">
+        <span class="mf-label">${esc(label)}</span>
+        <span class="mf-dropdown-summary">${esc(summary)}</span>
+        <span class="mf-dropdown-arrow">▾</span>
+      </button>
+      <div class="mf-dropdown-panel">
+        <div class="mf-dd-actions">
+          <button class="mf-dd-action" data-filter="${key}" data-action="all">All</button>
+          <button class="mf-dd-action" data-filter="${key}" data-action="none">None</button>
+        </div>
+        ${options.length ? options.map(v => `
+          <label class="mf-dd-option">
+            <input type="checkbox" data-filter="${key}" data-value="${esc(v)}" ${activeSet.has(v) ? 'checked' : ''}>
+            ${esc(v)}
+          </label>
+        `).join('') : '<div class="list-state" style="padding:8px 12px;font-size:12px">No values</div>'}
+      </div>
+    </div>
+  `;
+}
+
+function renderRvFilters() {
+  const $f = $('rv-filters');
+  const allStatuses = [...new Set(rvState.reviews.map(r => r.status).filter(Boolean))].sort();
+  const allArtists  = [...new Set(rvState.reviews.map(r => r.artist).filter(Boolean))].sort();
+
+  $f.innerHTML =
+    buildRvDropdown('status', 'Status', allStatuses, rvState.filters.status) +
+    buildRvDropdown('artist', 'Artist', allArtists,  rvState.filters.artist);
+
+  $f.querySelectorAll('.mf-dropdown-trigger').forEach(trigger => {
+    trigger.addEventListener('click', e => {
+      e.stopPropagation();
+      const dd = trigger.closest('.mf-dropdown');
+      const wasOpen = dd.classList.contains('open');
+      $f.querySelectorAll('.mf-dropdown.open').forEach(d => d.classList.remove('open'));
+      if (!wasOpen) dd.classList.add('open');
+    });
+  });
+
+  $f.querySelectorAll('.mf-dd-option input[type=checkbox]').forEach(cb => {
+    cb.addEventListener('change', () => {
+      const set = rvState.filters[cb.dataset.filter];
+      cb.checked ? set.add(cb.dataset.value) : set.delete(cb.dataset.value);
+      renderRvFilters();
+      renderRvList();
+    });
+  });
+
+  $f.querySelectorAll('.mf-dd-action').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const key = btn.dataset.filter;
+      const set = rvState.filters[key];
+      set.clear();
+      if (btn.dataset.action === 'all') {
+        (key === 'status' ? allStatuses : allArtists).forEach(v => set.add(v));
+      }
+      renderRvFilters();
+      renderRvList();
+    });
+  });
+}
+
+function renderRvList() {
+  const $list = $('rv-list');
+  const filtered = getRvFiltered();
+  if (!filtered.length) {
+    $list.innerHTML = `<div class="list-state">${rvState.reviews.length ? 'No reviews match filters.' : 'No reviews yet.'}</div>`;
+    return;
+  }
+  $list.innerHTML = filtered.map(r => {
+    const color  = STATUS_COLORS[r.status] || '#6b748a';
+    const bg     = STATUS_BG[r.status]     || 'rgba(107,116,138,0.12)';
+    const date   = r.submittedAt ? new Date(r.submittedAt).toLocaleDateString() : '—';
+    return `
+      <div class="rv-item${rvState.selected === r.id ? ' active' : ''}" data-id="${esc(r.id)}">
+        <div class="rv-item-name">${esc(r.assetName || '—')}</div>
+        <div class="rv-item-meta">
+          <span class="rv-item-status" style="color:${color};background:${bg}">${esc(r.status)}</span>
+          <span>${esc(r.artist || '—')}</span>·
+          <span>${esc(date)}</span>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  $list.querySelectorAll('.rv-item').forEach(el =>
+    el.addEventListener('click', () => selectReview(el.dataset.id))
+  );
+}
+
+function selectReview(id) {
+  rvState.selected = id;
+  renderRvList();
+
+  const r = rvState.reviews.find(rv => rv.id === id);
+  if (!r) return;
+
+  $('rv-placeholder').style.display = 'none';
+  $('rv-detail').style.display = 'flex';
+
+  // Screenshot
+  $('rv-screenshot-wrap').innerHTML = r.screenshot
+    ? `<img class="rv-screenshot-img" src="${esc(r.screenshot)}" alt="Screenshot">`
+    : '<div class="rv-no-screenshot">No screenshot attached</div>';
+
+  // Status action bar
+  const statusColor = STATUS_COLORS[r.status] || '#6b748a';
+  $('rv-actions-bar').innerHTML = `
+    <span class="rv-detail-label">Status</span>
+    <select class="review-status-select" id="rv-status-select">
+      <option value="Pending"           ${r.status === 'Pending'           ? 'selected' : ''}>Pending</option>
+      <option value="Approved"          ${r.status === 'Approved'          ? 'selected' : ''}>Approved</option>
+      <option value="Changes Requested" ${r.status === 'Changes Requested' ? 'selected' : ''}>Changes Requested</option>
+    </select>
+    <span class="rv-status-pill" style="color:${statusColor}">● ${esc(r.status)}</span>
+  `;
+  document.getElementById('rv-status-select').addEventListener('change', async function () {
+    const newStatus = this.value;
+    try {
+      await apiFetch(`/api/reviews/${r.id}/status`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: newStatus }),
+      });
+      r.status = newStatus;
+      showToast('Status updated', 'info');
+      selectReview(id);
+      renderRvList();
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  });
+
+  // Field boxes — rendered dynamically from Airtable's string-formatted fields.
+  // Fields in this set are shown elsewhere (action bar, screenshot, notes box).
+  const RV_SKIP = new Set(['Status', 'Attachments', 'Assets', 'Notes']);
+  const rvField = (label, val) => `
+    <div class="rv-field">
+      <div class="rv-field-label">${esc(label)}</div>
+      <div class="rv-field-value">${esc(val || '—')}</div>
+    </div>`;
+  const dynFields = Object.entries(r.fields || {})
+    .filter(([k, v]) => !RV_SKIP.has(k) && v !== '' && v != null)
+    .map(([k, v]) => rvField(k, v))
+    .join('');
+  $('rv-fields').innerHTML = dynFields + (r.notes ? `
+    <div class="rv-field rv-field-notes">
+      <div class="rv-field-label">Notes</div>
+      <div class="rv-field-value">${esc(r.notes)}</div>
+    </div>` : '');
+}
+
+// Close filter dropdowns when clicking outside
+document.addEventListener('click', () => {
+  const $f = document.getElementById('rv-filters');
+  if ($f) $f.querySelectorAll('.mf-dropdown.open').forEach(d => d.classList.remove('open'));
+});
 
 document.getElementById('reviews-refresh-btn').addEventListener('click', loadReviews);
 
