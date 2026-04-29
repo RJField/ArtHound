@@ -20,11 +20,19 @@ class AssetIdsBody(BaseModel):
 
 
 @router.get("/tasks")
-async def get_asset_tasks(assetId: str = Query(...)):
+async def get_asset_tasks(assetId: str = Query(...), assetName: Optional[str] = Query(None)):
+    # Airtable formulas cannot reference linked record IDs directly — {Asset}
+    # returns the primary field value (name). Filter by name when available;
+    # fall back to a server-side lookup if the caller didn't supply it.
+    if not assetName:
+        from lib.airtable import find_record
+        rec = await find_record(config.tables["assets"], assetId)
+        assetName = rec["fields"].get("Name", "")
+    escaped = assetName.replace('"', '\\"')
     records = await select_all(
         config.tables["tasks"],
         {
-            "filterByFormula": f'FIND("{assetId}", ARRAYJOIN({{Asset}}))',
+            "filterByFormula": f'{{Asset}} = "{escaped}"',
             "fields": ["Task", "Estimate", "Start Date", "End Date"],
             "sort": [{"field": "Start Date", "direction": "asc"}],
         },
