@@ -438,28 +438,48 @@
     </div>
 
     <div class="am-body">
-      <div class="am-products-col">
+
+      <!-- L1: Products -->
+      <div class="am-l1">
         <div class="am-col-label">Products</div>
         <div id="am-product-list"><div class="list-state">Loading…</div></div>
       </div>
-      <div class="am-assets-col">
-        <div id="am-no-product" class="am-placeholder">← Select a product to view its assets</div>
-        <div id="am-assets-content" style="display:none; height:100%; flex-direction:column;">
+
+      <!-- L2: Assets + generate -->
+      <div class="am-l2">
+        <div id="am-no-product" class="am-placeholder">← Select a product</div>
+        <div id="am-assets-content" style="display:none; flex-direction:column; flex:1; overflow:hidden;">
           <div class="am-assets-header">
             <span id="am-product-name" class="am-product-name"></span>
             <label class="am-check-label">
-              <input type="checkbox" id="am-select-all"> Select all
+              <input type="checkbox" id="am-select-all"> All
             </label>
           </div>
-          <div id="am-asset-grid" class="am-asset-grid"></div>
+          <div id="am-asset-list" class="am-asset-list"></div>
+          <div class="am-l2-footer">
+            <span id="am-sel-count" class="am-sel-count">No assets selected</span>
+            <button class="btn btn-success btn-sm" id="am-generate-btn" disabled>Generate Work</button>
+            <span id="am-gen-status" class="status-msg"></span>
+          </div>
         </div>
       </div>
-    </div>
 
-    <div class="am-footer">
-      <span id="am-sel-count" class="am-sel-count">No assets selected</span>
-      <button class="btn btn-success" id="am-generate-btn" disabled>Generate Schedules</button>
-      <span id="am-gen-status" class="status-msg"></span>
+      <!-- Right panel: tasks + meta -->
+      <div class="am-detail">
+        <div class="am-detail-box">
+          <div class="am-detail-box-title">Work Tasks</div>
+          <div id="am-tasks-content" class="am-detail-box-body">
+            <div class="list-state">Select an asset to view its tasks</div>
+          </div>
+        </div>
+        <div class="am-detail-box">
+          <div class="am-detail-box-title">Asset Details</div>
+          <div id="am-meta-content" class="am-detail-box-body">
+            <div class="list-state">Select an asset to view details</div>
+          </div>
+        </div>
+      </div>
+
     </div>
 
     <!-- Schema modal -->
@@ -479,6 +499,6 @@
   </div><!-- /#view-assets -->
 
   <div class="toast" id="toast"></div>
-  <script src="app.js?v=4"></script>
+  <script src="app.js?v=6"></script>
 </body>
 </html>

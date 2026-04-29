@@ -3,6 +3,7 @@ const state = {
   selectedProductId: null,
   assets:            [],
   selectedAssetIds:  new Set(),
+  focusedAssetId:    null,
   homeView:          'home',
 };
 
@@ -106,15 +107,15 @@ function showToast(msg, type = 'info') {
 
 // -- Asset Manager --
 
-const $amProductList  = $('am-product-list');
-const $amNoProduct    = $('am-no-product');
+const $amProductList   = $('am-product-list');
+const $amNoProduct     = $('am-no-product');
 const $amAssetsContent = $('am-assets-content');
-const $amProductName  = $('am-product-name');
-const $amSelectAll    = $('am-select-all');
-const $amAssetGrid    = $('am-asset-grid');
-const $amSelCount     = $('am-sel-count');
-const $amGenerateBtn  = $('am-generate-btn');
-const $amGenStatus    = $('am-gen-status');
+const $amProductName   = $('am-product-name');
+const $amSelectAll     = $('am-select-all');
+const $amAssetList     = $('am-asset-list');
+const $amSelCount      = $('am-sel-count');
+const $amGenerateBtn   = $('am-generate-btn');
+const $amGenStatus     = $('am-gen-status');
 
 async function loadProducts() {
   $amProductList.innerHTML = '<div class="list-state">Loading…</div>';
@@ -144,31 +145,34 @@ function renderProductList() {
 async function selectProduct(productId) {
   state.selectedProductId = productId;
   state.selectedAssetIds.clear();
+  state.focusedAssetId = null;
   renderProductList();
   updateGenerateBar();
+  $('am-tasks-content').innerHTML = '<div class="list-state">Select an asset to view its tasks</div>';
+  $('am-meta-content').innerHTML  = '<div class="list-state">Select an asset to view details</div>';
 
   const product = state.products.find(p => p.id === productId);
   $amProductName.textContent = product?.name ?? '';
   $amSelectAll.checked = false;
-  $amAssetGrid.innerHTML = '<div class="list-state">Loading…</div>';
+  $amAssetList.innerHTML = '<div class="list-state">Loading…</div>';
   $amNoProduct.style.display = 'none';
   $amAssetsContent.style.display = 'flex';
 
   try {
     state.assets = await apiFetch(`/api/assets?productId=${encodeURIComponent(productId)}`);
-    renderAssetGrid();
+    renderAssetList();
   } catch (err) {
-    $amAssetGrid.innerHTML = `<div class="list-state error">${esc(err.message)}</div>`;
+    $amAssetList.innerHTML = `<div class="list-state error">${esc(err.message)}</div>`;
   }
 }
 
-function renderAssetGrid() {
+function renderAssetList() {
   if (!state.assets.length) {
-    $amAssetGrid.innerHTML = '<div class="list-state">No assets for this product</div>';
+    $amAssetList.innerHTML = '<div class="list-state">No assets for this product</div>';
     return;
   }
-  $amAssetGrid.innerHTML = state.assets.map(a => `
-    <div class="am-asset-card${state.selectedAssetIds.has(a.id) ? ' selected' : ''}" data-id="${esc(a.id)}">
+  $amAssetList.innerHTML = state.assets.map(a => `
+    <div class="am-asset-row${state.focusedAssetId === a.id ? ' am-asset-focused' : ''}" data-id="${esc(a.id)}">
       <input type="checkbox" class="am-asset-check" data-id="${esc(a.id)}"
              ${state.selectedAssetIds.has(a.id) ? 'checked' : ''}>
       <div class="am-asset-info">
@@ -181,13 +185,13 @@ function renderAssetGrid() {
     </div>
   `).join('');
 
-  $amAssetGrid.querySelectorAll('.am-asset-card').forEach(card => {
-    card.addEventListener('click', e => {
+  $amAssetList.querySelectorAll('.am-asset-row').forEach(row => {
+    row.addEventListener('click', e => {
       if (e.target.type === 'checkbox') return;
-      toggleAsset(card.dataset.id);
+      focusAsset(row.dataset.id);
     });
-    card.querySelector('.am-asset-check').addEventListener('change', e => {
-      toggleAsset(card.dataset.id, e.target.checked);
+    row.querySelector('.am-asset-check').addEventListener('change', e => {
+      toggleAsset(row.dataset.id, e.target.checked);
     });
   });
 }
@@ -197,13 +201,63 @@ function toggleAsset(id, force) {
   if (checked) state.selectedAssetIds.add(id);
   else state.selectedAssetIds.delete(id);
 
-  const card = $amAssetGrid.querySelector(`.am-asset-card[data-id="${id}"]`);
-  if (card) {
-    card.classList.toggle('selected', checked);
-    card.querySelector('.am-asset-check').checked = checked;
-  }
+  const row = $amAssetList.querySelector(`.am-asset-row[data-id="${id}"]`);
+  if (row) row.querySelector('.am-asset-check').checked = checked;
   $amSelectAll.checked = state.assets.length > 0 && state.assets.every(a => state.selectedAssetIds.has(a.id));
   updateGenerateBar();
+}
+
+async function focusAsset(id) {
+  state.focusedAssetId = id;
+  renderAssetList();
+
+  const asset = state.assets.find(a => a.id === id);
+  renderAssetMeta(asset);
+
+  $('am-tasks-content').innerHTML = '<div class="list-state">Loading…</div>';
+  try {
+    const tasks = await apiFetch(`/api/schedule/tasks?assetId=${encodeURIComponent(id)}`);
+    renderAssetTasks(tasks);
+  } catch (err) {
+    $('am-tasks-content').innerHTML = `<div class="list-state error">${esc(err.message)}</div>`;
+  }
+}
+
+function renderAssetTasks(tasks) {
+  if (!tasks.length) {
+    $('am-tasks-content').innerHTML = '<div class="list-state">No tasks yet — use Generate Work to create them.</div>';
+    return;
+  }
+  $('am-tasks-content').innerHTML = tasks.map(t => `
+    <div class="am-task-row">
+      <div>
+        <div class="am-task-name">${esc(t.task)}</div>
+        <div class="am-task-dates">${esc(t.startDate ? fmtDate(t.startDate) : '—')} → ${esc(t.endDate ? fmtDate(t.endDate) : '—')}</div>
+      </div>
+      <div class="am-task-estimate">${t.estimate != null ? t.estimate + 'd' : '—'}</div>
+    </div>
+  `).join('');
+}
+
+function renderAssetMeta(asset) {
+  if (!asset) return;
+  const mf = (label, val) => val != null && val !== '' ? `
+    <div class="am-meta-field">
+      <div class="am-meta-label">${esc(label)}</div>
+      <div class="am-meta-value">${esc(String(val))}</div>
+    </div>` : '';
+  $('am-meta-content').innerHTML = `
+    <div class="am-meta-grid">
+      ${mf('Name', asset.name)}
+      ${mf('Dev Name', asset.devName)}
+      ${mf('Item Type', asset.itemType)}
+      ${mf('Product', asset.product)}
+      ${mf('Team', asset.team)}
+      ${asset.priority != null ? mf('Priority', `P${asset.priority}`) : ''}
+      ${mf('Project Date', asset.projectDate ? fmtDate(asset.projectDate.slice(0, 10)) : null)}
+      ${asset.assetNumber != null ? mf('Asset #', asset.assetNumber) : ''}
+    </div>
+  `;
 }
 
 $amSelectAll.addEventListener('change', () => {
@@ -212,7 +266,7 @@ $amSelectAll.addEventListener('change', () => {
     if (checked) state.selectedAssetIds.add(a.id);
     else state.selectedAssetIds.delete(a.id);
   });
-  renderAssetGrid();
+  renderAssetList();
   updateGenerateBar();
 });
 
@@ -241,12 +295,17 @@ $amGenerateBtn.addEventListener('click', async () => {
       : '';
     $amGenStatus.innerHTML = `<span class="status-ok">✓ ${result.created} tasks written${failMsg}</span>`;
     showToast(`${result.created} tasks created for ${assetIds.length} assets`, 'success');
+    // Refresh task panel if the focused asset was part of this batch
+    if (state.focusedAssetId && assetIds.includes(state.focusedAssetId)) {
+      const tasks = await apiFetch(`/api/schedule/tasks?assetId=${encodeURIComponent(state.focusedAssetId)}`);
+      renderAssetTasks(tasks);
+    }
   } catch (err) {
     $amGenStatus.innerHTML = `<span class="status-err">✗ ${esc(err.message)}</span>`;
     showToast(err.message, 'error');
   } finally {
     $amGenerateBtn.disabled = false;
-    $amGenerateBtn.textContent = 'Generate Schedules';
+    $amGenerateBtn.textContent = 'Generate Work';
   }
 });
 

@@ -1,10 +1,10 @@
 import asyncio
-from typing import List
+from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
-from lib.airtable import create_records
+from lib.airtable import select_all, create_records
 from lib.scheduler import build_schedule
 import config
 
@@ -17,6 +17,28 @@ class AssetIdBody(BaseModel):
 
 class AssetIdsBody(BaseModel):
     assetIds: List[str]
+
+
+@router.get("/tasks")
+async def get_asset_tasks(assetId: str = Query(...)):
+    records = await select_all(
+        config.tables["tasks"],
+        {
+            "filterByFormula": f'FIND("{assetId}", ARRAYJOIN({{Asset}}))',
+            "fields": ["Task", "Estimate", "Start Date", "End Date"],
+            "sort": [{"field": "Start Date", "direction": "asc"}],
+        },
+    )
+    return [
+        {
+            "id": r["id"],
+            "task": r["fields"].get("Task", ""),
+            "estimate": r["fields"].get("Estimate"),
+            "startDate": r["fields"].get("Start Date", ""),
+            "endDate": r["fields"].get("End Date", ""),
+        }
+        for r in records
+    ]
 
 
 @router.post("/preview")
