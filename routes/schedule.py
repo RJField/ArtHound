@@ -1,10 +1,11 @@
 import asyncio
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
-from lib.airtable import select_all, create_records
+from lib.airtable import select_all, create_records, find_record
+from lib.auth import CurrentUser, require_studio
 from lib.scheduler import build_schedule
 import config
 
@@ -49,15 +50,37 @@ async def get_asset_tasks(assetId: str = Query(...), assetName: Optional[str] = 
     ]
 
 
+@router.get("/tasks/{task_id}")
+async def get_task_detail(task_id: str):
+    record, display_records = await asyncio.gather(
+        find_record(config.tables["tasks"], task_id),
+        select_all(
+            config.tables["tasks"],
+            {
+                "filterByFormula": f'RECORD_ID()="{task_id}"',
+                "cellFormat": "string",
+                "timeZone": "America/Los_Angeles",
+                "userLocale": "en-us",
+            },
+        ),
+    )
+    display_fields = display_records[0]["fields"] if display_records else {}
+    return {
+        "id": record["id"],
+        "fields": record.get("fields", {}),
+        "displayFields": display_fields,
+    }
+
+
 @router.post("/preview")
-async def preview_schedule(body: AssetIdBody):
+async def preview_schedule(body: AssetIdBody, _: CurrentUser = Depends(require_studio)):
     if not body.assetId:
         raise HTTPException(status_code=400, detail="assetId is required")
     return await build_schedule(body.assetId)
 
 
 @router.post("/generate")
-async def generate_schedule(body: AssetIdBody):
+async def generate_schedule(body: AssetIdBody, _: CurrentUser = Depends(require_studio)):
     if not body.assetId:
         raise HTTPException(status_code=400, detail="assetId is required")
 
@@ -80,7 +103,7 @@ async def generate_schedule(body: AssetIdBody):
 
 
 @router.post("/generate-bulk")
-async def generate_bulk(body: AssetIdsBody):
+async def generate_bulk(body: AssetIdsBody, _: CurrentUser = Depends(require_studio)):
     if not body.assetIds:
         raise HTTPException(status_code=400, detail="assetIds array is required")
 

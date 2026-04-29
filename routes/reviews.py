@@ -6,12 +6,24 @@ import string
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+from urllib.parse import quote
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from lib.airtable import select_all, create_records, update_records
+from lib.airtable import select_all, create_records, update_records, http_client
+from lib.auth import CurrentUser, require_studio
 import config
+
+
+def _at_headers():
+    return {"Authorization": f"Bearer {os.environ.get('AIRTABLE_TOKEN', '')}"}
+
+
+def _comments_url(review_id: str) -> str:
+    base = os.environ.get("AIRTABLE_BASE_ID", "")
+    table = config.tables["reviews"]
+    return f"https://api.airtable.com/v0/{base}/{table}/{review_id}/comments"
 
 router = APIRouter()
 
@@ -32,7 +44,7 @@ class ReviewSubmitBody(BaseModel):
 
 
 @router.post("/submit")
-async def submit_review(body: ReviewSubmitBody):
+async def submit_review(body: ReviewSubmitBody, _: CurrentUser = Depends(require_studio)):
     asset_link = []
     if body.assetName:
         escaped = body.assetName.replace('"', '\\"')
@@ -128,16 +140,75 @@ async def get_reviews():
     return result
 
 
+@router.get("/status-options")
+async def get_status_options():
+    token = os.environ.get("AIRTABLE_TOKEN", "")
+    base_id = os.environ.get("AIRTABLE_BASE_ID", "")
+    r = await http_client.get(
+        f"https://api.airtable.com/v0/meta/bases/{base_id}/tables",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    if not r.is_success:
+        raise HTTPException(status_code=502, detail=f"Airtable metadata API returned {r.status_code}")
+    tables = r.json().get("tables", [])
+    table = next((t for t in tables if t["name"] == config.tables["reviews"]), None)
+    if not table:
+        raise HTTPException(status_code=404, detail=f"Reviews table '{config.tables['reviews']}' not found in schema")
+    field = next((f for f in table.get("fields", []) if f["name"] == "Status"), None)
+    if not field:
+        raise HTTPException(status_code=404, detail="Status field not found in reviews table")
+    choices = [c["name"] for c in field.get("options", {}).get("choices", [])]
+    return {"options": choices}
+
+
 class StatusUpdate(BaseModel):
     status: str
 
 
 @router.patch("/{review_id}/status")
-async def update_review_status(review_id: str, body: StatusUpdate):
+async def update_review_status(
+    review_id: str, body: StatusUpdate, _: CurrentUser = Depends(require_studio)
+):
     if not body.status:
         raise HTTPException(status_code=400, detail="status required")
-    await update_records(
-        config.tables["reviews"],
-        [{"id": review_id, "fields": {"Status": body.status}}],
+    base_id = os.environ.get("AIRTABLE_BASE_ID", "")
+    table_enc = quote(config.tables["reviews"], safe="")
+    r = await http_client.patch(
+        f"https://api.airtable.com/v0/{base_id}/{table_enc}",
+        headers={**_at_headers(), "Content-Type": "application/json"},
+        json={"records": [{"id": review_id, "fields": {"Status": body.status}}]},
     )
+    if not r.is_success:
+        msg = r.json().get("error", {}).get("message", f"Airtable returned {r.status_code}")
+        raise HTTPException(status_code=502, detail=msg)
     return {"ok": True}
+
+
+@router.get("/{review_id}/comments")
+async def get_comments(review_id: str):
+    r = await http_client.get(_comments_url(review_id), headers=_at_headers())
+    if not r.is_success:
+        msg = r.json().get("error", {}).get("message", f"Airtable returned {r.status_code}")
+        raise HTTPException(status_code=502, detail=msg)
+    return r.json().get("comments", [])
+
+
+class CommentBody(BaseModel):
+    text: str
+
+
+@router.post("/{review_id}/comments")
+async def add_comment(
+    review_id: str, body: CommentBody, _: CurrentUser = Depends(require_studio)
+):
+    if not body.text.strip():
+        raise HTTPException(status_code=400, detail="Comment text is required")
+    r = await http_client.post(
+        _comments_url(review_id),
+        headers={**_at_headers(), "Content-Type": "application/json"},
+        json={"text": body.text},
+    )
+    if not r.is_success:
+        msg = r.json().get("error", {}).get("message", f"Airtable returned {r.status_code}")
+        raise HTTPException(status_code=502, detail=msg)
+    return r.json()

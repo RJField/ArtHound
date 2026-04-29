@@ -4,11 +4,12 @@ import os
 from pathlib import Path
 from typing import Any, List, Optional
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from fastapi.responses import Response
 from pydantic import BaseModel
 
 from lib.airtable import select_all, update_records, http_client
+from lib.auth import CurrentUser, require_studio
 from lib.utils import link_id
 import config
 
@@ -401,7 +402,11 @@ class CreateMatrixBody(BaseModel):
 
 
 @router.post("/create-matrix")
-async def create_matrix(body: CreateMatrixBody, background_tasks: BackgroundTasks):
+async def create_matrix(
+    body: CreateMatrixBody,
+    background_tasks: BackgroundTasks,
+    _: CurrentUser = Depends(require_studio),
+):
     variable_fields = [v.field for v in body.variables]
 
     tables = await fetch_base_schema()
@@ -490,7 +495,7 @@ class ImportCSVBody(BaseModel):
 
 
 @router.post("/import-csv")
-async def import_csv(body: ImportCSVBody):
+async def import_csv(body: ImportCSVBody, _: CurrentUser = Depends(require_studio)):
     if not body.headers or not body.rows:
         raise HTTPException(status_code=400, detail="headers and rows are required")
 

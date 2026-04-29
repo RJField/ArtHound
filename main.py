@@ -3,12 +3,15 @@ load_dotenv()
 
 import os
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Depends, Request
 from fastapi.exceptions import HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from lib.airtable import http_client
+from lib.airtable import http_client, find_record
+from lib.auth import CurrentUser, get_current_user
+import config
 from routes.assets import router as assets_router
 from routes.schedule import router as schedule_router
 from routes.schema import router as schema_router
@@ -24,65 +27,51 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-app.include_router(assets_router, prefix="/api/assets")
-app.include_router(schedule_router, prefix="/api/schedule")
-app.include_router(schema_router, prefix="/api/schema")
-app.include_router(setup_router, prefix="/api/setup")
-app.include_router(reviews_router, prefix="/api/reviews")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:8000",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:8000",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+_auth = [Depends(get_current_user)]
+app.include_router(assets_router,   prefix="/api/assets",   dependencies=_auth)
+app.include_router(schedule_router, prefix="/api/schedule", dependencies=_auth)
+app.include_router(schema_router,   prefix="/api/schema",   dependencies=_auth)
+app.include_router(setup_router,    prefix="/api/setup",    dependencies=_auth)
+app.include_router(reviews_router,  prefix="/api/reviews",  dependencies=_auth)
 
 
+# Generic record fetch — table_key is one of the keys in config.tables (e.g. "assets", "tasks").
+# DB-agnostic contract: fetch a single entity by ID from a named collection.
+@app.get("/api/records/{table_key}/{record_id}")
+async def get_record_by_id(
+    table_key: str, record_id: str, _: CurrentUser = Depends(get_current_user)
+):
+    if table_key not in config.tables:
+        raise HTTPException(status_code=404, detail=f"Unknown table: {table_key}")
+    try:
+        record = await find_record(config.tables[table_key], record_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Record not found")
+    return {"id": record["id"], "fields": record.get("fields", {})}
+
+
+# Public endpoint — supplies Supabase bootstrap config to the frontend.
+# Anon key is intentionally public; JWT secret never leaves the server.
 @app.get("/api/config")
 async def get_config():
     base_id = os.environ.get("AIRTABLE_BASE_ID", "")
-    return {"airtableUrl": f"https://airtable.com/{base_id}" if base_id else None}
-
-
-@app.get("/api/debug")
-async def debug():
-    token = os.environ.get("AIRTABLE_TOKEN", "")
-    base_id = os.environ.get("AIRTABLE_BASE_ID", "")
-    headers = {"Authorization": f"Bearer {token}"}
-    results = {}
-
-    try:
-        r = await http_client.get("https://api.airtable.com/v0/meta/whoami", headers=headers)
-        results["whoami"] = {"status": r.status_code, "body": r.json()}
-    except Exception as e:
-        results["whoami"] = {"error": str(e)}
-
-    try:
-        r = await http_client.get("https://api.airtable.com/v0/meta/bases", headers=headers)
-        results["bases"] = {"status": r.status_code, "body": r.json()}
-    except Exception as e:
-        results["bases"] = {"error": str(e)}
-
-    try:
-        r = await http_client.get(
-            f"https://api.airtable.com/v0/meta/bases/{base_id}/tables", headers=headers
-        )
-        body = r.json()
-        results["tables"] = {
-            "status": r.status_code,
-            "names": [t["name"] for t in body.get("tables", [])] if "tables" in body else body,
-        }
-    except Exception as e:
-        results["tables"] = {"error": str(e)}
-
-    try:
-        table = os.environ.get("TABLE_ASSETS", "[Robin] Assets")
-        r = await http_client.get(
-            f"https://api.airtable.com/v0/{base_id}/{table}",
-            headers=headers,
-            params={"maxRecords": "1"},
-        )
-        results["records"] = {"status": r.status_code, "body": r.json()}
-    except Exception as e:
-        results["records"] = {"error": str(e)}
-
     return {
-        "token_prefix": token[:20] + "…" if token else "",
-        "base_id": base_id,
-        "results": results,
+        "airtableUrl":     f"https://airtable.com/{base_id}" if base_id else None,
+        "supabaseUrl":     os.environ.get("SUPABASE_URL", ""),
+        "supabaseAnonKey": os.environ.get("SUPABASE_ANON_KEY", ""),
     }
 
 
