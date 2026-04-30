@@ -19,6 +19,7 @@ from routes.schema import router as schema_router
 from routes.setup import router as setup_router
 from routes.reviews import router as reviews_router
 from routes.workflow_steps import router as workflow_steps_router
+from routes.payload import router as payload_router
 
 
 @asynccontextmanager
@@ -50,6 +51,9 @@ app.include_router(schema_router,   prefix="/api/schema",   dependencies=_auth)
 app.include_router(setup_router,    prefix="/api/setup",    dependencies=_auth)
 app.include_router(reviews_router,        prefix="/api/reviews",         dependencies=_auth)
 app.include_router(workflow_steps_router, prefix="/api/workflow-steps",   dependencies=_auth)
+# payload router manages its own auth per-route: /receive/{token} is public,
+# all other endpoints carry explicit Depends(require_studio)
+app.include_router(payload_router,        prefix="/api/payloads")
 
 
 # Generic record fetch — table_key is one of the keys in config.tables (e.g. "assets", "tasks").

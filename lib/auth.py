@@ -32,6 +32,7 @@ class CurrentUser:
     email: str
     role: str
     studio_id: str | None = field(default=None)
+    vendor_id: str | None = field(default=None)
 
 
 async def get_current_user(
@@ -84,6 +85,8 @@ async def get_current_user(
         )
 
     studio_id = None
+    vendor_id = None
+
     if role == "studio":
         r = await db_client.get(
             _url("/rest/v1/studio_members"),
@@ -93,12 +96,22 @@ async def get_current_user(
         rows = r.json()
         if rows:
             studio_id = rows[0]["studio_id"]
+    elif role == "vendor":
+        r = await db_client.get(
+            _url("/rest/v1/vendor_members"),
+            params={"select": "vendor_id", "user_id": f"eq.{payload['sub']}"},
+            headers=_headers(),
+        )
+        rows = r.json()
+        if rows:
+            vendor_id = rows[0]["vendor_id"]
 
     return CurrentUser(
         id=payload["sub"],
         email=payload.get("email", ""),
         role=role,
         studio_id=studio_id,
+        vendor_id=vendor_id,
     )
 
 
@@ -107,5 +120,19 @@ def require_studio(user: CurrentUser = Depends(get_current_user)) -> CurrentUser
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Studio access required",
+        )
+    return user
+
+
+def require_vendor(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
+    if user.role != "vendor":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Vendor access required",
+        )
+    if not user.vendor_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No vendor linked to this account",
         )
     return user

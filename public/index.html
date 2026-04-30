@@ -212,53 +212,20 @@
     </div>
   </div>
 
-  <!-- ── INCOMING SCOPE VIEW ── -->
+  <!-- ── INCOMING SCOPE VIEW (Vendor Inbox) ── -->
   <div id="view-incoming-scope" class="view" style="display:none">
 
     <div class="section-nav">
       <button class="icon-btn" id="incoming-scope-home-btn" title="Back to home">←</button>
       <span class="section-nav-title">Incoming Scope</span>
       <div class="section-nav-actions">
-        <button class="icon-btn" id="is-schema-btn" title="View base schema">⊞</button>
+        <button class="btn btn-sm" id="is-refresh-btn">↻ Refresh</button>
       </div>
     </div>
 
-    <div class="am-body">
-      <div class="am-products-col">
-        <div class="am-col-label">Products</div>
-        <div id="is-product-list"><div class="list-state">Loading…</div></div>
-      </div>
-      <div class="am-assets-col">
-        <div id="is-no-product" class="am-placeholder">← Select a product to view its assets</div>
-        <div id="is-assets-content" style="display:none; height:100%; flex-direction:column;">
-          <div class="am-assets-header">
-            <span id="is-product-name" class="am-product-name"></span>
-            <label class="am-check-label">
-              <input type="checkbox" id="is-select-all"> Select all
-            </label>
-          </div>
-          <div id="is-asset-grid" class="am-asset-grid"></div>
-        </div>
-      </div>
-    </div>
-
-    <div class="am-footer">
-      <span id="is-sel-count" class="am-sel-count">No assets selected</span>
-      <button class="btn btn-success" id="is-generate-btn" disabled>Generate Schedules</button>
-      <span id="is-gen-status" class="status-msg"></span>
-    </div>
-
-    <!-- Schema modal (Incoming Scope) -->
-    <div class="modal-overlay" id="is-schema-overlay">
-      <div class="modal">
-        <div class="modal-header">
-          <h2>Base Schema</h2>
-          <button class="icon-btn" id="is-schema-close">✕</button>
-        </div>
-        <div class="modal-tabs" id="is-schema-tabs"></div>
-        <div class="modal-body" id="is-schema-body">
-          <div class="list-state">Loading…</div>
-        </div>
+    <div class="is-inbox-body">
+      <div id="is-inbox-list" class="is-inbox-list">
+        <div class="list-state">Loading…</div>
       </div>
     </div>
 
@@ -571,7 +538,10 @@
           <div id="am-asset-list" class="am-asset-list"></div>
           <div class="am-l2-footer">
             <span id="am-sel-count" class="am-sel-count">No assets selected</span>
-            <button class="btn btn-success btn-sm" id="am-generate-btn" disabled>Generate Work</button>
+            <div class="am-l2-footer-row">
+              <button class="btn btn-success btn-sm" id="am-generate-btn" disabled>Generate Work</button>
+              <button class="btn btn-primary btn-sm" id="am-send-vendor-btn" disabled>Manage Sharing</button>
+            </div>
             <span id="am-gen-status" class="status-msg"></span>
           </div>
         </div>
@@ -621,6 +591,21 @@
         <div class="modal-footer">
           <button class="btn btn-primary btn-sm" id="field-settings-save">Save</button>
         </div>
+      </div>
+    </div>
+
+    <!-- Manage Sharing modal -->
+    <div class="modal-overlay" id="send-vendor-overlay">
+      <div class="modal modal-sm">
+        <div class="modal-header">
+          <div class="wizard-header-left">
+            <h2>Manage Sharing</h2>
+            <div class="wizard-steps" id="sv-steps"></div>
+          </div>
+          <button class="icon-btn" id="sv-close">✕</button>
+        </div>
+        <div class="modal-body" id="sv-body"></div>
+        <div class="wizard-footer" id="sv-footer"></div>
       </div>
     </div>
 

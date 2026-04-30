@@ -2654,3 +2654,93 @@ body {
   color: var(--text-muted);
   text-align: center;
 }
+
+/* ---- Vendor Inbox (Incoming Scope) ---- */
+
+.is-inbox-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px 24px;
+}
+.is-inbox-body::-webkit-scrollbar       { width: 4px; }
+.is-inbox-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+.is-inbox-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 860px;
+}
+
+.is-inbox-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  transition: border-color 0.15s;
+}
+.is-inbox-card:hover { border-color: var(--accent); }
+
+.is-inbox-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+  flex-shrink: 0;
+}
+
+.is-inbox-from {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--accent);
+}
+
+.is-inbox-date {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* ---- Manage Sharing wizard ---- */
+
+.am-l2-footer-row .btn { flex: 1; }
+
+.sv-shares-section {
+  margin-top: 14px;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+.sv-shares-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+.sv-share-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border);
+}
+.sv-share-row:last-child { border-bottom: none; }
+.sv-share-info { display: flex; flex-direction: column; gap: 2px; }
+.sv-share-vendor { font-size: 13px; font-weight: 500; }
+.sv-share-date   { font-size: 11px; color: var(--text-muted); }
+
+.sv-asset-list {
+  max-height: 260px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.sv-asset-list::-webkit-scrollbar       { width: 4px; }
+.sv-asset-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+.sv-asset-list .am-asset-row { border-bottom: 1px solid var(--border); }
+.sv-asset-list .am-asset-row:last-child { border-bottom: none; }
