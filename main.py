@@ -20,6 +20,7 @@ from routes.setup import router as setup_router
 from routes.reviews import router as reviews_router
 from routes.workflow_steps import router as workflow_steps_router
 from routes.payload import router as payload_router
+from routes.numbersbot import router as numbersbot_router
 
 
 @asynccontextmanager
@@ -54,6 +55,7 @@ app.include_router(workflow_steps_router, prefix="/api/workflow-steps",   depend
 # payload router manages its own auth per-route: /receive/{token} is public,
 # all other endpoints carry explicit Depends(require_studio)
 app.include_router(payload_router,        prefix="/api/payloads")
+app.include_router(numbersbot_router,     prefix="/api/numbersbot",  dependencies=_auth)
 
 
 # Generic record fetch — table_key is one of the keys in config.tables (e.g. "assets", "tasks").

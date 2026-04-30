@@ -165,13 +165,13 @@
               <div class="bot-pillar-sub">Production intelligence for the new age</div>
             </div>
           </div>
-          <div class="bot-row">
+          <div class="bot-row bot-row-live" id="numbersbot-btn-studio">
             <div class="bot-row-icon">◈</div>
             <div>
               <div class="bot-row-name">NumberBot</div>
               <div class="bot-row-desc">Estimation audits + variance flags</div>
             </div>
-            <span class="bot-row-tag">Soon</span>
+            <span class="bot-row-tag bot-row-tag-live">Ask</span>
           </div>
           <div class="bot-row">
             <div class="bot-row-icon">✦</div>
@@ -253,13 +253,13 @@
               <div class="bot-pillar-sub">Production intelligence for the new age</div>
             </div>
           </div>
-          <div class="bot-row">
+          <div class="bot-row bot-row-live" id="numbersbot-btn-vendor">
             <div class="bot-row-icon">◈</div>
             <div>
               <div class="bot-row-name">NumberBot</div>
               <div class="bot-row-desc">Estimation audits + variance flags</div>
             </div>
-            <span class="bot-row-tag">Soon</span>
+            <span class="bot-row-tag bot-row-tag-live">Ask</span>
           </div>
           <div class="bot-row">
             <div class="bot-row-icon">✦</div>
@@ -790,7 +790,22 @@
     </div>
   </div>
 
+  <!-- ── NUMBERSBOT CHAT MODAL ── -->
+  <div class="modal-overlay" id="numbersbot-overlay">
+    <div class="modal modal-sm">
+      <div class="modal-header">
+        <h2>◈ NumberBot</h2>
+        <button class="icon-btn" id="numbersbot-close">✕</button>
+      </div>
+      <div class="nb-messages" id="numbersbot-messages"></div>
+      <div class="nb-input-row">
+        <input class="nb-input" id="numbersbot-input" type="text" placeholder="Ask about the schema…" autocomplete="off">
+        <button class="btn btn-primary btn-sm" id="numbersbot-send">Send</button>
+      </div>
+    </div>
+  </div>
+
   <div class="toast" id="toast"></div>
-  <script type="module" src="app.js?v=29"></script>
+  <script type="module" src="app.js?v=30"></script>
 </body>
 </html>

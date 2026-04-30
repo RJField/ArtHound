@@ -2419,6 +2419,83 @@ body {
   gap: 8px;
 }
 
+.bot-row-live {
+  opacity: 1;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.bot-row-live:hover {
+  background: rgba(124, 106, 244, 0.08);
+  border-radius: 6px;
+  padding-left: 6px;
+  padding-right: 6px;
+}
+.bot-row-tag-live {
+  color: var(--accent-h);
+}
+
+/* ---- NumberBot Chat ---- */
+.nb-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow-y: auto;
+  padding: 16px 20px;
+  min-height: 220px;
+  max-height: 380px;
+}
+.nb-messages::-webkit-scrollbar       { width: 4px; }
+.nb-messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+.nb-message {
+  display: flex;
+  flex-direction: column;
+  max-width: 85%;
+}
+.nb-message-user      { align-self: flex-end; }
+.nb-message-assistant { align-self: flex-start; }
+
+.nb-message-text {
+  padding: 9px 13px;
+  border-radius: 10px;
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.nb-message-user .nb-message-text {
+  background: var(--accent);
+  color: #fff;
+  border-bottom-right-radius: 2px;
+}
+.nb-message-assistant .nb-message-text {
+  background: var(--surface-2);
+  color: var(--text);
+  border-bottom-left-radius: 2px;
+}
+.nb-typing { color: var(--text-muted); font-style: italic; }
+
+.nb-input-row {
+  display: flex;
+  gap: 8px;
+  padding: 12px 20px 16px;
+  border-top: 1px solid var(--border);
+}
+.nb-input {
+  flex: 1;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 13px;
+  padding: 8px 12px;
+  font-family: inherit;
+  line-height: 1.4;
+  transition: border-color 0.15s;
+}
+.nb-input:focus        { outline: none; border-color: var(--accent); }
+.nb-input::placeholder { color: var(--text-muted); }
+
 /* ---- Field Grid (reusable field tile module) ---- */
 
 .fg-grid {

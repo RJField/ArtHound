@@ -5,6 +5,7 @@ import { loadMatrixTable, loadPgMatrixTable } from './modules/estimates.js';
 import { loadReviews } from './modules/reviews.js';
 import { loadWorkflowSteps, initWorkflowSteps } from './modules/workflow-steps.js';
 import { loadShareManager } from './modules/shares.js';
+import { initNumbersBot } from './modules/numbersbot.js';
 
 setSendVendorHandler(openSendVendorModal);
 
@@ -25,6 +26,7 @@ function navigate(view) {
 
 initAuth(navigate);
 initWorkflowSteps(navigate);
+initNumbersBot();
 
 document.getElementById('share-manager-refresh-btn').addEventListener('click', loadShareManager);
 
