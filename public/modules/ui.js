@@ -277,19 +277,24 @@ export const LINKED_TABLE_MAP = {
 export function formatRawFields(rawFields) {
   return Object.entries(rawFields)
     .filter(([, v]) => v != null && v !== '')
-    .map(([k, v]) => {
-      let display;
+    .flatMap(([k, v]) => {
       if (Array.isArray(v)) {
+        // Attachment array: [{url, filename}] — expand each into its own link field
+        if (v.length && typeof v[0] === 'object' && v[0] !== null && 'url' in v[0]) {
+          return v.map((att, i) => ({
+            label: v.length === 1 ? k : `${k} [${i + 1}]`,
+            value: att.filename || att.url,
+            type: 'link',
+            href: att.url,
+          }));
+        }
         const allRecIds = v.every(x => typeof x === 'string' && x.startsWith('rec'));
-        display = allRecIds
-          ? `${v.length} linked record${v.length !== 1 ? 's' : ''}`
-          : v.join(', ');
-      } else if (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}/.test(v)) {
-        display = fmtDate(v.slice(0, 10));
-      } else {
-        display = String(v);
+        return [{ label: k, value: allRecIds ? `${v.length} linked record${v.length !== 1 ? 's' : ''}` : v.join(', ') }];
       }
-      return { label: k, value: display };
+      if (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}/.test(v)) {
+        return [{ label: k, value: fmtDate(v.slice(0, 10)) }];
+      }
+      return [{ label: k, value: String(v) }];
     });
 }
 

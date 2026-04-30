@@ -1608,11 +1608,26 @@ body {
   background: var(--bg);
 }
 
+#global-topbar {
+  position: fixed;
+  top: 0;
+  right: 0;
+  height: 52px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 16px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  z-index: 200;
+}
+
 .section-nav {
   display: flex;
   align-items: center;
   gap: 12px;
   padding: 0 20px;
+  padding-right: 196px;
   height: 52px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
@@ -2683,6 +2698,7 @@ body {
   border: 1px solid var(--border);
   transition: border-color 0.15s;
 }
+.is-inbox-card { cursor: pointer; }
 .is-inbox-card:hover { border-color: var(--accent); }
 
 .is-inbox-meta {
@@ -2733,6 +2749,8 @@ body {
 .sv-share-info { display: flex; flex-direction: column; gap: 2px; }
 .sv-share-vendor { font-size: 13px; font-weight: 500; }
 .sv-share-date   { font-size: 11px; color: var(--text-muted); }
+.sv-share-views  { font-size: 11px; color: var(--ok); }
+.sv-share-views-none { color: var(--text-muted); font-style: italic; }
 
 .sv-asset-list {
   max-height: 260px;

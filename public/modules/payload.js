@@ -1,16 +1,45 @@
-import { $, esc, apiFetch, showToast } from './ui.js';
+import { $, esc, apiFetch, showToast, openDetailModal, formatRawFields } from './ui.js';
 import { state } from './state.js';
 
 // -- Vendor Inbox (Incoming Scope) --
+
+let _inboxDispatches = [];
 
 export async function loadVendorInbox() {
   $('is-inbox-list').innerHTML = '<div class="list-state">Loading…</div>';
   try {
     const dispatches = await apiFetch('/api/payloads/vendor-inbox');
+    _inboxDispatches = dispatches;
     renderVendorInbox(dispatches);
   } catch (err) {
     $('is-inbox-list').innerHTML = `<div class="list-state error">${esc(err.message)}</div>`;
   }
+}
+
+function openInboxModal(d) {
+  apiFetch(`/api/payloads/${encodeURIComponent(d.id)}/viewed`, { method: 'POST' }).catch(() => {});
+
+  const data       = d.payload_data?.data ?? {};
+  const name       = data['Name'] || data['name'] || '—';
+  const itemType   = data['Item Type'] || data['item_type'] || '';
+  const priority   = d.payload_data?.priority;
+  const studioName = d.payload_data?.sender_studio_name || 'Unknown Studio';
+  const date       = d.created_at ? new Date(d.created_at).toLocaleDateString() : '—';
+
+  const SKIP = new Set(['Name', 'name']);
+  const rawForFields = Object.fromEntries(Object.entries(data).filter(([k]) => !SKIP.has(k)));
+
+  const badge = [itemType, priority != null ? `P${priority}` : ''].filter(Boolean).join(' · ');
+
+  openDetailModal({
+    title: name,
+    badge: badge || undefined,
+    fields: [
+      { label: 'From',     value: studioName },
+      { label: 'Received', value: date },
+      ...formatRawFields(rawForFields),
+    ],
+  });
 }
 
 function renderVendorInbox(dispatches) {
@@ -18,7 +47,7 @@ function renderVendorInbox(dispatches) {
     $('is-inbox-list').innerHTML = '<div class="list-state">No incoming assets yet</div>';
     return;
   }
-  $('is-inbox-list').innerHTML = dispatches.map(d => {
+  $('is-inbox-list').innerHTML = dispatches.map((d, i) => {
     const data        = d.payload_data?.data ?? {};
     const name        = data['Name'] || data['name'] || '—';
     const itemType    = data['Item Type'] || data['item_type'] || '';
@@ -26,7 +55,7 @@ function renderVendorInbox(dispatches) {
     const studioName  = d.payload_data?.sender_studio_name || 'Unknown Studio';
     const date        = d.created_at ? new Date(d.created_at).toLocaleDateString() : '—';
     return `
-      <div class="is-inbox-card">
+      <div class="is-inbox-card clickable" data-inbox-idx="${i}">
         <div class="am-asset-info">
           <div class="am-asset-name">${esc(name)}</div>
           <div class="am-asset-meta">
@@ -41,6 +70,10 @@ function renderVendorInbox(dispatches) {
       </div>
     `;
   }).join('');
+
+  $('is-inbox-list').querySelectorAll('.is-inbox-card').forEach(el => {
+    el.addEventListener('click', () => openInboxModal(_inboxDispatches[+el.dataset.inboxIdx]));
+  });
 }
 
 $('is-refresh-btn').addEventListener('click', loadVendorInbox);
@@ -67,14 +100,18 @@ function renderSvStep1() {
     <div class="sv-shares-section">
       <div class="sv-shares-label">Currently shared with</div>
       ${sendVendorState.existingShares.map(d => {
-        const vendor = sendVendorState.vendors.find(v => v.id === d.recipient_vendor_id);
-        const vName  = vendor?.name ?? 'Unknown Vendor';
-        const date   = d.created_at ? new Date(d.created_at).toLocaleDateString() : '—';
+        const vendor    = sendVendorState.vendors.find(v => v.id === d.recipient_vendor_id);
+        const vName     = vendor?.name ?? 'Unknown Vendor';
+        const date      = d.created_at ? new Date(d.created_at).toLocaleDateString() : '—';
+        const viewCount = d.view_count ?? 0;
+        const viewLabel = viewCount === 0 ? 'Not yet viewed' : `Viewed ${viewCount}×`;
+        const viewCls   = viewCount === 0 ? 'sv-share-views sv-share-views-none' : 'sv-share-views';
         return `
           <div class="sv-share-row">
             <div class="sv-share-info">
               <span class="sv-share-vendor">${esc(vName)}</span>
               <span class="sv-share-date">${esc(date)}</span>
+              <span class="${viewCls}">${esc(viewLabel)}</span>
             </div>
             <button class="btn btn-danger btn-sm sv-revoke-btn" data-id="${esc(d.id)}">Revoke</button>
           </div>`;

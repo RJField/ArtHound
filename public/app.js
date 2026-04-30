@@ -26,7 +26,7 @@ initWorkflowSteps(navigate);
 
 // Matrix table nav — wired here because they call navigate()
 document.getElementById('est-matrix-btn').addEventListener('click', () => navigate('matrix-table'));
-document.getElementById('matrix-table-back-btn').addEventListener('click', () => navigate('estimates'));
+document.getElementById('matrix-table-back-btn').addEventListener('click', () => navigate('legacy'));
 document.getElementById('matrix-table-refresh-btn').addEventListener('click', loadMatrixTable);
 document.getElementById('est-pg-matrix-btn').addEventListener('click', () => navigate('pg-matrix-table'));
 document.getElementById('pg-matrix-back-btn').addEventListener('click', () => navigate('estimates'));

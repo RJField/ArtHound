@@ -3,7 +3,7 @@ import secrets
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
 
 from lib.auth import CurrentUser, get_current_user, require_studio, require_vendor
@@ -316,7 +316,29 @@ async def get_outbox(user: CurrentUser = Depends(require_studio)):
         },
         headers=_headers(),
     )
-    return r.json()
+    dispatches = r.json()
+    if not dispatches:
+        return []
+
+    ids_csv = ",".join(d["id"] for d in dispatches)
+    r_log = await db_client.get(
+        _url("/rest/v1/payload_access_log"),
+        params={
+            "dispatch_id": f"in.({ids_csv})",
+            "event": "eq.viewed",
+            "select": "dispatch_id",
+        },
+        headers=_headers(),
+    )
+    view_counts: dict[str, int] = {}
+    for row in r_log.json():
+        did = row["dispatch_id"]
+        view_counts[did] = view_counts.get(did, 0) + 1
+
+    for d in dispatches:
+        d["view_count"] = view_counts.get(d["id"], 0)
+
+    return dispatches
 
 
 # ── vendor inbox ──────────────────────────────────────────────────────────────
@@ -378,6 +400,18 @@ async def receive_payload(token: str):
         "expires_at": dispatch["expires_at"],
         "payload": dispatch["payload_data"],
     }
+
+
+# ── vendor viewed (vendor records that they opened the asset detail) ──────────
+
+@router.post("/{dispatch_id}/viewed", status_code=204)
+async def record_view(dispatch_id: str, user: CurrentUser = Depends(require_vendor)):
+    dispatch = await _get_dispatch(dispatch_id, select="id,recipient_vendor_id,revoked_at,expires_at")
+    if not dispatch or dispatch.get("recipient_vendor_id") != user.vendor_id:
+        raise HTTPException(status_code=404, detail="Dispatch not found")
+    _assert_valid(dispatch)
+    await _log(dispatch_id, "viewed")
+    return Response(status_code=204)
 
 
 # ── revoke (sender only) ───────────────────────────────────────────────────────

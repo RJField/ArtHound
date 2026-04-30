@@ -12,12 +12,16 @@ function setLoginError(msg) {
   $loginError.textContent = msg || '';
 }
 
+const $globalTopbar = document.getElementById('global-topbar');
+
 function navigateByRole(role) {
   if (role === 'studio') {
     state.homeView = 'home';
+    $globalTopbar.style.display = 'flex';
     _navigate('home');
   } else if (role === 'vendor') {
     state.homeView = 'vendor-home';
+    $globalTopbar.style.display = 'flex';
     _navigate('vendor-home');
   } else {
     setLoginError('Account has no role assigned. Contact your administrator.');
@@ -53,11 +57,11 @@ export function initAuth(navigateFn) {
 
   // Logout
   const handleLogout = async () => {
+    $globalTopbar.style.display = 'none';
     if (_supabaseClient) await _supabaseClient.auth.signOut();
     _navigate('login');
   };
   document.getElementById('logout-btn').addEventListener('click', handleLogout);
-  document.getElementById('vendor-logout-btn').addEventListener('click', handleLogout);
 
   // Studio home nav
   document.getElementById('nav-assets').addEventListener('click', () => _navigate('assets'));
@@ -65,6 +69,17 @@ export function initAuth(navigateFn) {
   document.getElementById('nav-workflows').addEventListener('click', () => _navigate('workflows'));
   document.getElementById('nav-reviews').addEventListener('click', () => _navigate('reviews'));
   document.getElementById('nav-todos').addEventListener('click', () => _navigate('todos'));
+  document.getElementById('nav-legacy').addEventListener('click', () => _navigate('legacy'));
+
+  // User / Settings modals
+  const $userOverlay     = document.getElementById('user-modal-overlay');
+  const $settingsOverlay = document.getElementById('settings-modal-overlay');
+  document.getElementById('user-btn').addEventListener('click', () => $userOverlay.classList.add('open'));
+  document.getElementById('user-modal-close').addEventListener('click', () => $userOverlay.classList.remove('open'));
+  $userOverlay.addEventListener('click', e => { if (e.target === $userOverlay) $userOverlay.classList.remove('open'); });
+  document.getElementById('settings-btn').addEventListener('click', () => $settingsOverlay.classList.add('open'));
+  document.getElementById('settings-modal-close').addEventListener('click', () => $settingsOverlay.classList.remove('open'));
+  $settingsOverlay.addEventListener('click', e => { if (e.target === $settingsOverlay) $settingsOverlay.classList.remove('open'); });
 
   // Vendor home nav
   document.getElementById('vendor-nav-assets').addEventListener('click', () => _navigate('assets'));
@@ -79,6 +94,7 @@ export function initAuth(navigateFn) {
   document.getElementById('reviews-home-btn').addEventListener('click', () => _navigate(state.homeView));
   document.getElementById('todos-home-btn').addEventListener('click', () => _navigate(state.homeView));
   document.getElementById('incoming-scope-home-btn').addEventListener('click', () => _navigate(state.homeView));
+  document.getElementById('legacy-home-btn').addEventListener('click', () => _navigate(state.homeView));
   document.getElementById('wfs-manage-btn').addEventListener('click', () => _navigate('workflow-steps'));
   document.getElementById('wf-steps-back-btn').addEventListener('click', () => _navigate('workflows'));
 
@@ -91,7 +107,10 @@ export function initAuth(navigateFn) {
       setAuthFailHandler(() => _navigate('login'));
 
       _supabaseClient.auth.onAuthStateChange((event) => {
-        if (event === 'SIGNED_OUT') _navigate('login');
+        if (event === 'SIGNED_OUT') {
+          $globalTopbar.style.display = 'none';
+          _navigate('login');
+        }
       });
 
       const { data: { session } } = await _supabaseClient.auth.getSession();

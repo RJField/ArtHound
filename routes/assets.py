@@ -78,6 +78,20 @@ async def _fetch_task_names() -> dict:
     return {r["id"]: r["fields"].get("Task", r["id"]) for r in records}
 
 
+async def _fetch_review_names() -> dict:
+    records = await select_all(config.tables["reviews"])
+    result = {}
+    for r in records:
+        fields = r.get("fields", {})
+        # Primary field is first in the fields dict; use first scalar value as display name
+        name = next(
+            (str(v) for v in fields.values() if isinstance(v, (str, int, float)) and v),
+            r["id"],
+        )
+        result[r["id"]] = name
+    return result
+
+
 def _normalize_asset(
     r: dict,
     product_names: dict = {},
@@ -96,11 +110,19 @@ def _normalize_asset(
         formatted = _format_field_value(k, v)
         if formatted is not None:
             raw_fields[k] = formatted
+        elif isinstance(v, list) and v and all(isinstance(x, dict) and "url" in x for x in v):
+            # Attachment field (multipleAttachments or lookup of attachments)
+            raw_fields[k] = [
+                {"url": x["url"], "filename": x.get("filename", "")}
+                for x in v if x.get("url")
+            ]
         elif isinstance(v, list) and v and all(_is_record_id(x) for x in v):
             # Linked record IDs — resolve via pre-fetched map when possible
             names = [linked_id_map[x] for x in v if x in linked_id_map]
             if names:
                 raw_fields[k] = ", ".join(names)
+            else:
+                raw_fields[k] = f"{len(v)} record{'s' if len(v) != 1 else ''}"
 
     return {
         "id": r["id"],
@@ -137,7 +159,7 @@ async def get_assets(
     productId: Optional[str] = Query(None),
     current_user: CurrentUser = Depends(get_current_user),
 ):
-    records, product_names, item_type_names, task_names = await asyncio.gather(
+    records, product_names, item_type_names, task_names, review_names = await asyncio.gather(
         select_all(
             config.tables["assets"],
             {"sort": [{"field": "Name", "direction": "asc"}]},
@@ -145,8 +167,9 @@ async def get_assets(
         _fetch_product_names(),
         _fetch_item_type_names(),
         _fetch_task_names(),
+        _fetch_review_names(),
     )
-    linked_id_map = {**task_names}
+    linked_id_map = {**product_names, **item_type_names, **task_names, **review_names}
     canonical_map = await get_or_create_canonical_ids([r["id"] for r in records], current_user.studio_id)
 
     assets = [
@@ -181,14 +204,16 @@ async def get_asset_fields():
 
 @router.get("/{asset_id}")
 async def get_asset(asset_id: str, current_user: CurrentUser = Depends(get_current_user)):
-    record, product_names, item_type_names, task_names, canonical_map = await asyncio.gather(
+    record, product_names, item_type_names, task_names, review_names, canonical_map = await asyncio.gather(
         find_record(config.tables["assets"], asset_id),
         _fetch_product_names(),
         _fetch_item_type_names(),
         _fetch_task_names(),
+        _fetch_review_names(),
         get_or_create_canonical_ids([asset_id], current_user.studio_id),
     )
-    return _normalize_asset(record, product_names, item_type_names, {**task_names}, canonical_map.get(asset_id))
+    linked_id_map = {**product_names, **item_type_names, **task_names, **review_names}
+    return _normalize_asset(record, product_names, item_type_names, linked_id_map, canonical_map.get(asset_id))
 
 
 class NameUpdate(BaseModel):
