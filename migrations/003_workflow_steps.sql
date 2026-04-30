@@ -20,7 +20,7 @@ create table workflow_step_dependencies (
 
 -- Per-studio record of which variable fields drive the estimate matrix
 create table estimate_config (
-  studio_id       uuid primary key references studios(id),
+  studio_id       uuid primary key references studios(id),o 
   variable_fields text[] not null,   -- sorted alphabetically
   updated_at      timestamptz default now()
 );

@@ -14,7 +14,8 @@
       "Bash(tar -xf \"C:\\\\Users\\\\field\\\\.claude\\\\projects\\\\c--Users-field-Documents-ArtHound-ArtHound\\\\3b84a3b2-1270-47ad-93f6-76a862b10e06\\\\tool-results\\\\design_output.json\" -C /tmp/arthound-design)",
       "Read(//tmp/**)",
       "Bash(tar -xf \"/mnt/c/Users/field/.claude/projects/c--Users-field-Documents-ArtHound-ArtHound/3b84a3b2-1270-47ad-93f6-76a862b10e06/tool-results/design_output.json\" -C /tmp/arthound-design)",
-      "Bash(python -c \"from routes.reviews import router; print\\([r.path for r in router.routes]\\)\")"
+      "Bash(python -c \"from routes.reviews import router; print\\([r.path for r in router.routes]\\)\")",
+      "Bash(grep -E '\\\\.\\(js|json\\)$|^d')"
     ]
   }
 }
