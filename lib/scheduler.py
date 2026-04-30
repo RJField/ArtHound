@@ -1,18 +1,15 @@
 import asyncio
 import json
 from datetime import date, timedelta
-from pathlib import Path
 from typing import Optional
 
 from lib.airtable import select_all, find_record
+from lib.db import db_client, _url, _headers
+from lib.canonical import get_studio_id
 from lib.utils import resolve_name, link_id
 import config
 
-ESTIMATES_CONFIG_PATH = Path(__file__).parent.parent / "estimates.config.json"
-
-
-def sanitize(s: str) -> str:
-    return "".join(c for c in str(s) if c.isalnum())[:25] or "unknown"
+DEFAULT_MATRIX_KEY = json.dumps({}, sort_keys=True)  # sentinel for the default estimate row
 
 
 def subtract_working_days(d: date, days: int) -> date:
@@ -91,18 +88,50 @@ async def build_schedule(asset_id: str) -> dict:
             return str(name) if name is not None else ""
         return str(raw)
 
-    try:
-        estimates_config = json.loads(ESTIMATES_CONFIG_PATH.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError):
-        estimates_config = {}
-
-    var_fields = sorted(estimates_config.get("_variableFields", []))
-    if not var_fields:
+    # -- Load estimates from ArtHound Matrix (Postgres) --
+    studio_id = await get_studio_id()
+    r_cfg = await db_client.get(
+        _url("/rest/v1/estimate_config"),
+        params={"studio_id": f"eq.{studio_id}", "select": "variable_fields"},
+        headers=_headers(),
+    )
+    cfg_rows = r_cfg.json()
+    if not cfg_rows:
         raise ValueError(
-            "Variable fields not configured — run the Estimation Engine Setup wizard first (⚙ button)"
+            "ArtHound Matrix not configured — run the ArtHound Matrix Setup wizard first"
         )
 
-    estimate_col = "_".join(sanitize(resolve_field_value(f(fn))) for fn in var_fields)
+    var_fields = cfg_rows[0]["variable_fields"]
+    r_steps, r_matrix = await asyncio.gather(
+        db_client.get(
+            _url("/rest/v1/workflow_steps"),
+            params={"studio_id": f"eq.{studio_id}", "select": "id,airtable_template_id"},
+            headers=_headers(),
+        ),
+        db_client.get(
+            _url("/rest/v1/estimate_matrix"),
+            params={
+                "studio_id": f"eq.{studio_id}",
+                "select": "workflow_step_id,variable_values,estimate_days",
+                "limit": "10000",
+            },
+            headers=_headers(),
+        ),
+    )
+    step_lookup: dict = {
+        row["airtable_template_id"]: row["id"]
+        for row in r_steps.json()
+        if row.get("airtable_template_id")
+    }
+    matrix_lookup: dict = {}  # (step_id, variable_values_key) → float
+    for row in r_matrix.json():
+        key = (row["workflow_step_id"], json.dumps(row["variable_values"], sort_keys=True))
+        matrix_lookup[key] = float(row["estimate_days"] or 0)
+
+    asset_var_values = {fn: resolve_field_value(f(fn)) for fn in var_fields}
+    variable_values_key = json.dumps(asset_var_values, sort_keys=True)
+    estimate_col = " | ".join(asset_var_values[fn] for fn in var_fields)
+
     asset_team = resolve_field_value(f("Team (from Product)"))
 
     templates, templates_str = await asyncio.gather(
@@ -136,7 +165,12 @@ async def build_schedule(asset_id: str) -> dict:
         if not matches_item:
             continue
 
-        estimate = tf(estimate_col) if estimate_col else 0
+        step_id = step_lookup.get(template_id)
+        if step_id:
+            specific = matrix_lookup.get((step_id, variable_values_key))
+            estimate = specific if specific is not None else matrix_lookup.get((step_id, DEFAULT_MATRIX_KEY), 0)
+        else:
+            estimate = 0
         task_estimates[template_id] = estimate if estimate is not None else 0
 
         craft_links = tf("Crafts") or []
@@ -174,6 +208,7 @@ async def build_schedule(asset_id: str) -> dict:
 
     asset_name = resolve_name(f("Name")) or asset_id
     tasks = []
+    warnings = []
 
     for template_id in sorted_ids:
         info = task_info.get(template_id)
@@ -181,6 +216,10 @@ async def build_schedule(asset_id: str) -> dict:
             continue
         estimate = task_estimates.get(template_id, 0)
         if not estimate or estimate <= 0:
+            warnings.append(
+                f"'{info['taskName']}' skipped — no estimate found for [{estimate_col}] "
+                f"and no Default set"
+            )
             continue
 
         dates = task_dates[template_id]
@@ -207,4 +246,5 @@ async def build_schedule(asset_id: str) -> dict:
             "estimateCol": estimate_col,
         },
         "tasks": tasks,
+        "warnings": warnings,
     }

@@ -130,5 +130,10 @@ async def generate_bulk(body: AssetIdsBody, _: CurrentUser = Depends(require_stu
                     }
                 )
 
+    all_warnings = []
+    for result in results:
+        if not isinstance(result, Exception):
+            all_warnings.extend(result.get("warnings", []))
+
     created = await create_records(config.tables["tasks"], all_records) if all_records else []
-    return {"created": len(created), "failed": failed}
+    return {"created": len(created), "failed": failed, "warnings": all_warnings}

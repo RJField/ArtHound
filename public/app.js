@@ -27,6 +27,7 @@ function navigate(view) {
   if (view === 'reviews') loadReviews();
   if (view === 'incoming-scope') loadScopeProducts();
   if (view === 'matrix-table') loadMatrixTable();
+  if (view === 'pg-matrix-table') loadPgMatrixTable();
 }
 
 // ── Auth ──
@@ -855,10 +856,10 @@ $amGenerateBtn.addEventListener('click', async () => {
       method: 'POST',
       body: JSON.stringify({ assetIds }),
     });
-    const failMsg = result.failed.length
-      ? ` (${result.failed.length} failed)`
-      : '';
-    $amGenStatus.innerHTML = `<span class="status-ok">✓ ${result.created} tasks written${failMsg}</span>`;
+    const failMsg = result.failed?.length ? ` · ${result.failed.length} failed` : '';
+    const warnMsg = result.warnings?.length ? ` · ${result.warnings.length} steps skipped (no estimate)` : '';
+    $amGenStatus.innerHTML = `<span class="status-ok">✓ ${result.created} tasks written${failMsg}${warnMsg}</span>`
+      + (result.warnings?.length ? `<ul class="gen-warnings">${result.warnings.map(w => `<li>${esc(w)}</li>`).join('')}</ul>` : '');
     showToast(`${result.created} tasks created for ${assetIds.length} assets`, 'success');
     // Refresh task panel if the focused asset was part of this batch
     if (state.focusedAssetId && assetIds.includes(state.focusedAssetId)) {
@@ -1175,6 +1176,7 @@ const WIZARD_STEP_LABELS = ['Variables', 'Values', 'Matrix', 'Options', 'Create'
 
 const wizard = {
   step:          1,
+  mode:          'airtable',  // 'airtable' | 'arthound'
   fields:        [],          // [{id, name, type}] — eligible fields
   selected:      new Set(),   // selected field names
   values:        {},          // fieldName → [{id, name}]
@@ -1188,12 +1190,14 @@ const wizard = {
   clearExisting: false,       // delete previous config columns before creating new ones (step 4)
 };
 
-$setupBtn.addEventListener('click', openSetup);
+$setupBtn.addEventListener('click', () => openSetup('airtable'));
+$('est-pg-setup-btn').addEventListener('click', () => openSetup('arthound'));
 $setupClose.addEventListener('click', () => $setupOverlay.classList.remove('open'));
 $setupOverlay.addEventListener('click', e => { if (e.target === $setupOverlay) $setupOverlay.classList.remove('open'); });
 
-async function openSetup() {
+async function openSetup(mode = 'airtable') {
   wizard.step     = 1;
+  wizard.mode     = mode;
   wizard.selected = new Set();
   wizard.values   = {};
   wizard.combos   = [];
@@ -1201,6 +1205,8 @@ async function openSetup() {
   wizard.filters  = {};
   wizard.groupBy  = '';
   wizard.result   = null;
+  $('setup-modal-title').textContent =
+    mode === 'arthound' ? 'ArtHound Matrix Setup' : 'Estimation Engine Setup';
   $setupOverlay.classList.add('open');
   await renderWizardStep();
 }
@@ -1717,14 +1723,18 @@ async function renderStep4() {
       </div>
 
       <div class="config-field">
-        <div class="config-label">Previously generated columns</div>
-        <div class="config-sub">If enabled, all columns from the previous setup run will be deleted from Task Templates before creating new ones. If disabled, new columns are added alongside existing ones.</div>
+        ${wizard.mode === 'arthound'
+          ? `<div class="config-label">Reset matrix</div>
+             <div class="config-sub">If enabled, all existing estimate values for this studio will be cleared before writing new rows. If disabled, existing values are preserved and new combinations are added.</div>`
+          : `<div class="config-label">Previously generated columns</div>
+             <div class="config-sub">If enabled, all columns from the previous setup run will be deleted from Task Templates before creating new ones. If disabled, new columns are added alongside existing ones.</div>`
+        }
         <label class="config-toggle-label">
           <div class="config-toggle-wrap">
             <input type="checkbox" id="w-clear-existing" ${wizard.clearExisting ? 'checked' : ''}>
             <span class="config-toggle-track"><span class="config-toggle-thumb"></span></span>
           </div>
-          <span>Delete previously generated columns</span>
+          <span>${wizard.mode === 'arthound' ? 'Clear existing matrix' : 'Delete previously generated columns'}</span>
         </label>
       </div>
     </div>
@@ -1743,11 +1753,15 @@ async function renderStep4() {
   });
 }
 
-// Step 5 — create columns
+// Step 5 — create columns (Airtable) or upsert matrix (ArtHound)
 async function renderStep5() {
   const activeCombos = wizard.combos.filter((_, i) => !wizard.excluded.has(i));
+  const isPg = wizard.mode === 'arthound';
 
-  $setupBody.innerHTML = `<div class="list-state">Adding ${activeCombos.length} column${activeCombos.length !== 1 ? 's' : ''} to Task Templates…</div>`;
+  $setupBody.innerHTML = `<div class="list-state">${isPg
+    ? `Syncing ${activeCombos.length} combination${activeCombos.length !== 1 ? 's' : ''} to ArtHound Matrix…`
+    : `Adding ${activeCombos.length} column${activeCombos.length !== 1 ? 's' : ''} to Task Templates…`
+  }</div>`;
   $wizardFooter.innerHTML = '';
 
   let success = false;
@@ -1758,7 +1772,8 @@ async function renderStep5() {
       type: wizard.fields.find(f => f.name === field)?.type ?? 'unknown',
     }));
 
-    const result = await apiFetch('/api/setup/create-matrix', {
+    const endpoint = isPg ? '/api/setup/create-matrix-pg' : '/api/setup/create-matrix';
+    const result = await apiFetch(endpoint, {
       method: 'POST',
       body: JSON.stringify({
         variables,
@@ -1771,7 +1786,21 @@ async function renderStep5() {
     wizard.result = result;
     success = true;
 
-    $setupBody.innerHTML = `
+    $setupBody.innerHTML = isPg ? `
+      <div class="wizard-result">
+        <div class="wizard-result-icon">✓</div>
+        <div class="wizard-result-title">Done</div>
+        <div class="wizard-result-row">
+          <span class="badge">${result.stepsUpserted} workflow steps</span>
+          <span class="badge">${result.matrixRows} matrix rows</span>
+          ${result.cleared ? `<span class="muted">previous matrix cleared</span>` : ''}
+          ${result.prefillPending ? `<span class="wizard-result-prefill">Prefilling from <strong>${esc(wizard.prefillCol)}</strong> in background</span>` : ''}
+        </div>
+        <div class="wizard-section-sub" style="margin-top:14px">
+          Estimates are stored in ArtHound. Edit day values directly in the matrix view, or use the scheduler — no Airtable schema changes needed.
+        </div>
+      </div>
+    ` : `
       <div class="wizard-result">
         <div class="wizard-result-icon">✓</div>
         <div class="wizard-result-title">Done</div>
@@ -1800,7 +1829,7 @@ async function renderStep5() {
 
   $wizardFooter.innerHTML = `
     <button class="btn btn-ghost" id="w-back">← Back</button>
-    ${success ? `<a class="btn btn-ghost" href="/api/setup/export-csv" download="estimate-matrix.csv">⬇ Download CSV</a>` : ''}
+    ${success && !isPg ? `<a class="btn btn-ghost" href="/api/setup/export-csv" download="estimate-matrix.csv">⬇ Download CSV</a>` : ''}
     <button class="btn btn-ghost" id="w-close">Close</button>
   `;
   $('w-back').addEventListener('click', async () => { wizard.step = 4; await renderWizardStep(); });
@@ -2125,7 +2154,7 @@ async function applyCsvImport() {
   document.getElementById('csv-done').addEventListener('click', () => $csvOverlay.classList.remove('open'));
 }
 
-// -- Estimation Matrix --
+// -- Estimation Matrix (Airtable) --
 
 document.getElementById('est-matrix-btn').addEventListener('click', () => navigate('matrix-table'));
 document.getElementById('matrix-table-back-btn').addEventListener('click', () => navigate('estimates'));
@@ -2136,21 +2165,36 @@ async function loadMatrixTable() {
   $content.innerHTML = '<div class="list-state">Loading…</div>';
   try {
     const data = await apiFetch('/api/setup/matrix-table');
-    renderMatrixTable(data);
+    renderMatrixTable(data, $content);
   } catch (err) {
     $content.innerHTML = `<div class="list-state error">${esc(err.message)}</div>`;
   }
 }
 
-function renderMatrixTable({ variableFields, combinations, tasks, attributeFields = [] }) {
-  const $content = $('matrix-table-content');
+// -- ArtHound Matrix (Postgres) --
 
+document.getElementById('est-pg-matrix-btn').addEventListener('click', () => navigate('pg-matrix-table'));
+document.getElementById('pg-matrix-back-btn').addEventListener('click', () => navigate('estimates'));
+document.getElementById('pg-matrix-refresh-btn').addEventListener('click', loadPgMatrixTable);
+
+async function loadPgMatrixTable() {
+  const $content = $('pg-matrix-content');
+  $content.innerHTML = '<div class="list-state">Loading…</div>';
+  try {
+    const data = await apiFetch('/api/setup/matrix-table-pg');
+    renderMatrixTable(data, $content);
+  } catch (err) {
+    $content.innerHTML = `<div class="list-state error">${esc(err.message)}</div>`;
+  }
+}
+
+function renderMatrixTable({ variableFields, combinations, tasks, attributeFields = [] }, $content) {
   if (!combinations.length) {
     $content.innerHTML = '<div class="list-state">No estimate combinations configured — run the Setup wizard first.</div>';
     return;
   }
   if (!tasks.length) {
-    $content.innerHTML = '<div class="list-state">No task templates found in Airtable.</div>';
+    $content.innerHTML = '<div class="list-state">No workflow steps found — run the Setup wizard first.</div>';
     return;
   }
 

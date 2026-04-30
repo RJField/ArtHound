@@ -790,6 +790,14 @@ body {
 .status-ok    { color: var(--ok); }
 .status-err   { color: var(--err); }
 
+.gen-warnings {
+  margin: 6px 0 0 0;
+  padding-left: 16px;
+  font-size: 12px;
+  color: var(--text-muted);
+  list-style: disc;
+}
+
 .schedule-empty-hint {
   text-align: center;
   padding: 24px 16px !important;
@@ -1663,6 +1671,13 @@ body {
   font-size: 13px;
   color: var(--text-muted);
   line-height: 1.5;
+}
+
+.section-card-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex-shrink: 0;
 }
 
 /* ---- Notes / ToDo content ---- */

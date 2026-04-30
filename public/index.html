@@ -287,6 +287,18 @@
         </div>
 
         <div class="section-card">
+          <div class="section-card-icon">◈</div>
+          <div class="section-card-body">
+            <div class="section-card-title">ArtHound Matrix</div>
+            <div class="section-card-desc">Store the estimation matrix natively in ArtHound. Source-agnostic — works regardless of Airtable plan or schema changes.</div>
+          </div>
+          <div class="section-card-actions">
+            <button class="btn btn-secondary" id="est-pg-matrix-btn">View Matrix</button>
+            <button class="btn btn-primary" id="est-pg-setup-btn">Open Setup</button>
+          </div>
+        </div>
+
+        <div class="section-card">
           <div class="section-card-icon">⬆</div>
           <div class="section-card-body">
             <div class="section-card-title">Import Estimates CSV</div>
@@ -312,7 +324,7 @@
       <div class="modal modal-wide">
         <div class="modal-header">
           <div class="wizard-header-left">
-            <h2>Estimation Engine Setup</h2>
+            <h2 id="setup-modal-title">Estimation Engine Setup</h2>
             <div class="wizard-steps" id="wizard-steps"></div>
           </div>
           <button class="icon-btn" id="setup-close">✕</button>
@@ -346,6 +358,18 @@
       <button class="btn btn-sm" id="matrix-table-refresh-btn" style="margin-left:auto">↻ Refresh</button>
     </div>
     <div class="mt-content" id="matrix-table-content">
+      <div class="list-state">Loading…</div>
+    </div>
+  </div>
+
+  <!-- ── ARTHOUND MATRIX VIEW ── -->
+  <div id="view-pg-matrix-table" class="view" style="display:none">
+    <div class="section-nav">
+      <button class="icon-btn" id="pg-matrix-back-btn" title="Back to Estimates">←</button>
+      <span class="section-nav-title">ArtHound Matrix</span>
+      <button class="btn btn-sm" id="pg-matrix-refresh-btn" style="margin-left:auto">↻ Refresh</button>
+    </div>
+    <div class="mt-content" id="pg-matrix-content">
       <div class="list-state">Loading…</div>
     </div>
   </div>
