@@ -1,3 +1,4 @@
+import asyncio
 import json
 from datetime import date, timedelta
 from pathlib import Path
@@ -95,7 +96,7 @@ async def build_schedule(asset_id: str) -> dict:
     except (FileNotFoundError, json.JSONDecodeError):
         estimates_config = {}
 
-    var_fields = estimates_config.get("_variableFields", [])
+    var_fields = sorted(estimates_config.get("_variableFields", []))
     if not var_fields:
         raise ValueError(
             "Variable fields not configured — run the Estimation Engine Setup wizard first (⚙ button)"
@@ -104,7 +105,19 @@ async def build_schedule(asset_id: str) -> dict:
     estimate_col = "_".join(sanitize(resolve_field_value(f(fn))) for fn in var_fields)
     asset_team = resolve_field_value(f("Team (from Product)"))
 
-    templates = await select_all(config.tables["templates"])
+    templates, templates_str = await asyncio.gather(
+        select_all(config.tables["templates"]),
+        select_all(config.tables["templates"], {
+            "cellFormat": "string",
+            "timeZone": "America/Los_Angeles",
+            "userLocale": "en-us",
+        }),
+    )
+    # cellFormat=string returns linked record values as display names (comma-separated).
+    craft_name_by_template = {
+        r["id"]: (r["fields"].get("Crafts") or "").split(",")[0].strip()
+        for r in templates_str
+    }
 
     task_graph: dict = {}
     task_estimates: dict = {}
@@ -126,7 +139,7 @@ async def build_schedule(asset_id: str) -> dict:
         estimate = tf(estimate_col) if estimate_col else 0
         task_estimates[template_id] = estimate if estimate is not None else 0
 
-        craft_links = tf("Craft") or []
+        craft_links = tf("Crafts") or []
         cap_craft_ids = (
             [lid for l in craft_links if (lid := link_id(l))]
             if isinstance(craft_links, list)
@@ -134,7 +147,7 @@ async def build_schedule(asset_id: str) -> dict:
         )
         task_info[template_id] = {
             "taskName": tf("Task") or "Untitled",
-            "craft": resolve_name(craft_links[0] if craft_links else None) or "",
+            "craft": craft_name_by_template.get(template_id, ""),
             "capCraftIds": cap_craft_ids,
         }
 

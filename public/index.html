@@ -476,7 +476,17 @@
       <!-- Right panel: tasks + meta -->
       <div class="am-detail">
         <div class="am-detail-box">
-          <div class="am-detail-box-title">Work Tasks</div>
+          <div class="am-detail-box-title">
+            Work Tasks
+            <div class="am-view-toggle">
+              <button class="icon-btn active" id="am-tasks-list-btn" title="List view">
+                <svg width="13" height="13" viewBox="0 0 13 13" fill="currentColor"><rect x="0" y="1" width="13" height="2"/><rect x="0" y="5.5" width="13" height="2"/><rect x="0" y="10" width="13" height="2"/></svg>
+              </button>
+              <button class="icon-btn" id="am-tasks-timeline-btn" title="Timeline view">
+                <svg width="13" height="13" viewBox="0 0 13 13" fill="currentColor"><rect x="0" y="1" width="7" height="2"/><rect x="3" y="5.5" width="10" height="2"/><rect x="1" y="10" width="6" height="2"/></svg>
+              </button>
+            </div>
+          </div>
           <div id="am-tasks-content" class="am-detail-box-body">
             <div class="list-state">Select an asset to view its tasks</div>
           </div>

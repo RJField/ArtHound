@@ -1,13 +1,21 @@
 {
   "_variableFields": [
     "Item Type",
-    "Team (from Product)",
-    "Priority"
+    "Priority",
+    "Team (from Product)"
   ],
-  "Axe|Characters|2": "Axe_Characters_2",
-  "Mace|Live Content|2": "Mace_LiveContent_2",
-  "Character ability|Characters|2": "Characterability_Characters_2",
-  "Small Prop|Maps|4": "SmallProp_Maps_4",
-  "Character Skin|Live Content|5": "CharacterSkin_LiveContent_5",
-  "Point of Interest|Maps|4": "PointofInterest_Maps_4"
+  "_fieldIds": [
+    "fldtxYmbOSK5C401H",
+    "fldcJvnutIqlIKfJN",
+    "fldAhP351FRusOzR8",
+    "fldXVDKwiOVPXnYjH",
+    "fldEz8xTbAOV9RLNn",
+    "fldcK4NOQIBQKZJyj"
+  ],
+  "Axe|2|Characters": "Axe_2_Characters",
+  "Character ability|2|Characters": "Characterability_2_Characters",
+  "Mace|2|Live Content": "Mace_2_LiveContent",
+  "Character Skin|5|Live Content": "CharacterSkin_5_LiveContent",
+  "Small Prop|4|Maps": "SmallProp_4_Maps",
+  "Point of Interest|4|Maps": "PointofInterest_4_Maps"
 }

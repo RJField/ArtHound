@@ -6,6 +6,8 @@ const state = {
   focusedAssetId:    null,
   focusedAsset:      null,
   homeView:          'home',
+  taskView:          'list',
+  lastTasks:         null,
 };
 
 // Supabase client — populated after /api/config loads
@@ -498,10 +500,19 @@ async function focusAsset(id) {
 }
 
 function renderAssetTasks(tasks) {
+  state.lastTasks = tasks;
   if (!tasks.length) {
     $('am-tasks-content').innerHTML = '<div class="list-state">No tasks yet — use Generate Work to create them.</div>';
     return;
   }
+  if (state.taskView === 'timeline') {
+    renderAssetTasksTimeline(tasks);
+  } else {
+    renderAssetTasksList(tasks);
+  }
+}
+
+function renderAssetTasksList(tasks) {
   $('am-tasks-content').innerHTML = tasks.map(t => `
     <div class="am-task-row" data-task-id="${esc(t.id)}" data-task-name="${esc(t.task)}">
       <div>
@@ -513,11 +524,78 @@ function renderAssetTasks(tasks) {
   `).join('');
 }
 
+function renderAssetTasksTimeline(tasks) {
+  const dated = tasks
+    .filter(t => t.startDate && t.endDate)
+    .map(t => ({ ...t, start: new Date(t.startDate), end: new Date(t.endDate) }));
+
+  if (!dated.length) {
+    $('am-tasks-content').innerHTML = '<div class="list-state">No dated tasks to display.</div>';
+    return;
+  }
+
+  const minMs = Math.min(...dated.map(t => t.start.getTime()));
+  const maxMs = Math.max(...dated.map(t => t.end.getTime()));
+  const rangeMs = maxMs - minMs || 1;
+
+  const pct  = ms    => ((ms - minMs) / rangeMs * 100).toFixed(2);
+  const wPct = (s, e) => ((e - s) / rangeMs * 100).toFixed(2);
+
+  const now = Date.now();
+  const todayMarker = (now >= minMs && now <= maxMs)
+    ? `<div class="am-timeline-today" style="left:${pct(now)}%"></div>`
+    : '';
+
+  // Month boundary labels
+  const months = [];
+  const cursor = new Date(new Date(minMs).getFullYear(), new Date(minMs).getMonth(), 1);
+  while (cursor.getTime() <= maxMs) {
+    const p = Math.max(0, pct(cursor.getTime()));
+    months.push(`<span class="am-timeline-month" style="left:${p}%">${cursor.toLocaleString('default', { month: 'short' })} ${cursor.getFullYear()}</span>`);
+    cursor.setMonth(cursor.getMonth() + 1);
+  }
+
+  const rows = dated.map(t => `
+    <div class="am-timeline-row am-task-row" data-task-id="${esc(t.id)}" data-task-name="${esc(t.task)}">
+      <div class="am-timeline-label" title="${esc(t.task)}">${esc(t.task)}</div>
+      <div class="am-timeline-track">
+        ${todayMarker}
+        <div class="am-timeline-bar" style="left:${pct(t.start.getTime())}%;width:${wPct(t.start, t.end)}%">
+          ${t.estimate != null ? `<span>${t.estimate}d</span>` : ''}
+        </div>
+      </div>
+    </div>
+  `).join('');
+
+  $('am-tasks-content').innerHTML = `
+    <div class="am-timeline">
+      <div class="am-timeline-header-row">
+        <div class="am-timeline-label"></div>
+        <div class="am-timeline-track am-timeline-months">
+          ${months.join('')}
+          ${todayMarker}
+        </div>
+      </div>
+      ${rows}
+    </div>
+  `;
+}
+
 // Event delegation — wired once, survives re-renders
 $('am-tasks-content').addEventListener('click', e => {
   const row = e.target.closest('.am-task-row[data-task-id]');
   if (row) openTaskDetail(row.dataset.taskId, row.dataset.taskName);
 });
+
+// Task view toggle
+function setTaskView(view) {
+  state.taskView = view;
+  $('am-tasks-list-btn').classList.toggle('active', view === 'list');
+  $('am-tasks-timeline-btn').classList.toggle('active', view === 'timeline');
+  if (state.lastTasks) renderAssetTasks(state.lastTasks);
+}
+$('am-tasks-list-btn').addEventListener('click', () => setTaskView('list'));
+$('am-tasks-timeline-btn').addEventListener('click', () => setTaskView('timeline'));
 
 // Maps field names that hold record references to the table key used in /api/records/{key}/{id}.
 // Extend this as new linked entities are added. When migrating to Postgres, update
@@ -1702,7 +1780,7 @@ async function renderStep5() {
           <span class="badge">${result.created} added</span>
           ${result.skipped ? `<span class="muted">${result.skipped} already existed</span>` : ''}
           ${result.deleted ? `<span class="muted">${result.deleted} deleted</span>` : ''}
-          ${result.prefillPending ? `<span class="muted">Prefilling from ${esc(wizard.prefillCol)} in background — check Airtable in a moment</span>` : ''}
+          ${result.prefillPending ? `<span class="wizard-result-prefill">Prefilling from <strong>${esc(wizard.prefillCol)}</strong> in background — check Airtable in a moment</span>` : ''}
         </div>
         <div class="wizard-section-sub" style="margin-top:14px">
           estimates.config.js has been updated. Download the CSV to fill in day estimates offline,

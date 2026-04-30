@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from lib.airtable import http_client, find_record
+from lib.db import db_client
 from lib.auth import CurrentUser, get_current_user
 import config
 from routes.assets import router as assets_router
@@ -23,6 +24,7 @@ from routes.reviews import router as reviews_router
 async def lifespan(app: FastAPI):
     yield
     await http_client.aclose()
+    await db_client.aclose()
 
 
 app = FastAPI(lifespan=lifespan)

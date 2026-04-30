@@ -7,7 +7,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from lib.airtable import select_all, find_record, update_records, http_client
-from lib.auth import CurrentUser, require_studio
+from lib.auth import CurrentUser, get_current_user, require_studio
+from lib.canonical import get_or_create_canonical_ids
 from lib.utils import resolve_name, link_id
 import config
 
@@ -82,6 +83,7 @@ def _normalize_asset(
     product_names: dict = {},
     item_type_names: dict = {},
     linked_id_map: dict = {},
+    canonical_id: str | None = None,
 ) -> dict:
     milestone4 = r["fields"].get("Milestone 4 [Dates]")
     product_links = r["fields"].get("Product") or []
@@ -102,6 +104,7 @@ def _normalize_asset(
 
     return {
         "id": r["id"],
+        "canonicalId": canonical_id,
         "assetNumber": r["fields"].get("ID"),
         "name": resolve_name(r["fields"].get("Name")),
         "devName": resolve_name(r["fields"].get("Dev Name")),
@@ -130,7 +133,10 @@ async def get_products():
 
 @router.get("")
 @router.get("/")
-async def get_assets(productId: Optional[str] = Query(None)):
+async def get_assets(
+    productId: Optional[str] = Query(None),
+    current_user: CurrentUser = Depends(get_current_user),
+):
     records, product_names, item_type_names, task_names = await asyncio.gather(
         select_all(
             config.tables["assets"],
@@ -141,8 +147,12 @@ async def get_assets(productId: Optional[str] = Query(None)):
         _fetch_task_names(),
     )
     linked_id_map = {**task_names}
+    canonical_map = await get_or_create_canonical_ids([r["id"] for r in records], current_user.studio_id)
 
-    assets = [_normalize_asset(r, product_names, item_type_names, linked_id_map) for r in records]
+    assets = [
+        _normalize_asset(r, product_names, item_type_names, linked_id_map, canonical_map.get(r["id"]))
+        for r in records
+    ]
     if productId:
         assets = [a for a in assets if a["productId"] == productId]
     return assets
@@ -170,14 +180,15 @@ async def get_asset_fields():
 
 
 @router.get("/{asset_id}")
-async def get_asset(asset_id: str):
-    record, product_names, item_type_names, task_names = await asyncio.gather(
+async def get_asset(asset_id: str, current_user: CurrentUser = Depends(get_current_user)):
+    record, product_names, item_type_names, task_names, canonical_map = await asyncio.gather(
         find_record(config.tables["assets"], asset_id),
         _fetch_product_names(),
         _fetch_item_type_names(),
         _fetch_task_names(),
+        get_or_create_canonical_ids([asset_id], current_user.studio_id),
     )
-    return _normalize_asset(record, product_names, item_type_names, {**task_names})
+    return _normalize_asset(record, product_names, item_type_names, {**task_names}, canonical_map.get(asset_id))
 
 
 class NameUpdate(BaseModel):

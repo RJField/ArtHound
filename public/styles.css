@@ -483,6 +483,122 @@ body {
 }
 
 
+/* View toggle (list / timeline) */
+.am-view-toggle {
+  display: flex;
+  gap: 2px;
+}
+.am-view-toggle .icon-btn {
+  padding: 2px 4px;
+  border-radius: 3px;
+  line-height: 1;
+}
+.am-view-toggle .icon-btn.active {
+  opacity: 1;
+  color: var(--accent);
+}
+
+/* Timeline */
+.am-timeline {
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 8px;
+  min-width: 0;
+}
+
+.am-timeline-header-row {
+  display: flex;
+  align-items: stretch;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 4px;
+  margin-bottom: 2px;
+}
+
+.am-timeline-row {
+  display: flex;
+  align-items: center;
+  padding: 4px 0;
+  cursor: pointer;
+  border-radius: 4px;
+  margin: 0 -4px;
+  padding-left: 4px;
+  padding-right: 4px;
+  transition: background 0.12s;
+}
+.am-timeline-row:hover { background: var(--hover); }
+
+.am-timeline-label {
+  width: 150px;
+  min-width: 150px;
+  font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding-right: 10px;
+  color: var(--text-muted);
+}
+.am-timeline-row:hover .am-timeline-label { color: var(--text); }
+
+.am-timeline-track {
+  flex: 1;
+  position: relative;
+  height: 20px;
+  min-width: 0;
+}
+
+.am-timeline-months {
+  height: 18px;
+}
+
+.am-timeline-month {
+  position: absolute;
+  top: 0;
+  font-size: 10px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  padding-left: 4px;
+  border-left: 1px solid var(--border);
+  height: 100%;
+  display: flex;
+  align-items: center;
+}
+
+.am-timeline-bar {
+  position: absolute;
+  top: 3px;
+  height: 14px;
+  background: var(--accent);
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  padding: 0 4px;
+  min-width: 4px;
+  opacity: 0.75;
+  overflow: hidden;
+  transition: opacity 0.12s;
+  box-sizing: border-box;
+}
+.am-timeline-row:hover .am-timeline-bar { opacity: 1; }
+
+.am-timeline-bar span {
+  font-size: 10px;
+  color: #fff;
+  font-weight: 600;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.am-timeline-today {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--err);
+  opacity: 0.6;
+  pointer-events: none;
+  z-index: 1;
+}
+
 /* Empty state */
 .empty-state {
   height: 100%;
@@ -859,8 +975,9 @@ body {
 .wizard-result-title { font-size: 18px; font-weight: 700; }
 .wizard-result-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
+  gap: 6px 10px;
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -868,6 +985,12 @@ body {
   font-size: 13px;
   width: 100%;
   max-width: 480px;
+}
+.wizard-result-row .wizard-result-prefill {
+  flex-basis: 100%;
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 2px;
 }
 
 /* ---- Wizard step 4 config ---- */

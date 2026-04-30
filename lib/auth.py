@@ -1,10 +1,12 @@
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import jwt
 from jwt import PyJWKClient
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+
+from lib.db import db_client, _url, _headers
 
 bearer_scheme = HTTPBearer()
 
@@ -29,6 +31,7 @@ class CurrentUser:
     id: str
     email: str
     role: str
+    studio_id: str | None = field(default=None)
 
 
 async def get_current_user(
@@ -80,10 +83,22 @@ async def get_current_user(
             detail="No valid role assigned to this account",
         )
 
+    studio_id = None
+    if role == "studio":
+        r = await db_client.get(
+            _url("/rest/v1/studio_members"),
+            params={"select": "studio_id", "user_id": f"eq.{payload['sub']}"},
+            headers=_headers(),
+        )
+        rows = r.json()
+        if rows:
+            studio_id = rows[0]["studio_id"]
+
     return CurrentUser(
         id=payload["sub"],
         email=payload.get("email", ""),
         role=role,
+        studio_id=studio_id,
     )
 
 

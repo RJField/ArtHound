@@ -1,8 +1,11 @@
 import asyncio
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any, List, Optional
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from fastapi.responses import Response
@@ -21,6 +24,9 @@ ESTIMATES_CONFIG_PATH = Path(__file__).parent.parent / "estimates.config.json"
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+_RESERVED_KEYS = {"_variableFields", "_fieldIds"}
+
 
 def read_estimates_config() -> dict:
     try:
@@ -105,11 +111,11 @@ async def delete_field(table_id: str, field_id: str) -> None:
         headers={"Authorization": f"Bearer {token}"},
     )
     if not r.is_success:
-        body = r.json()
-        raise ValueError(
-            body.get("error", {}).get("message")
-            or f"Failed to delete field {field_id}: {r.status_code}"
-        )
+        try:
+            body = r.json()
+        except Exception:
+            body = r.text
+        raise ValueError(f"Delete field failed (HTTP {r.status_code}): {body}")
 
 
 async def add_field_to_table(
@@ -124,8 +130,9 @@ async def add_field_to_table(
     )
     body = r.json()
     if not r.is_success:
+        err = body.get("error", {})
         raise ValueError(
-            body.get("error", {}).get("message")
+            (err.get("message") if isinstance(err, dict) else str(err))
             or f'Failed to add field "{name}": {r.status_code}'
         )
     return body
@@ -275,7 +282,7 @@ async def get_matrix_table():
     config_col_map = {
         col_name: key.replace("|", " | ")
         for key, col_name in estimates_config.items()
-        if key != "_variableFields"
+        if key not in _RESERVED_KEYS
     }
 
     DEP_FIELDS = {"Depends upon", "Depended upon"}
@@ -407,7 +414,7 @@ async def create_matrix(
     background_tasks: BackgroundTasks,
     _: CurrentUser = Depends(require_studio),
 ):
-    variable_fields = [v.field for v in body.variables]
+    variable_fields = sorted(v.field for v in body.variables)
 
     tables = await fetch_base_schema()
     templates_table = next((t for t in tables if t["name"] == config.tables["templates"]), None)
@@ -419,32 +426,44 @@ async def create_matrix(
 
     if body.clearExisting:
         prev_config = read_estimates_config()
-        prev_col_names = [v for k, v in prev_config.items() if k != "_variableFields"]
-        for field_name in prev_col_names:
-            field = existing_fields.get(field_name)
-            if field:
+        prev_col_names = [v for k, v in prev_config.items() if k not in _RESERVED_KEYS]
+        # Always resolve to current IDs from the live schema — stored _fieldIds can go stale
+        # if fields were manually deleted/recreated since the last wizard run.
+        for col_name in prev_col_names:
+            field = existing_fields.get(col_name)
+            if not field or not isinstance(field, dict) or "id" not in field:
+                logger.info("clearExisting: %r not found in schema, skipping", col_name)
+                continue
+            try:
                 await delete_field(templates_table["id"], field["id"])
-                del existing_fields[field_name]
-                deleted.append(field_name)
+                del existing_fields[col_name]
+                deleted.append(col_name)
+            except ValueError as e:
+                logger.warning("delete_field(%s / %s) failed: %s", col_name, field["id"], e)
 
     created = []
     skipped = []
     config_map: dict = {}
+    field_ids: list = []
 
     for combo in body.combinations:
         col_name = to_column_name(combo, variable_fields)
         config_key = to_config_key(combo, variable_fields)
 
         if col_name in existing_fields:
+            existing = existing_fields[col_name]
+            if isinstance(existing, dict) and "id" in existing:
+                field_ids.append(existing["id"])
             skipped.append(col_name)
         else:
-            await add_field_to_table(templates_table["id"], col_name, "number", {"precision": 1})
+            new_field = await add_field_to_table(templates_table["id"], col_name, "number", {"precision": 1})
+            field_ids.append(new_field["id"])
             created.append(col_name)
-            existing_fields[col_name] = True  # type: ignore
+            existing_fields[col_name] = new_field
 
         config_map[config_key] = col_name
 
-    config_obj = {"_variableFields": variable_fields, **config_map}
+    config_obj = {"_variableFields": variable_fields, "_fieldIds": field_ids, **config_map}
     ESTIMATES_CONFIG_PATH.write_text(json.dumps(config_obj, indent=2), encoding="utf-8")
 
     target_cols = created + skipped
@@ -505,7 +524,7 @@ async def import_csv(body: ImportCSVBody, _: CurrentUser = Depends(require_studi
         raise HTTPException(status_code=400, detail='CSV must have a "Task" column')
 
     estimates_config = read_estimates_config()
-    valid_cols = {v for k, v in estimates_config.items() if k != "_variableFields"}
+    valid_cols = {v for k, v in estimates_config.items() if k not in _RESERVED_KEYS}
 
     col_map = [
         {"idx": i, "colName": h}
@@ -554,7 +573,7 @@ async def import_csv(body: ImportCSVBody, _: CurrentUser = Depends(require_studi
 @router.get("/export-csv")
 async def export_csv():
     estimates_config = read_estimates_config()
-    col_entries = [(k, v) for k, v in estimates_config.items() if k != "_variableFields"]
+    col_entries = [(k, v) for k, v in estimates_config.items() if k not in _RESERVED_KEYS]
     if not col_entries:
         raise HTTPException(
             status_code=400,
