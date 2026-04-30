@@ -4,7 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ArtHound</title>
-  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="styles.css?v=5">
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 </head>
 <body>
 
@@ -12,198 +13,205 @@
   <div id="view-login" class="view">
     <div class="login-card">
       <img src="arthound_logo.png" alt="ArtHound" class="login-logo">
+      <h2 class="login-title">ArtHound</h2>
+      <p class="login-sub">Asset-Centric Intelligence platform</p>
       <div class="login-fields">
-        <input class="login-input" type="text"     id="login-username" placeholder="Username" autocomplete="off">
-        <input class="login-input" type="password" id="login-password" placeholder="Password">
+        <input class="login-input" type="email"    id="login-username" placeholder="Email" autocomplete="email">
+        <input class="login-input" type="password" id="login-password" placeholder="Password" autocomplete="current-password">
       </div>
-      <div class="login-divider"></div>
+      <div id="login-error" style="color:var(--err);font-size:0.8rem;min-height:1.2em;text-align:center;"></div>
       <div class="login-btns">
-        <button class="btn btn-primary"   id="login-studio">Login as Studio</button>
-        <button class="btn btn-secondary" id="login-vendor">Login as Vendor</button>
+        <button class="btn btn-primary" id="login-btn">Sign in</button>
       </div>
     </div>
   </div>
 
   <!-- ── HOME VIEW ── -->
   <div id="view-home" class="view">
-    <div class="home-layout">
-      <div class="home-suite-title">Studio Suite</div>
-      <div class="home-pillars">
-        <div class="home-pillar home-pillar-left">
-          <div class="home-brand">
-            <img src="arthound_logo.png" alt="ArtHound" class="home-brand-img">
-          </div>
-          <nav class="home-cards">
+    <div class="home">
+      <div class="home-hero">
+        <img src="arthound_logo.png" alt="ArtHound" class="home-hero-logo">
+        <div class="home-hero-text">
+          <h1>Welcome back</h1>
+          <p>Asset-Centric Intelligence platform</p>
+        </div>
+      </div>
+      <div class="home-suite-label">Studio Suite</div>
+
+      <div class="home-grid">
+        <div>
+          <div class="home-tools">
             <button class="home-card" id="nav-assets">
               <div class="home-card-icon">⊞</div>
-              <div class="home-card-body">
-                <div class="home-card-title">Asset Manager</div>
-                <div class="home-card-desc">View Asset intel, generate tasking and update naming.</div>
-              </div>
-              <div class="home-card-arrow">→</div>
+              <div class="home-card-title">Asset Manager</div>
+              <div class="home-card-desc">View Asset intel, generate tasking and update naming.</div>
             </button>
             <button class="home-card" id="nav-estimates">
               <div class="home-card-icon">⚙</div>
-              <div class="home-card-body">
-                <div class="home-card-title">Estimates</div>
-                <div class="home-card-desc">Configure the estimation engine and update estimate values from CSV</div>
-              </div>
-              <div class="home-card-arrow">→</div>
+              <div class="home-card-title">Estimates</div>
+              <div class="home-card-desc">Configure the estimation engine and update estimate values from CSV.</div>
             </button>
             <button class="home-card" id="nav-workflows">
               <div class="home-card-icon">⇄</div>
-              <div class="home-card-body">
-                <div class="home-card-title">Workflows</div>
-                <div class="home-card-desc">Create and manage production workflow steps</div>
-              </div>
-              <div class="home-card-arrow">→</div>
+              <div class="home-card-title">Workflows</div>
+              <div class="home-card-desc">Define stage transitions and automate handoffs across the pipeline.</div>
             </button>
             <button class="home-card" id="nav-reviews">
               <div class="home-card-icon">✦</div>
-              <div class="home-card-body">
-                <div class="home-card-title">Asset Reviews</div>
-                <div class="home-card-desc">Review and approve assets across the production pipeline</div>
-              </div>
-              <div class="home-card-arrow">→</div>
+              <div class="home-card-title">Asset Reviews</div>
+              <div class="home-card-desc">Review and approve assets across the production pipeline.</div>
             </button>
-          </nav>
-          <button class="home-card home-card-sm home-card-bottom" id="nav-todos">
-            <div class="home-card-icon">✓</div>
-            <div class="home-card-body">
+          </div>
+          <div class="home-util-row">
+            <button class="home-card home-card-sm" id="nav-todos" style="flex:1">
+              <div class="home-card-icon">✓</div>
               <div class="home-card-title">ToDos</div>
-            </div>
-            <div class="home-card-arrow">→</div>
-          </button>
+            </button>
+            <button class="btn btn-ghost btn-sm" id="logout-btn">Sign out</button>
+          </div>
         </div>
-        <div class="home-pillar-divider"></div>
-        <div class="home-pillar home-pillar-right">
-          <img src="cutool-logo.png" alt="Cu-TOOL-u" class="home-cutool-logo">
-          <nav class="home-cards">
-            <button class="home-card home-card-sm" disabled>
-              <div class="home-card-icon">◈</div>
-              <div class="home-card-body">
-                <div class="home-card-title">NumberBot</div>
-              </div>
-              <div class="home-card-arrow">→</div>
-            </button>
-            <button class="home-card home-card-sm" disabled>
-              <div class="home-card-icon">✦</div>
-              <div class="home-card-body">
-                <div class="home-card-title">LoreBot</div>
-              </div>
-              <div class="home-card-arrow">→</div>
-            </button>
-            <button class="home-card home-card-sm" disabled>
-              <div class="home-card-icon">⚙</div>
-              <div class="home-card-body">
-                <div class="home-card-title">OpsBot</div>
-              </div>
-              <div class="home-card-arrow">→</div>
-            </button>
-            <button class="home-card home-card-sm" disabled>
-              <div class="home-card-icon">⊕</div>
-              <div class="home-card-body">
-                <div class="home-card-title">ATCBot</div>
-              </div>
-              <div class="home-card-arrow">→</div>
-            </button>
-          </nav>
-          <button class="home-card home-card-sm home-card-bottom" id="nav-airtable">
-            <div class="home-card-icon">⊞</div>
-            <div class="home-card-body">
+
+        <aside class="bot-pillar">
+          <div class="bot-pillar-head">
+            <img src="cutool-logo.png" alt="Cu-TOOL-u" class="bot-pillar-logo">
+            <div>
+              <div class="bot-pillar-title">Cu-TOOL-u</div>
+              <div class="bot-pillar-sub">Production intelligence for the new age</div>
+            </div>
+          </div>
+          <div class="bot-row">
+            <div class="bot-row-icon">◈</div>
+            <div>
+              <div class="bot-row-name">NumberBot</div>
+              <div class="bot-row-desc">Estimation audits + variance flags</div>
+            </div>
+            <span class="bot-row-tag">Soon</span>
+          </div>
+          <div class="bot-row">
+            <div class="bot-row-icon">✦</div>
+            <div>
+              <div class="bot-row-name">LoreBot</div>
+              <div class="bot-row-desc">Narrative &amp; lore consistency</div>
+            </div>
+            <span class="bot-row-tag">Soon</span>
+          </div>
+          <div class="bot-row">
+            <div class="bot-row-icon">⇄</div>
+            <div>
+              <div class="bot-row-name">OpsBot</div>
+              <div class="bot-row-desc">Pipeline handoff automation</div>
+            </div>
+            <span class="bot-row-tag">Soon</span>
+          </div>
+          <div class="bot-row">
+            <div class="bot-row-icon">⊕</div>
+            <div>
+              <div class="bot-row-name">ATCBot</div>
+              <div class="bot-row-desc">Asset traffic control</div>
+            </div>
+            <span class="bot-row-tag">Soon</span>
+          </div>
+          <div class="bot-footer">
+            <button class="home-card home-card-sm" id="nav-airtable" style="flex:1">
+              <div class="home-card-icon">⊞</div>
               <div class="home-card-title">Airtable Base</div>
-            </div>
-            <div class="home-card-arrow">↗</div>
-          </button>
-        </div>
+              <span style="color:var(--text-muted);font-size:16px;margin-left:auto">↗</span>
+            </button>
+          </div>
+        </aside>
       </div>
     </div>
   </div>
 
   <!-- ── VENDOR HOME VIEW ── -->
   <div id="view-vendor-home" class="view">
-    <div class="home-layout">
-      <div class="home-suite-title">Vendor Suite</div>
-      <div class="home-pillars">
-        <div class="home-pillar home-pillar-left">
-          <div class="home-brand">
-            <img src="arthound_logo.png" alt="ArtHound" class="home-brand-img">
-          </div>
-          <nav class="home-cards">
+    <div class="home">
+      <div class="home-hero">
+        <img src="arthound_logo.png" alt="ArtHound" class="home-hero-logo">
+        <div class="home-hero-text">
+          <h1>Welcome back</h1>
+          <p>Asset-Centric Intelligence platform</p>
+        </div>
+      </div>
+      <div class="home-suite-label">Vendor Suite</div>
+
+      <div class="home-grid">
+        <div>
+          <div class="home-tools">
             <button class="home-card" id="vendor-nav-assets">
               <div class="home-card-icon">⊞</div>
-              <div class="home-card-body">
-                <div class="home-card-title">Asset Manager</div>
-                <div class="home-card-desc">View Asset intel, generate tasking and update naming.</div>
-              </div>
-              <div class="home-card-arrow">→</div>
+              <div class="home-card-title">Asset Manager</div>
+              <div class="home-card-desc">View assigned assets and update delivery metadata.</div>
             </button>
             <button class="home-card" id="vendor-nav-estimates">
               <div class="home-card-icon">⚙</div>
-              <div class="home-card-body">
-                <div class="home-card-title">Estimates</div>
-                <div class="home-card-desc">Configure the estimation engine and update estimate values from CSV</div>
-              </div>
-              <div class="home-card-arrow">→</div>
+              <div class="home-card-title">Estimates</div>
+              <div class="home-card-desc">View matrix-driven estimates for your scoped work.</div>
             </button>
-            <button class="home-card home-card-full" id="vendor-nav-incoming-scope">
+            <button class="home-card" id="vendor-nav-incoming-scope">
               <div class="home-card-icon">⬇</div>
-              <div class="home-card-body">
-                <div class="home-card-title">Incoming Scope</div>
-                <div class="home-card-desc">Review and respond to incoming production scope assignments</div>
-              </div>
-              <div class="home-card-arrow">→</div>
+              <div class="home-card-title">Incoming Scope</div>
+              <div class="home-card-desc">Review newly assigned scope from the studio.</div>
             </button>
-          </nav>
-          <button class="home-card home-card-sm home-card-bottom" id="vendor-nav-todos">
-            <div class="home-card-icon">✓</div>
-            <div class="home-card-body">
+            <button class="home-card" id="vendor-nav-todos">
+              <div class="home-card-icon">✓</div>
               <div class="home-card-title">ToDos</div>
-            </div>
-            <div class="home-card-arrow">→</div>
-          </button>
+              <div class="home-card-desc">Open tasks across all your assets.</div>
+            </button>
+          </div>
+          <div class="home-util-row">
+            <button class="btn btn-ghost btn-sm" id="vendor-logout-btn">Sign out</button>
+          </div>
         </div>
-        <div class="home-pillar-divider"></div>
-        <div class="home-pillar home-pillar-right">
-          <img src="cutool-logo.png" alt="Cu-TOOL-u" class="home-cutool-logo">
-          <nav class="home-cards">
-            <button class="home-card home-card-sm" disabled>
-              <div class="home-card-icon">◈</div>
-              <div class="home-card-body">
-                <div class="home-card-title">NumberBot</div>
-              </div>
-              <div class="home-card-arrow">→</div>
-            </button>
-            <button class="home-card home-card-sm" disabled>
-              <div class="home-card-icon">✦</div>
-              <div class="home-card-body">
-                <div class="home-card-title">LoreBot</div>
-              </div>
-              <div class="home-card-arrow">→</div>
-            </button>
-            <button class="home-card home-card-sm" disabled>
-              <div class="home-card-icon">⚙</div>
-              <div class="home-card-body">
-                <div class="home-card-title">OpsBot</div>
-              </div>
-              <div class="home-card-arrow">→</div>
-            </button>
-            <button class="home-card home-card-sm" disabled>
-              <div class="home-card-icon">⊕</div>
-              <div class="home-card-body">
-                <div class="home-card-title">ATCBot</div>
-              </div>
-              <div class="home-card-arrow">→</div>
-            </button>
-          </nav>
-          <button class="home-card home-card-sm home-card-bottom" id="vendor-nav-airtable">
-            <div class="home-card-icon">⊞</div>
-            <div class="home-card-body">
+
+        <aside class="bot-pillar">
+          <div class="bot-pillar-head">
+            <img src="cutool-logo.png" alt="Cu-TOOL-u" class="bot-pillar-logo">
+            <div>
+              <div class="bot-pillar-title">Cu-TOOL-u</div>
+              <div class="bot-pillar-sub">Production intelligence for the new age</div>
+            </div>
+          </div>
+          <div class="bot-row">
+            <div class="bot-row-icon">◈</div>
+            <div>
+              <div class="bot-row-name">NumberBot</div>
+              <div class="bot-row-desc">Estimation audits + variance flags</div>
+            </div>
+            <span class="bot-row-tag">Soon</span>
+          </div>
+          <div class="bot-row">
+            <div class="bot-row-icon">✦</div>
+            <div>
+              <div class="bot-row-name">LoreBot</div>
+              <div class="bot-row-desc">Narrative &amp; lore consistency</div>
+            </div>
+            <span class="bot-row-tag">Soon</span>
+          </div>
+          <div class="bot-row">
+            <div class="bot-row-icon">⇄</div>
+            <div>
+              <div class="bot-row-name">OpsBot</div>
+              <div class="bot-row-desc">Pipeline handoff automation</div>
+            </div>
+            <span class="bot-row-tag">Soon</span>
+          </div>
+          <div class="bot-row">
+            <div class="bot-row-icon">⊕</div>
+            <div>
+              <div class="bot-row-name">ATCBot</div>
+              <div class="bot-row-desc">Asset traffic control</div>
+            </div>
+            <span class="bot-row-tag">Soon</span>
+          </div>
+          <div class="bot-footer">
+            <button class="home-card home-card-sm" id="vendor-nav-airtable" style="flex:1">
+              <div class="home-card-icon">⊞</div>
               <div class="home-card-title">Airtable Base</div>
-            </div>
-            <div class="home-card-arrow">↗</div>
-          </button>
-        </div>
+              <span style="color:var(--text-muted);font-size:16px;margin-left:auto">↗</span>
+            </button>
+          </div>
+        </aside>
       </div>
     </div>
   </div>
@@ -407,10 +415,25 @@
       <span class="section-nav-title">Asset Reviews</span>
       <button class="btn btn-sm" id="reviews-refresh-btn" style="margin-left:auto">↻ Refresh</button>
     </div>
-    <div class="section-content">
-      <div id="reviews-list" class="reviews-list">
-        <div class="list-state">Loading…</div>
+    <div class="rv-body">
+
+      <!-- Sidebar -->
+      <div class="rv-sidebar">
+        <div class="rv-filters" id="rv-filters"></div>
+        <div id="rv-list" class="rv-list"><div class="list-state">Loading…</div></div>
       </div>
+
+      <!-- Detail panel -->
+      <div class="rv-main">
+        <div class="rv-placeholder" id="rv-placeholder">← Select a review to view details</div>
+        <div class="rv-detail" id="rv-detail" style="display:none">
+          <div class="rv-screenshot-wrap" id="rv-screenshot-wrap"></div>
+          <div class="rv-actions-bar" id="rv-actions-bar"></div>
+          <div class="rv-fields" id="rv-fields"></div>
+          <div class="rv-comments" id="rv-comments"></div>
+        </div>
+      </div>
+
     </div>
   </div>
 
@@ -424,28 +447,67 @@
     </div>
 
     <div class="am-body">
-      <div class="am-products-col">
+
+      <!-- L1: Products -->
+      <div class="am-l1">
         <div class="am-col-label">Products</div>
         <div id="am-product-list"><div class="list-state">Loading…</div></div>
       </div>
-      <div class="am-assets-col">
-        <div id="am-no-product" class="am-placeholder">← Select a product to view its assets</div>
-        <div id="am-assets-content" style="display:none; height:100%; flex-direction:column;">
+
+      <!-- L2: Assets + generate -->
+      <div class="am-l2">
+        <div id="am-no-product" class="am-placeholder">← Select a product</div>
+        <div id="am-assets-content" style="display:none; flex-direction:column; flex:1; overflow:hidden;">
           <div class="am-assets-header">
             <span id="am-product-name" class="am-product-name"></span>
             <label class="am-check-label">
-              <input type="checkbox" id="am-select-all"> Select all
+              <input type="checkbox" id="am-select-all"> All
             </label>
           </div>
-          <div id="am-asset-grid" class="am-asset-grid"></div>
+          <div id="am-asset-list" class="am-asset-list"></div>
+          <div class="am-l2-footer">
+            <span id="am-sel-count" class="am-sel-count">No assets selected</span>
+            <button class="btn btn-success btn-sm" id="am-generate-btn" disabled>Generate Work</button>
+            <span id="am-gen-status" class="status-msg"></span>
+          </div>
         </div>
       </div>
+
+      <!-- Right panel: tasks + meta -->
+      <div class="am-detail">
+        <div class="am-detail-box">
+          <div class="am-detail-box-title">Work Tasks</div>
+          <div id="am-tasks-content" class="am-detail-box-body">
+            <div class="list-state">Select an asset to view its tasks</div>
+          </div>
+        </div>
+        <div class="am-detail-box">
+          <div class="am-detail-box-title">
+            Asset Details
+            <button class="icon-btn" id="am-detail-fields-btn" title="Customize fields">⚙</button>
+          </div>
+          <div id="am-meta-content" class="am-detail-box-body">
+            <div class="list-state">Select an asset to view details</div>
+          </div>
+        </div>
+      </div>
+
     </div>
 
-    <div class="am-footer">
-      <span id="am-sel-count" class="am-sel-count">No assets selected</span>
-      <button class="btn btn-success" id="am-generate-btn" disabled>Generate Schedules</button>
-      <span id="am-gen-status" class="status-msg"></span>
+    <!-- Field settings modal -->
+    <div class="modal-overlay" id="field-settings-overlay">
+      <div class="modal modal-sm">
+        <div class="modal-header">
+          <h2>Asset Detail Fields</h2>
+          <button class="icon-btn" id="field-settings-close">✕</button>
+        </div>
+        <div class="modal-body" id="field-settings-body">
+          <div class="list-state">Loading…</div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-primary btn-sm" id="field-settings-save">Save</button>
+        </div>
+      </div>
     </div>
 
     <!-- Schema modal -->
@@ -464,7 +526,22 @@
 
   </div><!-- /#view-assets -->
 
+  <!-- ── DETAIL MODAL (shared reusable) ── -->
+  <div class="modal-overlay" id="detail-overlay">
+    <div class="modal modal-detail">
+      <div class="modal-header">
+        <div class="dm-header-text">
+          <h2 id="detail-title"></h2>
+          <span id="detail-badge" class="dm-badge" style="display:none"></span>
+        </div>
+        <button class="icon-btn" id="detail-close">✕</button>
+      </div>
+      <div class="modal-body" id="detail-body"></div>
+      <div class="modal-footer" id="detail-footer" style="display:none"></div>
+    </div>
+  </div>
+
   <div class="toast" id="toast"></div>
-  <script src="app.js"></script>
+  <script src="app.js?v=12"></script>
 </body>
 </html>

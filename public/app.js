@@ -3,8 +3,13 @@ const state = {
   selectedProductId: null,
   assets:            [],
   selectedAssetIds:  new Set(),
+  focusedAssetId:    null,
+  focusedAsset:      null,
   homeView:          'home',
 };
+
+// Supabase client — populated after /api/config loads
+let supabaseClient = null;
 
 const $ = id => document.getElementById(id);
 
@@ -22,14 +27,55 @@ function navigate(view) {
   if (view === 'matrix-table') loadMatrixTable();
 }
 
-document.getElementById('login-studio').addEventListener('click', () => {
-  state.homeView = 'home';
-  navigate('home');
+// ── Auth ──
+
+const $loginError = $('login-error');
+
+function setLoginError(msg) {
+  $loginError.textContent = msg || '';
+}
+
+function navigateByRole(role) {
+  if (role === 'studio') {
+    state.homeView = 'home';
+    navigate('home');
+  } else if (role === 'vendor') {
+    state.homeView = 'vendor-home';
+    navigate('vendor-home');
+  } else {
+    setLoginError('Account has no role assigned. Contact your administrator.');
+  }
+}
+
+document.getElementById('login-btn').addEventListener('click', async () => {
+  if (!supabaseClient) { setLoginError('App not ready — please wait.'); return; }
+  setLoginError('');
+  const email    = $('login-username').value.trim();
+  const password = $('login-password').value;
+  if (!email || !password) { setLoginError('Email and password are required.'); return; }
+
+  const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
+  if (error) { setLoginError(error.message); return; }
+
+  const role = data.user?.app_metadata?.role;
+  if (!role) {
+    await supabaseClient.auth.signOut();
+    setLoginError('Account has no role assigned. Contact your administrator.');
+    return;
+  }
+  navigateByRole(role);
 });
-document.getElementById('login-vendor').addEventListener('click', () => {
-  state.homeView = 'vendor-home';
-  navigate('vendor-home');
+
+document.getElementById('login-password').addEventListener('keydown', e => {
+  if (e.key === 'Enter') $('login-btn').click();
 });
+
+async function handleLogout() {
+  if (supabaseClient) await supabaseClient.auth.signOut();
+  navigate('login');
+}
+document.getElementById('logout-btn').addEventListener('click', handleLogout);
+document.getElementById('vendor-logout-btn').addEventListener('click', handleLogout);
 
 // Studio home nav
 document.getElementById('nav-assets').addEventListener('click', () => navigate('assets'));
@@ -46,7 +92,22 @@ document.getElementById('vendor-nav-todos').addEventListener('click', () => navi
 
 fetch('/api/config')
   .then(r => r.json())
-  .then(({ airtableUrl }) => {
+  .then(async ({ airtableUrl, supabaseUrl, supabaseAnonKey }) => {
+    // Bootstrap Supabase
+    supabaseClient = window.supabase.createClient(supabaseUrl, supabaseAnonKey);
+
+    // Redirect to login on sign-out (handles token expiry)
+    supabaseClient.auth.onAuthStateChange((event) => {
+      if (event === 'SIGNED_OUT') navigate('login');
+    });
+
+    // Resume an existing session without requiring re-login
+    const { data: { session } } = await supabaseClient.auth.getSession();
+    if (session) {
+      navigateByRole(session.user?.app_metadata?.role);
+    }
+
+    // Wire Airtable deep-link buttons (available to both roles)
     const wireAirtable = (id) => {
       const btn = document.getElementById(id);
       if (airtableUrl) {
@@ -58,7 +119,8 @@ fetch('/api/config')
     };
     wireAirtable('nav-airtable');
     wireAirtable('vendor-nav-airtable');
-  });
+  })
+  .catch(() => setLoginError('Failed to load app config. Is the server running?'));
 
 document.getElementById('home-btn').addEventListener('click', () => navigate(state.homeView));
 document.getElementById('estimates-home-btn').addEventListener('click', () => navigate(state.homeView));
@@ -90,7 +152,16 @@ function debounce(fn, ms) {
 }
 
 async function apiFetch(path, opts = {}) {
-  const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...opts });
+  const { data: { session } } = await supabaseClient.auth.getSession();
+  if (!session) { navigate('login'); throw new Error('Not authenticated'); }
+  const res = await fetch(path, {
+    ...opts,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(opts.headers || {}),
+      'Authorization': `Bearer ${session.access_token}`,
+    },
+  });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
   return data;
@@ -104,17 +175,220 @@ function showToast(msg, type = 'info') {
   toastTimer = setTimeout(() => $toast.classList.remove('show'), 4000);
 }
 
+// -- Detail Modal --
+//
+// openDetailModal({ title, badge?, fields, image?, actions? })
+//   fields:  [{ label, value }] — value is text-escaped automatically
+//            [{ label, html }]  — html is injected raw (use for links/badges)
+//   actions: [{ label, style?, onClick(closeFn) }]
+
+const $detailOverlay = $('detail-overlay');
+const $detailTitle   = $('detail-title');
+const $detailBadge   = $('detail-badge');
+const $detailBody    = $('detail-body');
+const $detailFooter  = $('detail-footer');
+
+$('detail-close').addEventListener('click', closeDetailModal);
+$detailOverlay.addEventListener('click', e => {
+  if (e.target === $detailOverlay) closeDetailModal();
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && $detailOverlay.classList.contains('open')) closeDetailModal();
+});
+
+function openDetailModal({ title, badge, fields = [], image, actions = [] }) {
+  $detailTitle.textContent = title;
+
+  if (badge) {
+    $detailBadge.textContent = badge;
+    $detailBadge.style.display = '';
+  } else {
+    $detailBadge.style.display = 'none';
+  }
+
+  $detailBody.innerHTML = '';
+  if (image) {
+    const img = document.createElement('img');
+    img.className = 'dm-image';
+    img.src = image;
+    img.alt = 'Preview';
+    $detailBody.appendChild(img);
+  }
+  if (fields.length) {
+    const fieldsEl = document.createElement('div');
+    $detailBody.appendChild(fieldsEl);
+    renderFieldGrid(fieldsEl, fields, { layout: 'list' });
+  }
+
+  $detailFooter.innerHTML = '';
+  if (actions.length) {
+    $detailFooter.style.display = '';
+    actions.forEach(a => {
+      const btn = document.createElement('button');
+      btn.className = `btn btn-${a.style || 'secondary'} btn-sm`;
+      btn.textContent = a.label;
+      btn.addEventListener('click', () => a.onClick(closeDetailModal));
+      $detailFooter.appendChild(btn);
+    });
+  } else {
+    $detailFooter.style.display = 'none';
+  }
+
+  $detailOverlay.classList.add('open');
+}
+
+function closeDetailModal() {
+  $detailOverlay.classList.remove('open');
+}
+
+// -- Field Grid --
+//
+// renderFieldGrid(container, fields, opts?)
+//   container — DOM element or element ID string
+//   fields    — array of FieldDef:
+//     { label, value, type?, span?, badgeColor?, href?, onClick?, action?, resolve? }
+//     type:    'text' (default) | 'badge' | 'link' | 'linked-record'
+//     span:    'full' — tile spans all grid columns (grid layout only)
+//     onClick: fn(field) — custom click; default copies value to clipboard
+//     action:  { label, onClick(field) } — button rendered inside the tile
+//     resolve: async fn(field) → { title, badge?, fields[] }
+//              Required when type='linked-record'. Called on click; opens the
+//              detail modal with the resolved record. DB-agnostic: the caller
+//              decides where/how to fetch (Airtable, Postgres, cache, etc.).
+//   opts:
+//     layout: 'grid' (default) | 'list' — list renders label/value rows, grid renders tiles
+
+function renderFieldGrid(container, fields, opts = {}) {
+  const el = typeof container === 'string' ? $(container) : container;
+  const layout = opts.layout || 'grid';
+  el.className = el.className.replace(/\bfg-(?:grid|list)\b/g, '').trim();
+  el.classList.add(layout === 'list' ? 'fg-list' : 'fg-grid');
+  el.innerHTML = '';
+
+  for (const f of fields) {
+    const hasValue = f.value != null && f.value !== '';
+    const display  = hasValue ? String(f.value) : '—';
+
+    function buildValueNode(cls) {
+      const valueEl = document.createElement('div');
+      valueEl.className = cls + (hasValue ? '' : ' fg-tile-empty');
+      if (f.type === 'badge') {
+        const badge = document.createElement('span');
+        badge.className = 'fg-badge';
+        badge.textContent = display;
+        if (f.badgeColor) badge.style.color = f.badgeColor;
+        valueEl.appendChild(badge);
+      } else if (f.type === 'link' && f.href) {
+        const a = document.createElement('a');
+        a.href = f.href;
+        a.target = '_blank';
+        a.rel = 'noopener';
+        a.className = 'fg-link';
+        a.textContent = display;
+        valueEl.appendChild(a);
+      } else if (f.type === 'linked-record') {
+        valueEl.textContent = display;
+        if (f.resolve) {
+          const indicator = document.createElement('span');
+          indicator.className = 'fg-record-indicator';
+          indicator.textContent = ' ↗';
+          valueEl.appendChild(indicator);
+        }
+      } else {
+        valueEl.textContent = display;
+      }
+      return valueEl;
+    }
+
+    function attachLinkedRecordClick(elem) {
+      elem.classList.add('fg-tile-clickable');
+      elem.addEventListener('click', async () => {
+        openDetailModal({ title: 'Loading…', fields: [{ label: '', value: 'Fetching record…' }] });
+        try {
+          const resolved = await f.resolve(f);
+          openDetailModal(resolved);
+        } catch (err) {
+          closeDetailModal();
+          showToast(err.message, 'error');
+        }
+      });
+    }
+
+    if (layout === 'list') {
+      const row = document.createElement('div');
+      row.className = 'fg-row';
+
+      const labelEl = document.createElement('div');
+      labelEl.className = 'fg-row-label';
+      labelEl.textContent = f.label;
+      row.appendChild(labelEl);
+      row.appendChild(buildValueNode('fg-row-value'));
+
+      if (f.type === 'linked-record' && f.resolve) {
+        attachLinkedRecordClick(row);
+      } else if (f.onClick) {
+        row.classList.add('fg-tile-clickable');
+        row.addEventListener('click', () => f.onClick(f));
+      } else if (hasValue && f.type !== 'link') {
+        row.classList.add('fg-tile-copyable');
+        row.addEventListener('click', () => {
+          navigator.clipboard.writeText(String(f.value)).then(() => {
+            row.classList.add('fg-tile-copied');
+            setTimeout(() => row.classList.remove('fg-tile-copied'), 1200);
+          });
+        });
+      }
+
+      el.appendChild(row);
+    } else {
+      const tile = document.createElement('div');
+      tile.className = 'fg-tile' + (f.span === 'full' ? ' fg-tile-full' : '');
+
+      const labelEl = document.createElement('div');
+      labelEl.className = 'fg-tile-label';
+      labelEl.textContent = f.label;
+      tile.appendChild(labelEl);
+      tile.appendChild(buildValueNode('fg-tile-value'));
+
+      if (f.action) {
+        const btn = document.createElement('button');
+        btn.className = 'btn btn-sm fg-tile-action';
+        btn.textContent = f.action.label;
+        btn.addEventListener('click', e => { e.stopPropagation(); f.action.onClick(f); });
+        tile.appendChild(btn);
+      }
+
+      if (f.type === 'linked-record' && f.resolve) {
+        attachLinkedRecordClick(tile);
+      } else if (f.onClick) {
+        tile.classList.add('fg-tile-clickable');
+        tile.addEventListener('click', () => f.onClick(f));
+      } else if (hasValue && f.type !== 'link') {
+        tile.classList.add('fg-tile-copyable');
+        tile.addEventListener('click', () => {
+          navigator.clipboard.writeText(String(f.value)).then(() => {
+            tile.classList.add('fg-tile-copied');
+            setTimeout(() => tile.classList.remove('fg-tile-copied'), 1200);
+          });
+        });
+      }
+
+      el.appendChild(tile);
+    }
+  }
+}
+
 // -- Asset Manager --
 
-const $amProductList  = $('am-product-list');
-const $amNoProduct    = $('am-no-product');
+const $amProductList   = $('am-product-list');
+const $amNoProduct     = $('am-no-product');
 const $amAssetsContent = $('am-assets-content');
-const $amProductName  = $('am-product-name');
-const $amSelectAll    = $('am-select-all');
-const $amAssetGrid    = $('am-asset-grid');
-const $amSelCount     = $('am-sel-count');
-const $amGenerateBtn  = $('am-generate-btn');
-const $amGenStatus    = $('am-gen-status');
+const $amProductName   = $('am-product-name');
+const $amSelectAll     = $('am-select-all');
+const $amAssetList     = $('am-asset-list');
+const $amSelCount      = $('am-sel-count');
+const $amGenerateBtn   = $('am-generate-btn');
+const $amGenStatus     = $('am-gen-status');
 
 async function loadProducts() {
   $amProductList.innerHTML = '<div class="list-state">Loading…</div>';
@@ -144,31 +418,34 @@ function renderProductList() {
 async function selectProduct(productId) {
   state.selectedProductId = productId;
   state.selectedAssetIds.clear();
+  state.focusedAssetId = null;
   renderProductList();
   updateGenerateBar();
+  $('am-tasks-content').innerHTML = '<div class="list-state">Select an asset to view its tasks</div>';
+  $('am-meta-content').innerHTML  = '<div class="list-state">Select an asset to view details</div>';
 
   const product = state.products.find(p => p.id === productId);
   $amProductName.textContent = product?.name ?? '';
   $amSelectAll.checked = false;
-  $amAssetGrid.innerHTML = '<div class="list-state">Loading…</div>';
+  $amAssetList.innerHTML = '<div class="list-state">Loading…</div>';
   $amNoProduct.style.display = 'none';
   $amAssetsContent.style.display = 'flex';
 
   try {
     state.assets = await apiFetch(`/api/assets?productId=${encodeURIComponent(productId)}`);
-    renderAssetGrid();
+    renderAssetList();
   } catch (err) {
-    $amAssetGrid.innerHTML = `<div class="list-state error">${esc(err.message)}</div>`;
+    $amAssetList.innerHTML = `<div class="list-state error">${esc(err.message)}</div>`;
   }
 }
 
-function renderAssetGrid() {
+function renderAssetList() {
   if (!state.assets.length) {
-    $amAssetGrid.innerHTML = '<div class="list-state">No assets for this product</div>';
+    $amAssetList.innerHTML = '<div class="list-state">No assets for this product</div>';
     return;
   }
-  $amAssetGrid.innerHTML = state.assets.map(a => `
-    <div class="am-asset-card${state.selectedAssetIds.has(a.id) ? ' selected' : ''}" data-id="${esc(a.id)}">
+  $amAssetList.innerHTML = state.assets.map(a => `
+    <div class="am-asset-row${state.focusedAssetId === a.id ? ' am-asset-focused' : ''}" data-id="${esc(a.id)}">
       <input type="checkbox" class="am-asset-check" data-id="${esc(a.id)}"
              ${state.selectedAssetIds.has(a.id) ? 'checked' : ''}>
       <div class="am-asset-info">
@@ -181,13 +458,13 @@ function renderAssetGrid() {
     </div>
   `).join('');
 
-  $amAssetGrid.querySelectorAll('.am-asset-card').forEach(card => {
-    card.addEventListener('click', e => {
+  $amAssetList.querySelectorAll('.am-asset-row').forEach(row => {
+    row.addEventListener('click', e => {
       if (e.target.type === 'checkbox') return;
-      toggleAsset(card.dataset.id);
+      focusAsset(row.dataset.id);
     });
-    card.querySelector('.am-asset-check').addEventListener('change', e => {
-      toggleAsset(card.dataset.id, e.target.checked);
+    row.querySelector('.am-asset-check').addEventListener('change', e => {
+      toggleAsset(row.dataset.id, e.target.checked);
     });
   });
 }
@@ -197,14 +474,278 @@ function toggleAsset(id, force) {
   if (checked) state.selectedAssetIds.add(id);
   else state.selectedAssetIds.delete(id);
 
-  const card = $amAssetGrid.querySelector(`.am-asset-card[data-id="${id}"]`);
-  if (card) {
-    card.classList.toggle('selected', checked);
-    card.querySelector('.am-asset-check').checked = checked;
-  }
+  const row = $amAssetList.querySelector(`.am-asset-row[data-id="${id}"]`);
+  if (row) row.querySelector('.am-asset-check').checked = checked;
   $amSelectAll.checked = state.assets.length > 0 && state.assets.every(a => state.selectedAssetIds.has(a.id));
   updateGenerateBar();
 }
+
+async function focusAsset(id) {
+  state.focusedAssetId = id;
+  renderAssetList();
+
+  const asset = state.assets.find(a => a.id === id);
+  state.focusedAsset = asset;
+  renderAssetMeta(asset);
+
+  $('am-tasks-content').innerHTML = '<div class="list-state">Loading…</div>';
+  try {
+    const tasks = await apiFetch(`/api/schedule/tasks?assetId=${encodeURIComponent(id)}`);
+    renderAssetTasks(tasks);
+  } catch (err) {
+    $('am-tasks-content').innerHTML = `<div class="list-state error">${esc(err.message)}</div>`;
+  }
+}
+
+function renderAssetTasks(tasks) {
+  if (!tasks.length) {
+    $('am-tasks-content').innerHTML = '<div class="list-state">No tasks yet — use Generate Work to create them.</div>';
+    return;
+  }
+  $('am-tasks-content').innerHTML = tasks.map(t => `
+    <div class="am-task-row" data-task-id="${esc(t.id)}" data-task-name="${esc(t.task)}">
+      <div>
+        <div class="am-task-name">${esc(t.task)}</div>
+        <div class="am-task-dates">${esc(t.startDate ? fmtDate(t.startDate) : '—')} → ${esc(t.endDate ? fmtDate(t.endDate) : '—')}</div>
+      </div>
+      <div class="am-task-estimate">${t.estimate != null ? t.estimate + 'd' : '—'}</div>
+    </div>
+  `).join('');
+}
+
+// Event delegation — wired once, survives re-renders
+$('am-tasks-content').addEventListener('click', e => {
+  const row = e.target.closest('.am-task-row[data-task-id]');
+  if (row) openTaskDetail(row.dataset.taskId, row.dataset.taskName);
+});
+
+// Maps field names that hold record references to the table key used in /api/records/{key}/{id}.
+// Extend this as new linked entities are added. When migrating to Postgres, update
+// the resolve functions that call /api/records — the map itself stays the same.
+const LINKED_TABLE_MAP = {
+  'Asset':  'assets',
+  'Assets': 'assets',
+};
+
+// Converts a raw field value dict into a FieldDef array for renderFieldGrid.
+// Handles dates, arrays, and primitive types. Does not attempt link resolution —
+// callers wire resolve() separately for known reference fields.
+function formatRawFields(rawFields) {
+  return Object.entries(rawFields)
+    .filter(([, v]) => v != null && v !== '')
+    .map(([k, v]) => {
+      let display;
+      if (Array.isArray(v)) {
+        const allRecIds = v.every(x => typeof x === 'string' && x.startsWith('rec'));
+        display = allRecIds
+          ? `${v.length} linked record${v.length !== 1 ? 's' : ''}`
+          : v.join(', ');
+      } else if (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}/.test(v)) {
+        display = fmtDate(v.slice(0, 10));
+      } else {
+        display = String(v);
+      }
+      return { label: k, value: display };
+    });
+}
+
+// Builds the resolve function for a single linked-record reference.
+function makeRecordResolver(tableKey, recordId, fallbackTitle) {
+  return async () => {
+    const { fields } = await apiFetch(`/api/records/${tableKey}/${encodeURIComponent(recordId)}`);
+    // Try common primary-field names, then fall back to the first string value, then fallbackTitle
+    const title = fields.Name || fields.name
+      || Object.values(fields).find(v => typeof v === 'string' && v.length > 0)
+      || fallbackTitle;
+    return { title, fields: formatRawFields(fields) };
+  };
+}
+
+async function openTaskDetail(taskId, taskName) {
+  openDetailModal({ title: taskName, fields: [{ label: '', value: 'Loading…' }] });
+  try {
+    const { fields, displayFields = {} } = await apiFetch(`/api/schedule/tasks/${encodeURIComponent(taskId)}`);
+    const SKIP = new Set(['Task']);
+    const entries = [];
+
+    for (const [k, v] of Object.entries(fields)) {
+      if (SKIP.has(k) || v == null || v === '') continue;
+
+      const isRecArray = Array.isArray(v) && v.length > 0 &&
+        v.every(x => typeof x === 'string' && x.startsWith('rec'));
+
+      if (isRecArray) {
+        const tableKey = LINKED_TABLE_MAP[k];
+        if (tableKey && v.length === 1) {
+          // Single reference to a known entity — make it navigable
+          const displayName = displayFields[k] || v[0];
+          entries.push({
+            label: k,
+            value: displayName,
+            type: 'linked-record',
+            resolve: makeRecordResolver(tableKey, v[0], displayName),
+          });
+        } else {
+          // Multiple references or unknown table — show display string
+          const display = displayFields[k] ||
+            (tableKey ? `${v.length} linked record${v.length !== 1 ? 's' : ''}` : v.join(', '));
+          entries.push({ label: k, value: display });
+        }
+      } else {
+        // Regular field — prefer display string (resolves lookups, formats dates)
+        const display = (displayFields[k] != null && displayFields[k] !== '')
+          ? displayFields[k]
+          : (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}/.test(v))
+            ? fmtDate(v.slice(0, 10))
+            : String(v);
+        entries.push({ label: k, value: display });
+      }
+    }
+
+    openDetailModal({
+      title: taskName,
+      fields: entries.length ? entries : [{ label: 'No fields', value: null }],
+    });
+  } catch (err) {
+    closeDetailModal();
+    showToast(err.message, 'error');
+  }
+}
+
+const FIELD_SETTINGS_KEY = 'arthound:assetDetailFields';
+
+const BUILTIN_FIELDS = [
+  { key: 'name',        label: 'Name' },
+  { key: 'devName',     label: 'Dev Name' },
+  { key: 'itemType',    label: 'Item Type' },
+  { key: 'product',     label: 'Product' },
+  { key: 'team',        label: 'Team' },
+  { key: 'priority',    label: 'Priority' },
+  { key: 'projectDate', label: 'Project Date' },
+  { key: 'assetNumber', label: 'Asset #' },
+];
+
+const DEFAULT_BUILTINS = BUILTIN_FIELDS.map(f => f.key);
+
+function loadFieldSettings() {
+  try {
+    const raw = localStorage.getItem(FIELD_SETTINGS_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch (e) {}
+  return null;
+}
+
+function saveFieldSettings(settings) {
+  localStorage.setItem(FIELD_SETTINGS_KEY, JSON.stringify(settings));
+}
+
+function getBuiltinValue(asset, key) {
+  if (key === 'priority') return asset.priority != null ? `P${asset.priority}` : null;
+  if (key === 'projectDate') return asset.projectDate ? fmtDate(asset.projectDate.slice(0, 10)) : null;
+  return asset[key] ?? null;
+}
+
+function renderAssetMeta(asset) {
+  if (!asset) return;
+  const settings = loadFieldSettings();
+  const enabledBuiltins = settings ? settings.builtins : DEFAULT_BUILTINS;
+  const extras = settings ? (settings.extras || []) : [];
+
+  const fields = [
+    ...BUILTIN_FIELDS
+      .filter(f => enabledBuiltins.includes(f.key))
+      .map(f => {
+        const value = getBuiltinValue(asset, f.key);
+        if (f.key === 'product' && asset.productId && value) {
+          return {
+            label: f.label, value,
+            type: 'linked-record',
+            resolve: makeRecordResolver('products', asset.productId, value),
+          };
+        }
+        return { label: f.label, value };
+      })
+      .filter(f => f.value != null && f.value !== ''),
+    ...extras
+      .map(fname => ({ label: fname, value: asset.rawFields?.[fname] ?? null }))
+      .filter(f => f.value != null && f.value !== ''),
+  ];
+
+  renderFieldGrid('am-meta-content', fields);
+}
+
+// -- Field settings modal --
+
+const $fieldSettingsOverlay = $('field-settings-overlay');
+const $fieldSettingsBody    = $('field-settings-body');
+const $fieldSettingsBtn     = $('am-detail-fields-btn');
+const $fieldSettingsClose   = $('field-settings-close');
+const $fieldSettingsSave    = $('field-settings-save');
+
+const BUILTIN_AIRTABLE_NAMES = new Set([
+  'Name', 'Dev Name', 'ID', 'Product', 'Item Type',
+  'Team (from Product)', 'Priority', 'Milestone 4 [Dates]',
+]);
+
+$fieldSettingsBtn.addEventListener('click', openFieldSettings);
+$fieldSettingsClose.addEventListener('click', () => $fieldSettingsOverlay.classList.remove('open'));
+$fieldSettingsOverlay.addEventListener('click', e => {
+  if (e.target === $fieldSettingsOverlay) $fieldSettingsOverlay.classList.remove('open');
+});
+
+async function openFieldSettings() {
+  $fieldSettingsOverlay.classList.add('open');
+  $fieldSettingsBody.innerHTML = '<div class="list-state">Loading fields…</div>';
+
+  const settings = loadFieldSettings() || { builtins: [...DEFAULT_BUILTINS], extras: [] };
+
+  let additionalFields = [];
+  try {
+    const fields = await apiFetch('/api/assets/fields');
+    additionalFields = fields.filter(f => !BUILTIN_AIRTABLE_NAMES.has(f.name));
+  } catch (_) {
+    // Fallback: derive from rawFields already present on loaded assets
+    const allRawNames = new Set();
+    state.assets.forEach(a => Object.keys(a.rawFields || {}).forEach(k => allRawNames.add(k)));
+    additionalFields = [...allRawNames]
+      .filter(name => !BUILTIN_AIRTABLE_NAMES.has(name))
+      .sort()
+      .map(name => ({ name }));
+  }
+
+  $fieldSettingsBody.innerHTML = `
+    <div class="field-settings-section">
+      <div class="field-settings-section-title">Default Fields</div>
+      ${BUILTIN_FIELDS.map(f => `
+        <label class="field-settings-item">
+          <input type="checkbox" name="builtin" value="${esc(f.key)}"
+                 ${settings.builtins.includes(f.key) ? 'checked' : ''}>
+          <span>${esc(f.label)}</span>
+        </label>
+      `).join('')}
+    </div>
+    ${additionalFields.length ? `
+      <div class="field-settings-section">
+        <div class="field-settings-section-title">Additional Airtable Fields</div>
+        ${additionalFields.map(f => `
+          <label class="field-settings-item">
+            <input type="checkbox" name="extra" value="${esc(f.name)}"
+                   ${settings.extras.includes(f.name) ? 'checked' : ''}>
+            <span>${esc(f.name)}</span>
+          </label>
+        `).join('')}
+      </div>
+    ` : '<p class="field-settings-hint">No additional fields found.</p>'}
+  `;
+}
+
+$fieldSettingsSave.addEventListener('click', () => {
+  const builtins = [...$fieldSettingsBody.querySelectorAll('input[name="builtin"]:checked')].map(el => el.value);
+  const extras   = [...$fieldSettingsBody.querySelectorAll('input[name="extra"]:checked')].map(el => el.value);
+  saveFieldSettings({ builtins, extras });
+  $fieldSettingsOverlay.classList.remove('open');
+  if (state.focusedAsset) renderAssetMeta(state.focusedAsset);
+});
 
 $amSelectAll.addEventListener('change', () => {
   const checked = $amSelectAll.checked;
@@ -212,7 +753,7 @@ $amSelectAll.addEventListener('change', () => {
     if (checked) state.selectedAssetIds.add(a.id);
     else state.selectedAssetIds.delete(a.id);
   });
-  renderAssetGrid();
+  renderAssetList();
   updateGenerateBar();
 });
 
@@ -241,12 +782,17 @@ $amGenerateBtn.addEventListener('click', async () => {
       : '';
     $amGenStatus.innerHTML = `<span class="status-ok">✓ ${result.created} tasks written${failMsg}</span>`;
     showToast(`${result.created} tasks created for ${assetIds.length} assets`, 'success');
+    // Refresh task panel if the focused asset was part of this batch
+    if (state.focusedAssetId && assetIds.includes(state.focusedAssetId)) {
+      const tasks = await apiFetch(`/api/schedule/tasks?assetId=${encodeURIComponent(state.focusedAssetId)}`);
+      renderAssetTasks(tasks);
+    }
   } catch (err) {
     $amGenStatus.innerHTML = `<span class="status-err">✗ ${esc(err.message)}</span>`;
     showToast(err.message, 'error');
   } finally {
     $amGenerateBtn.disabled = false;
-    $amGenerateBtn.textContent = 'Generate Schedules';
+    $amGenerateBtn.textContent = 'Generate Work';
   }
 });
 
@@ -1633,59 +2179,284 @@ const STATUS_COLORS = {
   'Approved':          '#34d399',
   'Changes Requested': '#f87171',
 };
+const STATUS_BG = {
+  'Pending':           'rgba(251,191,36,0.12)',
+  'Approved':          'rgba(52,211,153,0.12)',
+  'Changes Requested': 'rgba(248,113,113,0.12)',
+};
+
+const rvState = {
+  reviews:       [],
+  selected:      null,
+  statusOptions: [],
+  filters:       { status: new Set(), artist: new Set() },
+};
 
 async function loadReviews() {
-  const $list = $('reviews-list');
-  $list.innerHTML = '<div class="list-state">Loading…</div>';
+  $('rv-list').innerHTML = '<div class="list-state">Loading…</div>';
+  renderRvFilters();
   try {
-    const reviews = await apiFetch('/api/reviews');
-    if (!reviews.length) {
-      $list.innerHTML = '<div class="list-state">No reviews yet. Submit one from Maya.</div>';
-      return;
-    }
-    $list.innerHTML = reviews.map(r => {
-      const color  = STATUS_COLORS[r.status] || '#6b748a';
-      const imgSrc = r.screenshot ? `/reviews/${r.screenshot}` : null;
-      const date   = r.submittedAt ? new Date(r.submittedAt).toLocaleString() : '—';
-      return `
-        <div class="review-card" data-id="${esc(r.id)}">
-          ${imgSrc ? `<img class="review-thumb" src="${esc(imgSrc)}" alt="screenshot">` : '<div class="review-thumb review-thumb-empty">No screenshot</div>'}
-          <div class="review-meta">
-            <div class="review-asset">${esc(r.assetName || '—')}</div>
-            <div class="review-detail">${esc(r.sceneFile)} · ${esc(r.artist)} · ${esc(date)}</div>
-            ${r.notes ? `<div class="review-notes">${esc(r.notes)}</div>` : ''}
-          </div>
-          <div class="review-actions">
-            <span class="review-status" style="color:${color}">${esc(r.status)}</span>
-            <select class="review-status-select" data-id="${esc(r.id)}">
-              <option value="Pending"           ${r.status === 'Pending'           ? 'selected' : ''}>Pending</option>
-              <option value="Approved"          ${r.status === 'Approved'          ? 'selected' : ''}>Approved</option>
-              <option value="Changes Requested" ${r.status === 'Changes Requested' ? 'selected' : ''}>Changes Requested</option>
-            </select>
-          </div>
-        </div>
-      `;
-    }).join('');
-
-    $list.querySelectorAll('.review-status-select').forEach(sel => {
-      sel.addEventListener('change', async () => {
-        const id = sel.dataset.id;
-        try {
-          await apiFetch(`/api/reviews/${id}/status`, {
-            method: 'PATCH',
-            body: JSON.stringify({ status: sel.value }),
-          });
-          showToast('Status updated', 'info');
-          loadReviews();
-        } catch (err) {
-          showToast(err.message, 'error');
-        }
-      });
-    });
+    const [reviews, statusData] = await Promise.all([
+      apiFetch('/api/reviews'),
+      apiFetch('/api/reviews/status-options').catch(() => ({ options: [] })),
+    ]);
+    rvState.reviews = reviews;
+    rvState.statusOptions = statusData.options;
+    rvState.selected = null;
+    $('rv-detail').style.display = 'none';
+    $('rv-placeholder').style.display = 'flex';
+    renderRvFilters();
+    renderRvList();
   } catch (err) {
-    $('reviews-list').innerHTML = `<div class="list-state error">${esc(err.message)}</div>`;
+    $('rv-list').innerHTML = `<div class="list-state error">${esc(err.message)}</div>`;
   }
 }
+
+function getRvFiltered() {
+  const { status, artist } = rvState.filters;
+  return rvState.reviews.filter(r => {
+    if (status.size && !status.has(r.status)) return false;
+    if (artist.size && !artist.has(r.artist)) return false;
+    return true;
+  });
+}
+
+function buildRvDropdown(key, label, options, activeSet) {
+  const isFiltered = activeSet.size > 0 && activeSet.size < options.length;
+  const summary = activeSet.size === 0 || activeSet.size === options.length
+    ? 'All'
+    : activeSet.size === 1
+      ? [...activeSet][0]
+      : `${activeSet.size} selected`;
+  return `
+    <div class="mf-dropdown" data-rv-filter="${key}">
+      <button class="mf-dropdown-trigger${isFiltered ? ' mf-filtered' : ''}">
+        <span class="mf-label">${esc(label)}</span>
+        <span class="mf-dropdown-summary">${esc(summary)}</span>
+        <span class="mf-dropdown-arrow">▾</span>
+      </button>
+      <div class="mf-dropdown-panel">
+        <div class="mf-dd-actions">
+          <button class="mf-dd-action" data-filter="${key}" data-action="all">All</button>
+          <button class="mf-dd-action" data-filter="${key}" data-action="none">None</button>
+        </div>
+        ${options.length ? options.map(v => `
+          <label class="mf-dd-option">
+            <input type="checkbox" data-filter="${key}" data-value="${esc(v)}" ${activeSet.has(v) ? 'checked' : ''}>
+            ${esc(v)}
+          </label>
+        `).join('') : '<div class="list-state" style="padding:8px 12px;font-size:12px">No values</div>'}
+      </div>
+    </div>
+  `;
+}
+
+function renderRvFilters() {
+  const $f = $('rv-filters');
+  const allStatuses = [...new Set(rvState.reviews.map(r => r.status).filter(Boolean))].sort();
+  const allArtists  = [...new Set(rvState.reviews.map(r => r.artist).filter(Boolean))].sort();
+
+  $f.innerHTML =
+    buildRvDropdown('status', 'Status', allStatuses, rvState.filters.status) +
+    buildRvDropdown('artist', 'Artist', allArtists,  rvState.filters.artist);
+
+  $f.querySelectorAll('.mf-dropdown-trigger').forEach(trigger => {
+    trigger.addEventListener('click', e => {
+      e.stopPropagation();
+      const dd = trigger.closest('.mf-dropdown');
+      const wasOpen = dd.classList.contains('open');
+      $f.querySelectorAll('.mf-dropdown.open').forEach(d => d.classList.remove('open'));
+      if (!wasOpen) dd.classList.add('open');
+    });
+  });
+
+  $f.querySelectorAll('.mf-dd-option input[type=checkbox]').forEach(cb => {
+    cb.addEventListener('change', () => {
+      const set = rvState.filters[cb.dataset.filter];
+      cb.checked ? set.add(cb.dataset.value) : set.delete(cb.dataset.value);
+      renderRvFilters();
+      renderRvList();
+    });
+  });
+
+  $f.querySelectorAll('.mf-dd-action').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const key = btn.dataset.filter;
+      const set = rvState.filters[key];
+      set.clear();
+      if (btn.dataset.action === 'all') {
+        (key === 'status' ? allStatuses : allArtists).forEach(v => set.add(v));
+      }
+      renderRvFilters();
+      renderRvList();
+    });
+  });
+}
+
+function renderRvList() {
+  const $list = $('rv-list');
+  const filtered = getRvFiltered();
+  if (!filtered.length) {
+    $list.innerHTML = `<div class="list-state">${rvState.reviews.length ? 'No reviews match filters.' : 'No reviews yet.'}</div>`;
+    return;
+  }
+  $list.innerHTML = filtered.map(r => {
+    const color  = STATUS_COLORS[r.status] || '#6b748a';
+    const bg     = STATUS_BG[r.status]     || 'rgba(107,116,138,0.12)';
+    const date   = r.submittedAt ? new Date(r.submittedAt).toLocaleDateString() : '—';
+    return `
+      <div class="rv-item${rvState.selected === r.id ? ' active' : ''}" data-id="${esc(r.id)}">
+        <div class="rv-item-name">${esc(r.assetName || '—')}</div>
+        <div class="rv-item-meta">
+          <span class="rv-item-status" style="color:${color};background:${bg}">${esc(r.status)}</span>
+          <span>${esc(r.artist || '—')}</span>·
+          <span>${esc(date)}</span>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  $list.querySelectorAll('.rv-item').forEach(el =>
+    el.addEventListener('click', () => selectReview(el.dataset.id))
+  );
+}
+
+function selectReview(id) {
+  rvState.selected = id;
+  renderRvList();
+
+  const r = rvState.reviews.find(rv => rv.id === id);
+  if (!r) return;
+
+  $('rv-placeholder').style.display = 'none';
+  $('rv-detail').style.display = 'flex';
+
+  // Screenshot
+  $('rv-screenshot-wrap').innerHTML = r.screenshot
+    ? `<img class="rv-screenshot-img" src="${esc(r.screenshot)}" alt="Screenshot">`
+    : '<div class="rv-no-screenshot">No screenshot attached</div>';
+
+  // Status action bar
+  const statusColor = STATUS_COLORS[r.status] || '#6b748a';
+  const statusOpts = rvState.statusOptions.length
+    ? rvState.statusOptions
+    : ['Pending', 'Approved', 'Changes Requested'];
+  const optionsHtml = statusOpts
+    .map(o => `<option value="${esc(o)}"${r.status === o ? ' selected' : ''}>${esc(o)}</option>`)
+    .join('');
+  $('rv-actions-bar').innerHTML = `
+    <span class="rv-detail-label">Status</span>
+    <select class="review-status-select" id="rv-status-select">${optionsHtml}</select>
+    <span class="rv-status-pill" style="color:${statusColor}">● ${esc(r.status)}</span>
+  `;
+  document.getElementById('rv-status-select').addEventListener('change', async function () {
+    const newStatus = this.value;
+    try {
+      await apiFetch(`/api/reviews/${r.id}/status`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: newStatus }),
+      });
+      r.status = newStatus;
+      showToast('Status updated', 'info');
+      selectReview(id);
+      renderRvList();
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  });
+
+  // Field tiles — rendered via shared FieldGrid module.
+  // Fields shown elsewhere (action bar, screenshot, notes) are excluded.
+  const RV_SKIP = new Set(['Status', 'Attachments', 'Assets', 'Notes']);
+  const rvGridFields = [];
+
+  // Linked asset — navigable if a single asset is attached, plain text if multiple
+  if (r.assetIds && r.assetIds.length === 1) {
+    rvGridFields.push({
+      label: 'Asset',
+      value: r.assetName || r.assetIds[0],
+      type: 'linked-record',
+      resolve: makeRecordResolver('assets', r.assetIds[0], r.assetName || r.assetIds[0]),
+    });
+  } else if (r.assetName) {
+    rvGridFields.push({ label: 'Asset', value: r.assetName });
+  }
+
+  Object.entries(r.fields || {})
+    .filter(([k, v]) => !RV_SKIP.has(k) && v !== '' && v != null)
+    .forEach(([k, v]) => rvGridFields.push({ label: k, value: String(v) }));
+
+  if (r.notes) rvGridFields.push({ label: 'Notes', value: r.notes, span: 'full' });
+  renderFieldGrid('rv-fields', rvGridFields);
+
+  loadReviewComments(r.id);
+}
+
+async function loadReviewComments(reviewId) {
+  $('rv-comments').innerHTML = '<div class="rv-comments-header">Comments</div><div class="list-state" style="font-size:12px;padding:4px 0">Loading…</div>';
+  try {
+    const comments = await apiFetch(`/api/reviews/${encodeURIComponent(reviewId)}/comments`);
+    renderComments(reviewId, comments);
+  } catch (err) {
+    $('rv-comments').innerHTML = `<div class="rv-comments-header">Comments</div><div class="list-state error" style="font-size:12px">${esc(err.message)}</div>`;
+  }
+}
+
+function renderComments(reviewId, comments) {
+  const listHtml = comments.length
+    ? comments.map(c => `
+        <div class="rv-comment">
+          <div class="rv-comment-meta">
+            <span class="rv-comment-author">${esc(c.author?.name || c.author?.email || 'Unknown')}</span>
+            <span class="rv-comment-time">${new Date(c.createdTime).toLocaleString()}</span>
+          </div>
+          <div class="rv-comment-text">${esc(c.text)}</div>
+        </div>`).join('')
+    : '<div class="rv-comment-empty">No comments yet.</div>';
+
+  $('rv-comments').innerHTML = `
+    <div class="rv-comments-header">Comments</div>
+    <div class="rv-comments-list">${listHtml}</div>
+    <div class="rv-comment-compose">
+      <textarea class="rv-comment-input" id="rv-comment-input" placeholder="Add a comment… (Ctrl+Enter to post)"></textarea>
+      <div class="rv-comment-compose-footer">
+        <span class="rv-comment-hint">Ctrl+Enter to post</span>
+        <button class="btn btn-primary btn-sm" id="rv-comment-submit">Post comment</button>
+      </div>
+    </div>`;
+
+  const $input  = $('rv-comment-input');
+  const $submit = $('rv-comment-submit');
+
+  async function postComment() {
+    const text = $input.value.trim();
+    if (!text) return;
+    $submit.disabled = true;
+    $input.disabled  = true;
+    try {
+      await apiFetch(`/api/reviews/${encodeURIComponent(reviewId)}/comments`, {
+        method: 'POST',
+        body: JSON.stringify({ text }),
+      });
+      await loadReviewComments(reviewId);
+    } catch (err) {
+      showToast(err.message, 'error');
+      $submit.disabled = false;
+      $input.disabled  = false;
+    }
+  }
+
+  $submit.addEventListener('click', postComment);
+  $input.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) postComment();
+  });
+}
+
+// Close filter dropdowns when clicking outside
+document.addEventListener('click', () => {
+  const $f = document.getElementById('rv-filters');
+  if ($f) $f.querySelectorAll('.mf-dropdown.open').forEach(d => d.classList.remove('open'));
+});
 
 document.getElementById('reviews-refresh-btn').addEventListener('click', loadReviews);
 

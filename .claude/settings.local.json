@@ -7,7 +7,14 @@
       "Bash(grep -rn \"fields\\\\[\" 'C:/Users/field/Documents/ArtHound/ArtHound' --include=\"*.js\" ! -path \"*/node_modules/*\")",
       "Bash(grep -rn \"\\\\.fields\\\\[\" 'C:/Users/field/Documents/ArtHound/ArtHound' --include=\"*.js\" ! -path \"*/node_modules/*\")",
       "Bash(grep -rn \"\\\\.fields\\\\['\" 'C:/Users/field/Documents/ArtHound/ArtHound' --include=\"*.js\" ! -path \"*/node_modules/*\")",
-      "Bash(grep -r \"fields\\\\\\\\\\\\[\" --include=\"*.js\" routes/ lib/ public/)"
+      "Bash(grep -r \"fields\\\\\\\\\\\\[\" --include=\"*.js\" routes/ lib/ public/)",
+      "Bash(pip install *)",
+      "Bash(python -c \"import jwt; print\\(jwt.__version__\\)\")",
+      "Bash(mkdir -p /tmp/arthound-design)",
+      "Bash(tar -xf \"C:\\\\Users\\\\field\\\\.claude\\\\projects\\\\c--Users-field-Documents-ArtHound-ArtHound\\\\3b84a3b2-1270-47ad-93f6-76a862b10e06\\\\tool-results\\\\design_output.json\" -C /tmp/arthound-design)",
+      "Read(//tmp/**)",
+      "Bash(tar -xf \"/mnt/c/Users/field/.claude/projects/c--Users-field-Documents-ArtHound-ArtHound/3b84a3b2-1270-47ad-93f6-76a862b10e06/tool-results/design_output.json\" -C /tmp/arthound-design)",
+      "Bash(python -c \"from routes.reviews import router; print\\([r.path for r in router.routes]\\)\")"
     ]
   }
 }
