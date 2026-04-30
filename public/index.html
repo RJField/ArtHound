@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ArtHound</title>
-  <link rel="stylesheet" href="styles.css?v=6">
+  <link rel="stylesheet" href="styles.css?v=8">
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 </head>
 <body>
@@ -21,7 +21,60 @@
       </div>
       <div id="login-error" style="color:var(--err);font-size:0.8rem;min-height:1.2em;text-align:center;"></div>
       <div class="login-btns">
+        <button class="btn btn-secondary" id="create-account-btn">Create Account</button>
         <button class="btn btn-primary" id="login-btn">Sign in</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── SIGNUP MODAL ── -->
+  <div class="modal-overlay" id="signup-modal-overlay">
+    <div class="modal modal-sm">
+      <div class="modal-header">
+        <h2 id="signup-modal-title">Create Account</h2>
+        <button class="icon-btn" id="signup-modal-close">✕</button>
+      </div>
+      <div class="modal-body" id="signup-modal-body" style="padding:24px 20px">
+
+        <!-- Step 1: Role selection -->
+        <div id="signup-step-role">
+          <p style="color:var(--text-muted);font-size:13px;margin:0 0 20px">Select your account type to get started.</p>
+          <div class="signup-role-options">
+            <button class="signup-role-btn" id="signup-role-studio" data-role="studio">
+              <div class="signup-role-icon">◈</div>
+              <div class="signup-role-label">Studio</div>
+              <div class="signup-role-desc">Production studio managing assets and vendors</div>
+            </button>
+            <button class="signup-role-btn" id="signup-role-vendor" data-role="vendor">
+              <div class="signup-role-icon">⊞</div>
+              <div class="signup-role-label">Vendor</div>
+              <div class="signup-role-desc">Vendor receiving and delivering assigned assets</div>
+            </button>
+          </div>
+        </div>
+
+        <!-- Step 2: Credentials -->
+        <div id="signup-step-creds" style="display:none">
+          <p style="color:var(--text-muted);font-size:13px;margin:0 0 16px">Enter your email and create a password.</p>
+          <div class="login-fields">
+            <input class="login-input" type="email"    id="signup-email"            placeholder="Email"            autocomplete="email">
+            <input class="login-input" type="password" id="signup-password"         placeholder="Password"         autocomplete="new-password">
+            <input class="login-input" type="password" id="signup-password-confirm" placeholder="Confirm password" autocomplete="new-password">
+          </div>
+          <div id="signup-error" style="color:var(--err);font-size:0.8rem;min-height:1.2em;text-align:center;margin-top:10px;"></div>
+        </div>
+
+        <!-- Step 3: Success -->
+        <div id="signup-step-success" style="display:none;text-align:center;padding:8px 0">
+          <div class="signup-success-icon">✓</div>
+          <div style="font-weight:600;font-size:15px;margin-bottom:10px">Account Created</div>
+          <div id="signup-success-msg" style="color:var(--text-muted);font-size:13px;line-height:1.6"></div>
+        </div>
+
+      </div>
+      <div class="modal-footer" style="gap:8px" id="signup-modal-footer">
+        <button class="btn btn-secondary" id="signup-cancel-btn">Cancel</button>
+        <button class="btn btn-primary"   id="signup-next-btn"   disabled>Next</button>
       </div>
     </div>
   </div>
@@ -558,12 +611,57 @@
     </div>
   </div>
 
+  <!-- ── ASSET MANAGER HUB ── -->
+  <div id="view-asset-hub" class="view" style="display:none">
+    <div class="section-nav">
+      <button class="icon-btn" id="asset-hub-home-btn" title="Back to home">←</button>
+      <span class="section-nav-title">Asset Manager</span>
+    </div>
+    <div class="section-content">
+      <div class="section-cards">
+
+        <div class="section-card">
+          <div class="section-card-icon">⊞</div>
+          <div class="section-card-body">
+            <div class="section-card-title">Asset Viewer</div>
+            <div class="section-card-desc">Browse assets by product, generate tasking, view field details and asset intel.</div>
+          </div>
+          <button class="btn btn-primary" id="asset-hub-viewer-btn">Open</button>
+        </div>
+
+        <div class="section-card">
+          <div class="section-card-icon">⇥</div>
+          <div class="section-card-body">
+            <div class="section-card-title">Share Manager</div>
+            <div class="section-card-desc">View and manage all assets dispatched to vendors. Track opens, revoke access.</div>
+          </div>
+          <button class="btn btn-primary" id="asset-hub-shares-btn">Open</button>
+        </div>
+
+      </div>
+    </div>
+  </div><!-- /#view-asset-hub -->
+
+  <!-- ── SHARE MANAGER VIEW ── -->
+  <div id="view-share-manager" class="view" style="display:none">
+    <div class="section-nav">
+      <button class="icon-btn" id="share-manager-back-btn" title="Back to Asset Manager">←</button>
+      <span class="section-nav-title">Share Manager</span>
+      <div class="section-nav-actions">
+        <button class="btn btn-sm" id="share-manager-refresh-btn">↻ Refresh</button>
+      </div>
+    </div>
+    <div class="section-content" id="share-manager-content">
+      <div class="list-state">Loading…</div>
+    </div>
+  </div><!-- /#view-share-manager -->
+
   <!-- ── ASSET MANAGER VIEW ── -->
   <div id="view-assets" class="view" style="display:none">
 
     <div class="section-nav">
-      <button class="icon-btn" id="home-btn" title="Back to home">←</button>
-      <span class="section-nav-title">Asset Manager</span>
+      <button class="icon-btn" id="home-btn" title="Back to Asset Manager">←</button>
+      <span class="section-nav-title">Asset Viewer</span>
       <div class="section-nav-actions">
         <button class="icon-btn" id="schema-btn" title="View base schema">⊞</button>
       </div>
@@ -693,6 +791,6 @@
   </div>
 
   <div class="toast" id="toast"></div>
-  <script type="module" src="app.js?v=27"></script>
+  <script type="module" src="app.js?v=29"></script>
 </body>
 </html>

@@ -28,8 +28,135 @@ function navigateByRole(role) {
   }
 }
 
+function initSignup() {
+  const overlay   = document.getElementById('signup-modal-overlay');
+  const step1     = document.getElementById('signup-step-role');
+  const step2     = document.getElementById('signup-step-creds');
+  const step3     = document.getElementById('signup-step-success');
+  const nextBtn   = document.getElementById('signup-next-btn');
+  const cancelBtn = document.getElementById('signup-cancel-btn');
+  const titleEl   = document.getElementById('signup-modal-title');
+  const errorEl   = document.getElementById('signup-error');
+
+  let role = null;
+  let step = 1;
+
+  function open() {
+    role = null;
+    step = 1;
+    document.querySelectorAll('.signup-role-btn').forEach(b => b.classList.remove('selected'));
+    document.getElementById('signup-email').value = '';
+    document.getElementById('signup-password').value = '';
+    document.getElementById('signup-password-confirm').value = '';
+    errorEl.textContent = '';
+    renderStep();
+    overlay.classList.add('open');
+  }
+
+  function close() {
+    overlay.classList.remove('open');
+  }
+
+  function renderStep() {
+    step1.style.display = step === 1 ? '' : 'none';
+    step2.style.display = step === 2 ? '' : 'none';
+    step3.style.display = step === 3 ? '' : 'none';
+
+    cancelBtn.style.display = step === 3 ? 'none' : '';
+
+    if (step === 1) {
+      titleEl.textContent = 'Create Account';
+      nextBtn.textContent = 'Next';
+      nextBtn.disabled = !role;
+      cancelBtn.textContent = 'Cancel';
+    } else if (step === 2) {
+      titleEl.textContent = 'Create Account';
+      nextBtn.textContent = 'Create Account';
+      nextBtn.disabled = false;
+      cancelBtn.textContent = 'Back';
+    } else {
+      titleEl.textContent = 'Account Created';
+      nextBtn.textContent = 'Done';
+      nextBtn.disabled = false;
+    }
+  }
+
+  document.querySelectorAll('.signup-role-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.signup-role-btn').forEach(b => b.classList.remove('selected'));
+      btn.classList.add('selected');
+      role = btn.dataset.role;
+      nextBtn.disabled = false;
+    });
+  });
+
+  nextBtn.addEventListener('click', async () => {
+    if (step === 1) {
+      step = 2;
+      renderStep();
+    } else if (step === 2) {
+      await handleCreate();
+    } else {
+      close();
+    }
+  });
+
+  cancelBtn.addEventListener('click', () => {
+    if (step === 2) {
+      errorEl.textContent = '';
+      step = 1;
+      renderStep();
+    } else {
+      close();
+    }
+  });
+
+  document.getElementById('signup-modal-close').addEventListener('click', close);
+  overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+  document.getElementById('create-account-btn').addEventListener('click', open);
+
+  async function handleCreate() {
+    if (!_supabaseClient) { errorEl.textContent = 'App not ready — please wait.'; return; }
+
+    const email   = document.getElementById('signup-email').value.trim();
+    const pw      = document.getElementById('signup-password').value;
+    const confirm = document.getElementById('signup-password-confirm').value;
+
+    if (!email || !pw)  { errorEl.textContent = 'Email and password are required.'; return; }
+    if (pw !== confirm) { errorEl.textContent = 'Passwords do not match.'; return; }
+    if (pw.length < 6)  { errorEl.textContent = 'Password must be at least 6 characters.'; return; }
+
+    nextBtn.disabled = true;
+    nextBtn.textContent = 'Creating…';
+    errorEl.textContent = '';
+
+    const { data, error } = await _supabaseClient.auth.signUp({
+      email,
+      password: pw,
+      options: { data: { role } }
+    });
+
+    if (error) {
+      errorEl.textContent = error.message;
+      nextBtn.disabled = false;
+      nextBtn.textContent = 'Create Account';
+      return;
+    }
+
+    const needsConfirm = !data.session;
+    document.getElementById('signup-success-msg').textContent = needsConfirm
+      ? `A confirmation link has been sent to ${email}. Click the link to activate your account, then sign in.`
+      : 'Your account is ready — you can now sign in.';
+
+    step = 3;
+    renderStep();
+  }
+}
+
 export function initAuth(navigateFn) {
   _navigate = navigateFn;
+
+  initSignup();
 
   // Login
   document.getElementById('login-btn').addEventListener('click', async () => {
@@ -64,7 +191,7 @@ export function initAuth(navigateFn) {
   document.getElementById('logout-btn').addEventListener('click', handleLogout);
 
   // Studio home nav
-  document.getElementById('nav-assets').addEventListener('click', () => _navigate('assets'));
+  document.getElementById('nav-assets').addEventListener('click', () => _navigate('asset-hub'));
   document.getElementById('nav-estimates').addEventListener('click', () => _navigate('estimates'));
   document.getElementById('nav-workflows').addEventListener('click', () => _navigate('workflows'));
   document.getElementById('nav-reviews').addEventListener('click', () => _navigate('reviews'));
@@ -88,7 +215,11 @@ export function initAuth(navigateFn) {
   document.getElementById('vendor-nav-todos').addEventListener('click', () => _navigate('todos'));
 
   // Section back / between-section buttons
-  document.getElementById('home-btn').addEventListener('click', () => _navigate(state.homeView));
+  document.getElementById('home-btn').addEventListener('click', () => _navigate('asset-hub'));
+  document.getElementById('asset-hub-home-btn').addEventListener('click', () => _navigate(state.homeView));
+  document.getElementById('asset-hub-viewer-btn').addEventListener('click', () => _navigate('assets'));
+  document.getElementById('asset-hub-shares-btn').addEventListener('click', () => _navigate('share-manager'));
+  document.getElementById('share-manager-back-btn').addEventListener('click', () => _navigate('asset-hub'));
   document.getElementById('estimates-home-btn').addEventListener('click', () => _navigate(state.homeView));
   document.getElementById('workflows-home-btn').addEventListener('click', () => _navigate(state.homeView));
   document.getElementById('reviews-home-btn').addEventListener('click', () => _navigate(state.homeView));

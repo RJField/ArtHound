@@ -311,7 +311,7 @@ async def get_outbox(user: CurrentUser = Depends(require_studio)):
         _url("/rest/v1/payload_dispatches"),
         params={
             "sender_studio_id": f"eq.{user.studio_id}",
-            "select": "id,asset_id,recipient_vendor_id,template_id,expires_at,received_at,revoked_at,created_at",
+            "select": "id,asset_id,recipient_vendor_id,template_id,expires_at,received_at,revoked_at,created_at,payload_data",
             "order": "created_at.desc",
         },
         headers=_headers(),

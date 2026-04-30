@@ -1602,7 +1602,11 @@ body {
 
 /* ---- Section page (Estimates, etc.) ---- */
 
-#view-estimates {
+#view-estimates,
+#view-asset-hub,
+#view-legacy,
+#view-share-manager,
+#view-workflow-steps {
   flex-direction: column;
   height: 100vh;
   background: var(--bg);
@@ -2151,6 +2155,58 @@ body {
   flex: 1;
   justify-content: center;
   padding: 11px;
+}
+
+/* ---- Signup modal ---- */
+
+.signup-role-options {
+  display: flex;
+  gap: 12px;
+}
+
+.signup-role-btn {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 18px 12px;
+  background: var(--surface-2);
+  border: 1.5px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  color: var(--text);
+  text-align: center;
+  transition: border-color 0.15s, background 0.15s;
+  font-family: inherit;
+}
+
+.signup-role-btn:hover {
+  border-color: var(--accent);
+  background: var(--surface-3);
+}
+
+.signup-role-btn.selected {
+  border-color: var(--accent);
+  background: rgba(124, 106, 244, 0.08);
+}
+
+.signup-role-icon  { font-size: 22px; }
+.signup-role-label { font-size: 14px; font-weight: 600; }
+.signup-role-desc  { font-size: 12px; color: var(--text-muted); line-height: 1.4; }
+
+.signup-success-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: rgba(52, 211, 153, 0.12);
+  border: 1.5px solid rgba(52, 211, 153, 0.3);
+  color: var(--ok);
+  font-size: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto 16px;
 }
 
 /* ---- Home page ---- */
@@ -2751,6 +2807,29 @@ body {
 .sv-share-date   { font-size: 11px; color: var(--text-muted); }
 .sv-share-views  { font-size: 11px; color: var(--ok); }
 .sv-share-views-none { color: var(--text-muted); font-style: italic; }
+
+/* ---- Share Manager ---- */
+.sm-list { display: flex; flex-direction: column; gap: 0; }
+.sm-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 24px;
+  border-bottom: 1px solid var(--border);
+}
+.sm-row:last-child { border-bottom: none; }
+.sm-row-main { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.sm-asset-name { font-size: 14px; font-weight: 500; color: var(--text); }
+.sm-row-meta { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); flex-wrap: wrap; }
+.sm-dot { color: var(--border); }
+.sm-views-seen   { color: var(--ok); }
+.sm-views-unseen { font-style: italic; }
+.sm-row-actions { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+.sm-status { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 4px; }
+.sm-status-active  { color: var(--ok);      background: rgba(52,211,153,0.12); }
+.sm-status-expired { color: var(--text-muted); background: var(--surface-2, var(--surface)); }
+.sm-status-revoked { color: var(--err);     background: rgba(248,113,113,0.12); }
 
 .sv-asset-list {
   max-height: 260px;
