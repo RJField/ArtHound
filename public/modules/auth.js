@@ -4,6 +4,8 @@ import { state } from './state.js';
 let _navigate = null;
 let _supabaseClient = null;
 
+export function getSupabaseClient() { return _supabaseClient; }
+
 const $loginError = $('login-error');
 
 function setLoginError(msg) {
