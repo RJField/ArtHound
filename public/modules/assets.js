@@ -1,4 +1,4 @@
-import { $, esc, fmtDate, apiFetch, showToast, openDetailModal, closeDetailModal, renderFieldGrid, LINKED_TABLE_MAP, makeRecordResolver } from './ui.js';
+import { $, esc, fmtDate, apiFetch, showToast, openDetailModal, closeDetailModal, renderFieldGrid, formatRawFields, fieldDisplayString, LINKED_TABLE_MAP, makeRecordResolver } from './ui.js';
 import { state } from './state.js';
 
 // -- Asset Manager --
@@ -252,21 +252,29 @@ async function openTaskDetail(taskId, taskName) {
     for (const [k, v] of Object.entries(fields)) {
       if (SKIP.has(k) || v == null || v === '') continue;
 
-      const isRecArray = Array.isArray(v) && v.length > 0 &&
+      // Detect both canonical [{source_id, display_name}] and legacy bare-ID arrays
+      const isCanonicalRecArray = Array.isArray(v) && v.length > 0 &&
+        typeof v[0] === 'object' && v[0] !== null && 'source_id' in v[0];
+      const isRawRecArray = !isCanonicalRecArray && Array.isArray(v) && v.length > 0 &&
         v.every(x => typeof x === 'string' && x.startsWith('rec'));
 
-      if (isRecArray) {
-        const tableKey = LINKED_TABLE_MAP[k];
+      if (isCanonicalRecArray || isRawRecArray) {
+        const tableKey  = LINKED_TABLE_MAP[k];
+        const sourceId  = isCanonicalRecArray ? v[0].source_id : v[0];
+        const resolved  = isCanonicalRecArray
+          ? v.map(x => x.display_name || '').filter(Boolean).join(', ')
+          : null;
+
         if (tableKey && v.length === 1) {
-          const displayName = displayFields[k] || v[0];
+          const displayName = displayFields[k] || resolved || sourceId;
           entries.push({
             label: k,
             value: displayName,
             type: 'linked-record',
-            resolve: makeRecordResolver(tableKey, v[0], displayName),
+            resolve: makeRecordResolver(tableKey, sourceId, displayName),
           });
         } else {
-          const display = displayFields[k] ||
+          const display = displayFields[k] || resolved ||
             (tableKey ? `${v.length} linked record${v.length !== 1 ? 's' : ''}` : v.join(', '));
           entries.push({ label: k, value: display });
         }
@@ -275,7 +283,7 @@ async function openTaskDetail(taskId, taskName) {
           ? displayFields[k]
           : (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}/.test(v))
             ? fmtDate(v.slice(0, 10))
-            : String(v);
+            : fieldDisplayString(v);
         entries.push({ label: k, value: display });
       }
     }
@@ -345,8 +353,11 @@ function renderAssetMeta(asset) {
       })
       .filter(f => f.value != null && f.value !== ''),
     ...extras
-      .map(fname => ({ label: fname, value: asset.rawFields?.[fname] ?? null }))
-      .filter(f => f.value != null && f.value !== ''),
+      .flatMap(fname => {
+        const value = asset.rawFields?.[fname];
+        if (value == null || value === '') return [];
+        return formatRawFields({ [fname]: value });
+      }),
   ];
 
   renderFieldGrid('am-meta-content', fields);

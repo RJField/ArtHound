@@ -160,11 +160,14 @@ async def run_sync(
             else:
                 raise ValueError(f"Unsupported source_type: {source_type}")
 
-            # ── Field mappings ────────────────────────────────────────────────
+            # ── Field schema + mappings ───────────────────────────────────────
+            # Schema is always fetched — provides field types for the adapter
+            # even on delta syncs where mappings already exist.
+            schema_fields = await connector.fetch_asset_schema()
+            field_type_map = {f.name: f.type for f in schema_fields}
+
             mappings = await _get_mappings(owner_type, owner_id, source_type)
             if mappings is None:
-                # First sync — auto-generate defaults from source schema
-                schema_fields = await connector.fetch_asset_schema()
                 mappings = default_mappings_from_schema(schema_fields)
                 await save_default_mappings(owner_type, owner_id, source_type, mappings)
                 log.info("Generated default field mappings for %s/%s", owner_type, owner_id)
@@ -174,10 +177,24 @@ async def run_sync(
             raw_products = await connector.fetch_products()
             raw_item_types = await connector.fetch_item_types()
 
-            # ── Normalize ─────────────────────────────────────────────────────
-            norm_assets = [normalize_asset(r, mappings) for r in raw_assets]
+            # ── Normalize reference entities first ────────────────────────────
+            # Reference tables are always fetched in full and normalized before
+            # assets so their IDs are available for linked record resolution.
             norm_products = [normalize_reference(r, "Product") for r in raw_products]
             norm_item_types = [normalize_reference(r, "Item") for r in raw_item_types]
+
+            # Build resolver from synced reference data so the asset normalizer
+            # can resolve linked record IDs to display names without extra API calls.
+            reference_resolver = {
+                **{r["source_record_id"]: r["name"] for r in norm_products if r["name"]},
+                **{r["source_record_id"]: r["name"] for r in norm_item_types if r["name"]},
+            }
+
+            # ── Normalize assets ──────────────────────────────────────────────
+            norm_assets = [
+                normalize_asset(r, mappings, field_type_map=field_type_map, reference_resolver=reference_resolver)
+                for r in raw_assets
+            ]
 
             # ── Diff (delta only — full sync always writes everything) ──────────
             if is_delta:

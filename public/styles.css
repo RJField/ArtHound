@@ -162,7 +162,8 @@ body {
 
 /* ---- Estimation Matrix view ---- */
 
-#view-matrix-table { flex-direction: column; }
+#view-matrix-table,
+#view-pg-matrix-table { flex-direction: column; }
 
 .mt-content {
   display: flex;
@@ -1630,7 +1631,9 @@ body {
 #view-asset-hub,
 #view-legacy,
 #view-share-manager,
-#view-workflow-steps {
+#view-workflow-steps,
+#view-matrix-table,
+#view-pg-matrix-table {
   flex-direction: column;
   height: 100vh;
   background: var(--bg);
@@ -1907,6 +1910,13 @@ body {
 .rv-no-screenshot {
   color: var(--text-muted);
   font-size: 13px;
+}
+
+.rv-video {
+  max-width: 100%;
+  max-height: 520px;
+  display: block;
+  background: #000;
 }
 
 .rv-actions-bar {

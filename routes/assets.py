@@ -27,11 +27,27 @@ def _fmt(v) -> object:
     if isinstance(v, list):
         if not v:
             return None
+        first = v[0]
         if all(isinstance(x, str) and x.startswith("rec") for x in v):
-            return None  # bare linked-record IDs — not useful for display
-        if all(isinstance(x, dict) and "url" in x for x in v):
-            return v  # attachments — keep as-is
-        return ", ".join(str(x) for x in v if x) or None
+            return None  # bare legacy linked-record IDs — not useful for display
+        if isinstance(first, dict):
+            if "url" in first:
+                return v  # attachments — keep as-is for frontend rendering
+            if "source_id" in first:
+                # Canonical linked record objects [{source_id, display_name}]
+                names = [x.get("display_name") or "" for x in v if isinstance(x, dict)]
+                names = [n for n in names if n]
+                if names:
+                    return ", ".join(names)
+                return f"{len(v)} linked record{'s' if len(v) != 1 else ''}"
+            # Other dict arrays (e.g. select values) — extract label/name
+            labels = [x.get("label") or x.get("name") or x.get("display_name") or "" for x in v if isinstance(x, dict)]
+            return ", ".join(l for l in labels if l) or None
+        # Plain scalar arrays (strings, numbers from lookups/formulas)
+        return ", ".join(str(x) for x in v if x is not None and x != "") or None
+    if isinstance(v, dict):
+        # Canonical single object (collaborator, select value, etc.)
+        return v.get("display_name") or v.get("label") or v.get("name") or v.get("email") or None
     if isinstance(v, bool):
         return "Yes" if v else "No"
     return v
@@ -49,24 +65,37 @@ def _build_asset_response(
     product_name = row.get("product")
     product_id   = product_name_to_id.get(product_name) if product_name else None
     if not product_id:
-        for pid in (meta.get("Product") or []):
-            if pid in product_id_to_name:
+        # Canonical format: [{source_id, display_name}]; legacy: ["recXXX"]
+        for entry in (meta.get("Product") or []):
+            pid = entry.get("source_id") if isinstance(entry, dict) else entry
+            if pid and pid in product_id_to_name:
                 product_name = product_id_to_name[pid]
                 product_id   = pid
                 break
 
-    # Resolve item type — slot is null for linked records; fall back to meta IDs
+    # Resolve item type — slot column carries the display name after the sync fix.
+    # Fall back to meta for records synced before that fix.
     item_type = row.get("item_type")
     if not item_type:
-        for iid in (meta.get("Item Type") or []):
-            if iid in item_type_id_to_name:
-                item_type = item_type_id_to_name[iid]
+        for entry in (meta.get("Item Type") or []):
+            if isinstance(entry, dict):
+                # Canonical: display_name is already resolved; source_id as fallback via ref map
+                item_type = entry.get("display_name") or item_type_id_to_name.get(entry.get("source_id", ""))
+            elif isinstance(entry, str):
+                item_type = item_type_id_to_name.get(entry)
+            if item_type:
                 break
 
-    # Team from meta (Airtable lookup field returns a list)
+    # Team from meta (multipleLookupValues returns plain strings; handle canonical dicts too)
     team_raw = meta.get("Team (from Product)")
     if isinstance(team_raw, list):
-        team = ", ".join(str(x) for x in team_raw if x) or None
+        parts = []
+        for x in team_raw:
+            if isinstance(x, dict):
+                parts.append(x.get("display_name") or x.get("name") or "")
+            elif x:
+                parts.append(str(x))
+        team = ", ".join(p for p in parts if p) or None
     else:
         team = str(team_raw) if team_raw else None
 
@@ -176,11 +205,15 @@ async def get_assets(
 
     if productId:
         target_name = prod_id_to_name.get(productId)
-        rows = [
-            row for row in rows
-            if productId in (row.get("meta") or {}).get("Product", [])
-            or (target_name and row.get("product") == target_name)
-        ]
+        def _matches_product(row: dict) -> bool:
+            if target_name and row.get("product") == target_name:
+                return True
+            for entry in (row.get("meta") or {}).get("Product") or []:
+                pid = entry.get("source_id") if isinstance(entry, dict) else entry
+                if pid == productId:
+                    return True
+            return False
+        rows = [row for row in rows if _matches_product(row)]
 
     return [_build_asset_response(r, prod_id_to_name, prod_name_to_id, it_id_to_name) for r in rows]
 

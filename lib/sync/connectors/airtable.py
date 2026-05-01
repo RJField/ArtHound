@@ -3,6 +3,7 @@ from urllib.parse import quote
 import httpx
 
 import config
+from lib.connectors.adapters.airtable import AIRTABLE_MANIFEST  # noqa: F401 — re-exported
 from lib.sync.connector import BaseConnector, RawRecord, SchemaField
 from routes.schema import FIELD_CATEGORY
 

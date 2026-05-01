@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -149,6 +150,57 @@ async def get_task_detail(task_id: str):
         "fields": record.get("fields", {}),
         "displayFields": display_fields,
     }
+
+
+@router.post("/reconcile-tasks")
+async def reconcile_tasks(user: CurrentUser = Depends(require_studio)):
+    """
+    Compare active generated_tasks snapshots against live Airtable task records.
+    Soft-deletes any snapshot rows whose source_record_id no longer exists in Airtable.
+    """
+    if not user.studio_id:
+        raise HTTPException(status_code=403, detail="No studio linked")
+
+    # Fetch active snapshot rows that have an Airtable source reference
+    r = await db_client.get(
+        _url("/rest/v1/generated_tasks"),
+        params={
+            "studio_id":        f"eq.{user.studio_id}",
+            "deleted_at":       "is.null",
+            "source_type":      "eq.airtable",
+            "source_record_id": "not.is.null",
+            "select":           "id,source_record_id",
+        },
+        headers=_headers(),
+    )
+    r.raise_for_status()
+    snapshot_rows = r.json()
+
+    if not snapshot_rows:
+        return {"checked": 0, "soft_deleted": 0}
+
+    # Fetch all live task IDs from Airtable (one field only to minimise payload)
+    live_records = await select_all(config.tables["tasks"], {"fields": ["Task"]})
+    live_ids = {rec["id"] for rec in live_records}
+
+    # Soft-delete snapshots whose Airtable record no longer exists
+    orphaned_ids = [row["id"] for row in snapshot_rows if row["source_record_id"] not in live_ids]
+
+    if orphaned_ids:
+        del_r = await db_client.patch(
+            _url("/rest/v1/generated_tasks"),
+            params={"id": f"in.({','.join(orphaned_ids)})"},
+            json={"deleted_at": datetime.now(timezone.utc).isoformat()},
+            headers=_headers({"Prefer": "return=minimal"}),
+        )
+        if not del_r.is_success:
+            raise HTTPException(status_code=500, detail="Soft-delete failed during reconciliation")
+
+    log.info(
+        "Task reconciliation: %d checked, %d soft-deleted for studio %s",
+        len(snapshot_rows), len(orphaned_ids), user.studio_id,
+    )
+    return {"checked": len(snapshot_rows), "soft_deleted": len(orphaned_ids)}
 
 
 @router.post("/preview")

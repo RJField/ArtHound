@@ -224,6 +224,41 @@ async function _renderUserModal($body) {
       }
     });
 
+    if (me.email === 'rjfield@pm.me') {
+      const $admin = document.createElement('div');
+      $admin.style.cssText = 'border-top:1px solid var(--border);padding-top:20px;margin-top:4px';
+      $admin.innerHTML = `
+        <div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);margin-bottom:8px">Admin</div>
+        <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;line-height:1.5">
+          Reconcile ArtHound task snapshots against live Airtable records.
+          Soft-deletes any snapshot whose Airtable task no longer exists.
+        </div>
+        <button class="btn btn-secondary btn-sm" id="user-reconcile-btn">Reconcile Tasks</button>
+        <div id="user-reconcile-msg" style="font-size:12px;min-height:1.4em;margin-top:8px"></div>
+      `;
+      $body.appendChild($admin);
+
+      document.getElementById('user-reconcile-btn').addEventListener('click', async () => {
+        const $btn = document.getElementById('user-reconcile-btn');
+        const $msg = document.getElementById('user-reconcile-msg');
+        $btn.disabled = true;
+        $btn.textContent = 'Running…';
+        $msg.style.color = 'var(--text-muted)';
+        $msg.textContent = '';
+        try {
+          const result = await apiFetch('/api/schedule/reconcile-tasks', { method: 'POST' });
+          $msg.style.color = 'var(--ok)';
+          $msg.textContent = `Checked ${result.checked} — ${result.soft_deleted} soft-deleted.`;
+        } catch {
+          $msg.style.color = 'var(--err)';
+          $msg.textContent = 'Reconciliation failed.';
+        } finally {
+          $btn.disabled = false;
+          $btn.textContent = 'Reconcile Tasks';
+        }
+      });
+    }
+
   } catch {
     $body.innerHTML = '<div class="list-state" style="color:var(--err)">Failed to load account info.</div>';
   }

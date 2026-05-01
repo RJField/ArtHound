@@ -1,4 +1,4 @@
-import { $, esc, apiFetch, showToast, renderFieldGrid, makeRecordResolver } from './ui.js';
+import { $, esc, apiFetch, showToast, renderFieldGrid, makeRecordResolver, fieldDisplayString } from './ui.js';
 
 const STATUS_COLORS = {
   'Pending':           '#fbbf24',
@@ -157,9 +157,16 @@ function selectReview(id) {
   $('rv-placeholder').style.display = 'none';
   $('rv-detail').style.display = 'flex';
 
-  $('rv-screenshot-wrap').innerHTML = r.screenshot
-    ? `<img class="rv-screenshot-img" src="${esc(r.screenshot)}" alt="Screenshot">`
-    : '<div class="rv-no-screenshot">No screenshot attached</div>';
+  if (r.screenshot) {
+    const mime = (r.screenshotType || '').toLowerCase();
+    const isVideo = mime.startsWith('video/') ||
+      ['mp4', 'webm', 'mov', 'ogg', 'm4v'].includes(r.screenshot.split('?')[0].split('.').pop().toLowerCase());
+    $('rv-screenshot-wrap').innerHTML = isVideo
+      ? `<video class="rv-video" src="${esc(r.screenshot)}" controls playsinline preload="metadata"></video>`
+      : `<img class="rv-screenshot-img" src="${esc(r.screenshot)}" alt="Attachment">`;
+  } else {
+    $('rv-screenshot-wrap').innerHTML = '<div class="rv-no-screenshot">No attachment</div>';
+  }
 
   const statusColor = STATUS_COLORS[r.status] || '#6b748a';
   const statusOpts = rvState.statusOptions.length
@@ -205,7 +212,7 @@ function selectReview(id) {
 
   Object.entries(r.fields || {})
     .filter(([k, v]) => !RV_SKIP.has(k) && v !== '' && v != null)
-    .forEach(([k, v]) => rvGridFields.push({ label: k, value: String(v) }));
+    .forEach(([k, v]) => rvGridFields.push({ label: k, value: fieldDisplayString(v) }));
 
   if (r.notes) rvGridFields.push({ label: 'Notes', value: r.notes, span: 'full' });
   renderFieldGrid('rv-fields', rvGridFields);

@@ -1,4 +1,4 @@
-import { $, esc, apiFetch, showToast, openDetailModal, formatRawFields } from './ui.js';
+import { $, esc, apiFetch, showToast, openDetailModal, formatRawFields, fieldDisplayString } from './ui.js';
 import { state } from './state.js';
 
 // -- Vendor Inbox (Incoming Scope) --
@@ -21,7 +21,7 @@ function openInboxModal(d) {
 
   const data       = d.payload_data?.data ?? {};
   const name       = data['Name'] || data['name'] || '—';
-  const itemType   = data['Item Type'] || data['item_type'] || '';
+  const itemType   = fieldDisplayString(data['Item Type'] || data['item_type'] || '');
   const priority   = d.payload_data?.priority;
   const studioName = d.payload_data?.sender_studio_name || 'Unknown Studio';
   const date       = d.created_at ? new Date(d.created_at).toLocaleDateString() : '—';
@@ -50,7 +50,7 @@ function renderVendorInbox(dispatches) {
   $('is-inbox-list').innerHTML = dispatches.map((d, i) => {
     const data        = d.payload_data?.data ?? {};
     const name        = data['Name'] || data['name'] || '—';
-    const itemType    = data['Item Type'] || data['item_type'] || '';
+    const itemType    = fieldDisplayString(data['Item Type'] || data['item_type'] || '');
     const priority    = d.payload_data?.priority;
     const studioName  = d.payload_data?.sender_studio_name || 'Unknown Studio';
     const date        = d.created_at ? new Date(d.created_at).toLocaleDateString() : '—';

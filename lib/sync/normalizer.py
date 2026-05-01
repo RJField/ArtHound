@@ -1,6 +1,9 @@
 import hashlib
 import json
+from typing import Any
 
+from lib.connectors.adapters.airtable import AirtableFieldAdapter
+from lib.connectors.field_types import LinkedRecord, SelectValue, to_json
 from lib.sync.connector import RawRecord, SchemaField
 
 ARTHOUND_SLOTS = {
@@ -8,8 +11,6 @@ ARTHOUND_SLOTS = {
     "product", "project_date", "status", "asset_number",
 }
 
-# Case-insensitive aliases that auto-map to standard slots on first sync.
-# The first alias is the canonical name; extras are common variations.
 _SLOT_ALIASES: dict[str, list[str]] = {
     "name":         ["asset name", "name", "asset"],
     "dev_name":     ["dev name", "devname", "internal name", "dev", "development name"],
@@ -27,6 +28,8 @@ _NAME_TO_SLOT: dict[str, str] = {
     for alias in aliases
 }
 
+_adapter = AirtableFieldAdapter()
+
 
 def default_mappings_from_schema(schema_fields: list[SchemaField]) -> list[dict]:
     """
@@ -40,44 +43,60 @@ def default_mappings_from_schema(schema_fields: list[SchemaField]) -> list[dict]
     for field in schema_fields:
         slot = _NAME_TO_SLOT.get(field.name.lower())
         if slot and slot in seen_slots:
-            slot = None  # don't map two source fields to the same slot
+            slot = None
         if slot:
             seen_slots.add(slot)
         mappings.append({
             "source_field_id":   field.id,
             "source_field_name": field.name,
+            "source_field_type": field.type,
             "arthound_slot":     slot,
         })
 
     return mappings
 
 
-def normalize_asset(record: RawRecord, mappings: list[dict]) -> dict:
+def normalize_asset(
+    record: RawRecord,
+    mappings: list[dict],
+    field_type_map: dict[str, str] | None = None,
+    reference_resolver: dict[str, str] | None = None,
+) -> dict:
     """
-    Apply field mappings to a raw source record.
+    Apply field mappings to a raw source record using the connector field adapter.
+
+    field_type_map: {field_name: airtable_field_type} — used for type-aware
+        deserialization. When provided, all field types are resolved correctly.
+        Without it, the adapter falls back to raw-value pass-through.
+
+    reference_resolver: {source_record_id: display_name} — built from already-synced
+        reference tables (products, item types) so linked record fields resolve to
+        display names without extra API calls.
+
     Returns a dict ready for insertion into replicated_assets.
     """
     by_name = {m["source_field_name"]: m.get("arthound_slot") for m in mappings}
+    resolved_type_map = field_type_map or {}
 
     slots: dict = {}
     meta: dict = {}
 
-    for field_name, value in record.fields.items():
+    for field_name, raw_value in record.fields.items():
+        field_type = resolved_type_map.get(field_name, "unknown")
+        canonical = _adapter.deserialize(field_type, raw_value, reference_resolver)
+
+        if canonical is None:
+            continue
+
         slot = by_name.get(field_name)
         if slot and slot in ARTHOUND_SLOTS:
-            coerced = _coerce_slot(slot, value)
+            coerced = _coerce_slot(slot, canonical)
             if coerced is not None:
                 slots[slot] = coerced
-            else:
-                # Slot coercion failed (e.g. linked-record array) — preserve in meta
-                # so linked IDs remain available for relationship resolution at read time.
-                cleaned = _clean_meta(value)
-                if cleaned is not None:
-                    meta[field_name] = cleaned
-        else:
-            cleaned = _clean_meta(value)
-            if cleaned is not None:
-                meta[field_name] = cleaned
+
+        # Store canonical JSON in meta for all fields — slot columns are a
+        # denormalized convenience; meta is the full structured record.
+        meta[field_name] = to_json(canonical)
 
     source_hash = hashlib.sha256(
         json.dumps(record.fields, sort_keys=True, default=str).encode()
@@ -103,65 +122,38 @@ def normalize_reference(record: RawRecord, name_field: str) -> dict:
     }
 
 
-def _coerce_slot(slot: str, value) -> object:
-    if value is None or value == "":
+def _coerce_slot(slot: str, canonical: Any) -> object:
+    """
+    Extract a slot-appropriate scalar from a canonical value.
+    Text slots use the adapter's display_string; numeric/date slots parse accordingly.
+    """
+    if canonical is None:
         return None
 
     if slot == "priority":
-        if isinstance(value, (int, float)):
-            return int(value)
-        if isinstance(value, str):
+        if isinstance(canonical, (int, float)):
+            return int(canonical)
+        if isinstance(canonical, str):
             try:
-                return int(value.strip().upper().lstrip("P"))
+                return int(canonical.strip().upper().lstrip("P"))
             except ValueError:
                 return None
+        # Lookup arrays may contain numbers
+        if isinstance(canonical, list) and canonical:
+            first = canonical[0]
+            if isinstance(first, (int, float)):
+                return int(first)
+            if isinstance(first, str):
+                try:
+                    return int(first.strip().upper().lstrip("P"))
+                except ValueError:
+                    return None
         return None
 
     if slot == "project_date":
-        if isinstance(value, str) and len(value) >= 10:
-            return value[:10]
-        return None
+        val = canonical if isinstance(canonical, str) else _adapter.display_string(canonical)
+        return val[:10] if isinstance(val, str) and len(val) >= 10 else None
 
-    # For all text slots: flatten arrays/dicts to a string
-    if isinstance(value, list):
-        if not value:
-            return None
-        if all(isinstance(v, str) and v.startswith("rec") for v in value):
-            return None  # bare linked-record IDs — not useful
-        if all(isinstance(v, str) for v in value):
-            return ", ".join(v for v in value if v) or None
-        if all(isinstance(v, dict) for v in value):
-            names = [str(v.get("name") or v.get("text") or "") for v in value]
-            return ", ".join(n for n in names if n) or None
-        return None
-
-    if isinstance(value, dict):
-        return str(value.get("name") or value.get("text") or "") or None
-
-    if isinstance(value, bool):
-        return "Yes" if value else "No"
-
-    return str(value) if value != "" else None
-
-
-def _clean_meta(value) -> object:
-    """Sanitise a source field value for JSONB storage."""
-    if value is None or value == "" or value == []:
-        return None
-    if isinstance(value, list):
-        if not value:
-            return None
-        first = value[0]
-        if isinstance(first, dict) and "url" in first:
-            return [{"url": a["url"], "filename": a.get("filename", "")} for a in value]
-        if all(isinstance(v, str) and v.startswith("rec") for v in value):
-            return value  # keep linked record IDs — used to resolve product/task relationships at read time
-        if all(isinstance(v, str) for v in value):
-            return value
-        if all(isinstance(v, dict) for v in value):
-            return [str(v.get("name") or v.get("text") or v.get("email") or "") for v in value]
-        return None
-    if isinstance(value, dict):
-        name = value.get("name") or value.get("text") or value.get("email")
-        return str(name) if name else None
-    return value
+    # All remaining slots are text — resolve via adapter display_string
+    display = _adapter.display_string(canonical)
+    return display if display else None

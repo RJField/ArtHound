@@ -407,24 +407,24 @@
       </div>
     </div>
 
-    <!-- Setup wizard modal -->
-    <div class="modal-overlay" id="setup-overlay">
-      <div class="modal modal-wide">
-        <div class="modal-header">
-          <div class="wizard-header-left">
-            <h2 id="setup-modal-title">Estimation Engine Setup</h2>
-            <div class="wizard-steps" id="wizard-steps"></div>
-          </div>
-          <button class="icon-btn" id="setup-close">✕</button>
-        </div>
-        <div class="modal-body" id="setup-body">
-          <div class="list-state">Loading…</div>
-        </div>
-        <div class="wizard-footer" id="wizard-footer"></div>
-      </div>
-    </div>
-
   </div><!-- /#view-legacy -->
+
+  <!-- Setup wizard modal (outside view-legacy so it works from any view) -->
+  <div class="modal-overlay" id="setup-overlay">
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <div class="wizard-header-left">
+          <h2 id="setup-modal-title">Estimation Engine Setup</h2>
+          <div class="wizard-steps" id="wizard-steps"></div>
+        </div>
+        <button class="icon-btn" id="setup-close">✕</button>
+      </div>
+      <div class="modal-body" id="setup-body">
+        <div class="list-state">Loading…</div>
+      </div>
+      <div class="wizard-footer" id="wizard-footer"></div>
+    </div>
+  </div>
 
   <!-- ── ESTIMATION MATRIX VIEW ── -->
   <div id="view-matrix-table" class="view" style="display:none">
