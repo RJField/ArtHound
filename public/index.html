@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ArtHound</title>
-  <link rel="stylesheet" href="styles.css?v=8">
+  <link rel="stylesheet" href="styles.css?v=9">
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 </head>
 <body>
@@ -106,8 +106,20 @@
         <h2>Settings</h2>
         <button class="icon-btn" id="settings-modal-close">✕</button>
       </div>
-      <div class="modal-body" style="padding:32px;text-align:center;color:var(--text-muted)">
-        Under construction
+      <div class="modal-body">
+        <div class="fm-container">
+          <div class="fm-header">
+            <p class="fm-description">Map your Airtable fields to ArtHound standard slots. Unmapped fields are stored as metadata and still searchable.</p>
+            <div class="fm-actions">
+              <button class="btn btn-secondary" id="fm-sync-btn">Re-sync</button>
+              <button class="btn btn-primary"   id="fm-save-btn">Save mapping</button>
+            </div>
+          </div>
+          <div class="fm-status" id="fm-status"></div>
+          <div id="fm-table-wrap">
+            <p class="fm-empty">Open Settings after your first sync to configure field mapping.</p>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -806,6 +818,6 @@
   </div>
 
   <div class="toast" id="toast"></div>
-  <script type="module" src="app.js?v=30"></script>
+  <script type="module" src="app.js?v=31"></script>
 </body>
 </html>

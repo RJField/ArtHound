@@ -6,6 +6,7 @@ import { loadReviews } from './modules/reviews.js';
 import { loadWorkflowSteps, initWorkflowSteps } from './modules/workflow-steps.js';
 import { loadShareManager } from './modules/shares.js';
 import { initNumbersBot } from './modules/numbersbot.js';
+import { initFieldMapping } from './modules/field-mapping.js';
 
 setSendVendorHandler(openSendVendorModal);
 
@@ -27,6 +28,7 @@ function navigate(view) {
 initAuth(navigate);
 initWorkflowSteps(navigate);
 initNumbersBot();
+initFieldMapping();
 
 document.getElementById('share-manager-refresh-btn').addEventListener('click', loadShareManager);
 

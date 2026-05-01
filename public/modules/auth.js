@@ -1,4 +1,4 @@
-import { $, setSupabaseClient, setAuthFailHandler } from './ui.js';
+import { $, setSupabaseClient, setAuthFailHandler, apiFetch } from './ui.js';
 import { state } from './state.js';
 
 let _navigate = null;
@@ -14,7 +14,7 @@ function setLoginError(msg) {
 
 const $globalTopbar = document.getElementById('global-topbar');
 
-function navigateByRole(role) {
+function navigateByRole(role, triggerSync = false) {
   if (role === 'studio') {
     state.homeView = 'home';
     $globalTopbar.style.display = 'flex';
@@ -25,7 +25,14 @@ function navigateByRole(role) {
     _navigate('vendor-home');
   } else {
     setLoginError('Account has no role assigned. Contact your administrator.');
+    return;
   }
+  if (triggerSync) _backgroundSync();
+}
+
+function _backgroundSync() {
+  apiFetch('/api/sync/run', { method: 'POST', body: JSON.stringify({ source_type: 'airtable' }) })
+    .catch(err => console.warn('[ArtHound] Background sync failed to start:', err));
 }
 
 function initSignup() {
@@ -175,7 +182,7 @@ export function initAuth(navigateFn) {
       setLoginError('Account has no role assigned. Contact your administrator.');
       return;
     }
-    navigateByRole(role);
+    navigateByRole(role, true);
   });
 
   document.getElementById('login-password').addEventListener('keydown', e => {
@@ -245,7 +252,7 @@ export function initAuth(navigateFn) {
       });
 
       const { data: { session } } = await _supabaseClient.auth.getSession();
-      if (session) navigateByRole(session.user?.app_metadata?.role);
+      if (session) navigateByRole(session.user?.app_metadata?.role, true);
 
       const wireAirtable = (id) => {
         const btn = document.getElementById(id);

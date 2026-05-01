@@ -1,6 +1,8 @@
 from dotenv import load_dotenv
 load_dotenv()
 
+import asyncio
+import logging
 import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, Request
@@ -10,8 +12,9 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from lib.airtable import http_client, find_record
-from lib.db import db_client
+from lib.db import db_client, _url, _headers
 from lib.auth import CurrentUser, get_current_user
+from lib.sync.runner import run_sync
 import config
 from routes.assets import router as assets_router
 from routes.schedule import router as schedule_router
@@ -21,11 +24,48 @@ from routes.reviews import router as reviews_router
 from routes.workflow_steps import router as workflow_steps_router
 from routes.payload import router as payload_router
 from routes.numbersbot import router as numbersbot_router
+from routes.sync import router as sync_router, webhook_router as sync_webhook_router
+
+log = logging.getLogger(__name__)
+
+
+async def _poll_loop() -> None:
+    """
+    Background polling task. Disabled when SYNC_POLL_INTERVAL_SECONDS is unset or 0.
+    When enabled, triggers a delta sync for every owner that has source credentials stored.
+    """
+    interval = int(os.environ.get("SYNC_POLL_INTERVAL_SECONDS", "0"))
+    if not interval:
+        return
+    log.info("Polling sync enabled — interval: %ds", interval)
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            r = await db_client.get(
+                _url("/rest/v1/source_credentials"),
+                params={"select": "owner_type,owner_id,source_type"},
+                headers=_headers(),
+            )
+            if r.is_success:
+                for row in r.json():
+                    asyncio.create_task(
+                        run_sync(
+                            owner_type=row["owner_type"],
+                            owner_id=row["owner_id"],
+                            source_type=row["source_type"],
+                            trigger="poll",
+                            full=False,
+                        )
+                    )
+        except Exception as exc:
+            log.warning("Poll cycle error: %s", exc)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    poll_task = asyncio.create_task(_poll_loop())
     yield
+    poll_task.cancel()
     await http_client.aclose()
     await db_client.aclose()
 
@@ -56,6 +96,9 @@ app.include_router(workflow_steps_router, prefix="/api/workflow-steps",   depend
 # all other endpoints carry explicit Depends(require_studio)
 app.include_router(payload_router,        prefix="/api/payloads")
 app.include_router(numbersbot_router,     prefix="/api/numbersbot",  dependencies=_auth)
+app.include_router(sync_router,           prefix="/api/sync",        dependencies=_auth)
+# Webhook routes are public — protected by WEBHOOK_SECRET, not JWT
+app.include_router(sync_webhook_router,   prefix="/api/sync")
 
 
 # Generic record fetch — table_key is one of the keys in config.tables (e.g. "assets", "tasks").

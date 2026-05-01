@@ -1,15 +1,20 @@
-import json
 import os
+from collections import Counter
 
 import anthropic
-import httpx
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
-import config
-from routes.schema import FIELD_CATEGORY
+from lib.auth import CurrentUser, get_current_user
+from lib.db import db_client, _url, _headers
 
 router = APIRouter()
+
+_SLOTS = "name,dev_name,item_type,priority,product,project_date,status,asset_number"
+
+# Meta keys whose values are worth surfacing to NumberBot (milestone/date lookups, team).
+# Bare record-ID arrays are already excluded by _fmt_meta below.
+_META_KEYWORDS = ("milestone", "date", "team", "phase", "due", "target", "delivery")
 
 
 class Message(BaseModel):
@@ -21,44 +26,100 @@ class ChatRequest(BaseModel):
     messages: list[Message]
 
 
-async def _fetch_schema() -> list[dict]:
-    token = os.environ.get("AIRTABLE_TOKEN")
-    base_id = os.environ.get("AIRTABLE_BASE_ID")
-    if not token or not base_id:
-        return []
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        r = await client.get(
-            f"https://api.airtable.com/v0/meta/bases/{base_id}/tables",
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        if not r.is_success:
-            return []
-        tables = r.json().get("tables", [])
-    by_name = {t["name"]: t for t in tables}
-    return [
-        {
-            "key": key,
-            "name": name,
-            "found": name in by_name,
-            "fields": [
-                {
-                    "name": f["name"],
-                    "type": f["type"],
-                    "category": FIELD_CATEGORY.get(f["type"], "other"),
-                }
-                for f in by_name[name].get("fields", [])
-            ]
-            if name in by_name
-            else [],
-        }
-        for key, name in config.tables.items()
+def _fmt_meta(v) -> str | None:
+    """Return a display string for a meta value, or None if not useful."""
+    if v is None or v == "" or v == []:
+        return None
+    if isinstance(v, list):
+        if all(isinstance(x, str) and x.startswith("rec") for x in v):
+            return None  # bare linked-record IDs
+        return ", ".join(str(x) for x in v if x) or None
+    return str(v)
+
+
+async def _build_context(user: CurrentUser) -> str:
+    owner_type = user.role
+    owner_id   = user.studio_id if user.role == "studio" else user.vendor_id
+    if not owner_id:
+        return "No studio or vendor linked to this account — cannot load asset data."
+
+    asset_r, fm_r = await _parallel_fetch(owner_type, owner_id)
+
+    assets   = asset_r.json() if asset_r.is_success else []
+    fm_rows  = fm_r.json() if fm_r.is_success else []
+    mappings = (fm_rows[0].get("mappings") or []) if fm_rows else []
+
+    if not assets:
+        return "No assets have been synced yet. Run a sync from Settings first."
+
+    products   = Counter(a.get("product") or "—" for a in assets)
+    item_types = Counter(a.get("item_type") or "—" for a in assets)
+    statuses   = Counter(a.get("status") or "—" for a in assets)
+
+    lines = [
+        f"STUDIO ASSET INVENTORY: {len(assets)} total assets",
+        "",
+        "BREAKDOWN BY PRODUCT:",
+        *[f"  {p}: {c}" for p, c in products.most_common()],
+        "",
+        "BREAKDOWN BY ITEM TYPE:",
+        *[f"  {t}: {c}" for t, c in item_types.most_common()],
+        "",
+        "BREAKDOWN BY STATUS:",
+        *[f"  {s}: {c}" for s, c in statuses.most_common()],
+        "",
+        "FIELD MAPPING (source field → ArtHound slot or meta):",
+        *[f"  {m['source_field_name']} → {m.get('arthound_slot') or 'meta'}" for m in mappings],
+        "",
+        "ASSET LIST — columns: name | product | item_type | status | priority | project_date | asset# | [extra meta]",
     ]
+
+    for a in assets:
+        row = " | ".join(
+            str(a.get(col) if a.get(col) is not None else "—")
+            for col in ("name", "product", "item_type", "status", "priority", "project_date", "asset_number")
+        )
+        # Append useful meta fields (milestone dates, team, etc.)
+        meta = a.get("meta") or {}
+        extras = []
+        for k, v in meta.items():
+            if any(kw in k.lower() for kw in _META_KEYWORDS):
+                display = _fmt_meta(v)
+                if display:
+                    extras.append(f"{k}: {display}")
+        if extras:
+            row += " | " + "; ".join(extras)
+        lines.append(row)
+
+    return "\n".join(lines)
+
+
+async def _parallel_fetch(owner_type: str, owner_id: str):
+    import asyncio
+
+    params_base = {
+        "owner_type":  f"eq.{owner_type}",
+        "owner_id":    f"eq.{owner_id}",
+        "source_type": "eq.airtable",
+    }
+
+    return await asyncio.gather(
+        db_client.get(
+            _url("/rest/v1/replicated_assets"),
+            params={**params_base, "select": f"{_SLOTS},meta", "order": "product.asc,name.asc"},
+            headers=_headers({"Range": "0-999"}),
+        ),
+        db_client.get(
+            _url("/rest/v1/source_field_mappings"),
+            params={**params_base, "select": "mappings"},
+            headers=_headers(),
+        ),
+    )
 
 
 @router.post("/chat")
-async def chat(body: ChatRequest):
-    schema = await _fetch_schema()
-    schema_text = json.dumps(schema, indent=2)
+async def chat(body: ChatRequest, user: CurrentUser = Depends(get_current_user)):
+    context = await _build_context(user)
 
     client = anthropic.AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
 
@@ -70,13 +131,13 @@ async def chat(body: ChatRequest):
                 "type": "text",
                 "text": (
                     "You are NumberBot, a production intelligence assistant built into ArtHound — "
-                    "an asset management platform for production studios. "
-                    "You have access to the ArtHound asset schema below, which describes the tables "
-                    "and fields in the connected Airtable base, including each field's type and category.\n\n"
-                    "Answer questions about the schema concisely and accurately. "
-                    "When asked about actual record data you cannot see, say so clearly. "
-                    "Keep responses focused on asset management, estimation, and production context.\n\n"
-                    f"SCHEMA:\n{schema_text}"
+                    "an asset management platform for production studios.\n\n"
+                    "You have direct access to this studio's live asset data from the ArtHound database. "
+                    "Answer questions about assets, products, priorities, statuses, milestone dates, and schedules "
+                    "concisely and accurately. You can count, filter, aggregate, and reason about the data. "
+                    "If a question requires information not in the data (e.g. detailed task breakdowns), "
+                    "say what you can and note what's missing.\n\n"
+                    f"{context}"
                 ),
                 "cache_control": {"type": "ephemeral"},
             }

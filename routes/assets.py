@@ -1,157 +1,155 @@
 import asyncio
-import os
-from datetime import date
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
-from lib.airtable import select_all, find_record, update_records, http_client
+from lib.airtable import update_records
 from lib.auth import CurrentUser, get_current_user, require_studio
-from lib.canonical import get_or_create_canonical_ids
-from lib.utils import resolve_name, link_id
+from lib.db import db_client, _url, _headers
 import config
 
 router = APIRouter()
 
 
-def _is_record_id(s) -> bool:
-    return isinstance(s, str) and s.startswith("rec") and len(s) >= 10 and s[3:].isalnum()
+def _owner(user: CurrentUser) -> tuple[str, str]:
+    owner_type = user.role
+    owner_id   = user.studio_id if user.role == "studio" else user.vendor_id
+    if not owner_id:
+        raise HTTPException(status_code=403, detail="No studio/vendor linked to account")
+    return owner_type, owner_id
 
 
-def _format_field_value(field_name: str, val):
-    if val is None:
+def _fmt(v) -> object:
+    """Convert a meta value to a display-friendly form."""
+    if v is None:
         return None
-    if isinstance(val, bool):
-        return "Yes" if val else "No"
-    if isinstance(val, (int, float)):
-        if field_name == "Priority":
-            return f"P{int(val)}"
-        return str(int(val)) if val == int(val) else str(round(val, 4))
-    if isinstance(val, str):
-        if not val:
+    if isinstance(v, list):
+        if not v:
             return None
-        if len(val) >= 10 and val[4:5] == "-" and val[7:8] == "-":
-            try:
-                d = date.fromisoformat(val[:10])
-                return f"{d.month}/{d.day}/{d.year}"
-            except Exception:
-                pass
-        return val
-    if isinstance(val, list):
-        if not val:
-            return None
-        if all(isinstance(v, str) for v in val):
-            # Bare linked-record ID arrays — caller resolves these separately
-            if all(_is_record_id(v) for v in val):
-                return None
-            return ", ".join(v for v in val if v) or None
-        if all(isinstance(v, dict) for v in val):
-            first = val[0]
-            extra_keys = set(first.keys()) - {"id", "deleted"}
-            if not extra_keys:
-                return None
-            names = [
-                str(v.get("name") or v.get("text") or v.get("value") or v.get("email") or "")
-                for v in val
-            ]
-            return ", ".join(n for n in names if n) or None
-        return None
-    if isinstance(val, dict):
-        n = val.get("name") or val.get("text") or val.get("value") or val.get("email")
-        return str(n) if n else None
-    return str(val)
+        if all(isinstance(x, str) and x.startswith("rec") for x in v):
+            return None  # bare linked-record IDs — not useful for display
+        if all(isinstance(x, dict) and "url" in x for x in v):
+            return v  # attachments — keep as-is
+        return ", ".join(str(x) for x in v if x) or None
+    if isinstance(v, bool):
+        return "Yes" if v else "No"
+    return v
 
 
-async def _fetch_product_names() -> dict:
-    records = await select_all(config.tables["products"], {"fields": ["Product"]})
-    return {r["id"]: r["fields"].get("Product", r["id"]) for r in records}
-
-
-async def _fetch_item_type_names() -> dict:
-    records = await select_all(config.tables["itemTypes"], {"fields": ["Item"]})
-    return {r["id"]: r["fields"].get("Item", r["id"]) for r in records}
-
-
-async def _fetch_task_names() -> dict:
-    records = await select_all(config.tables["tasks"], {"fields": ["Task"]})
-    return {r["id"]: r["fields"].get("Task", r["id"]) for r in records}
-
-
-async def _fetch_review_names() -> dict:
-    records = await select_all(config.tables["reviews"])
-    result = {}
-    for r in records:
-        fields = r.get("fields", {})
-        # Primary field is first in the fields dict; use first scalar value as display name
-        name = next(
-            (str(v) for v in fields.values() if isinstance(v, (str, int, float)) and v),
-            r["id"],
-        )
-        result[r["id"]] = name
-    return result
-
-
-def _normalize_asset(
-    r: dict,
-    product_names: dict = {},
-    item_type_names: dict = {},
-    linked_id_map: dict = {},
-    canonical_id: str | None = None,
+def _build_asset_response(
+    row: dict,
+    product_id_to_name: dict,
+    product_name_to_id: dict,
+    item_type_id_to_name: dict,
 ) -> dict:
-    milestone4 = r["fields"].get("Milestone 4 [Dates]")
-    product_links = r["fields"].get("Product") or []
-    item_links = r["fields"].get("Item Type") or []
-    product_id = link_id(product_links[0]) if product_links else None
-    item_type_id = link_id(item_links[0]) if item_links else None
+    meta = row.get("meta") or {}
 
+    # Resolve product name + source ID
+    product_name = row.get("product")
+    product_id   = product_name_to_id.get(product_name) if product_name else None
+    if not product_id:
+        for pid in (meta.get("Product") or []):
+            if pid in product_id_to_name:
+                product_name = product_id_to_name[pid]
+                product_id   = pid
+                break
+
+    # Resolve item type — slot is null for linked records; fall back to meta IDs
+    item_type = row.get("item_type")
+    if not item_type:
+        for iid in (meta.get("Item Type") or []):
+            if iid in item_type_id_to_name:
+                item_type = item_type_id_to_name[iid]
+                break
+
+    # Team from meta (Airtable lookup field returns a list)
+    team_raw = meta.get("Team (from Product)")
+    if isinstance(team_raw, list):
+        team = ", ".join(str(x) for x in team_raw if x) or None
+    else:
+        team = str(team_raw) if team_raw else None
+
+    # Reconstruct rawFields from meta, skipping bare record-ID arrays
     raw_fields = {}
-    for k, v in r["fields"].items():
-        formatted = _format_field_value(k, v)
-        if formatted is not None:
-            raw_fields[k] = formatted
-        elif isinstance(v, list) and v and all(isinstance(x, dict) and "url" in x for x in v):
-            # Attachment field (multipleAttachments or lookup of attachments)
-            raw_fields[k] = [
-                {"url": x["url"], "filename": x.get("filename", "")}
-                for x in v if x.get("url")
-            ]
-        elif isinstance(v, list) and v and all(_is_record_id(x) for x in v):
-            # Linked record IDs — resolve via pre-fetched map when possible
-            names = [linked_id_map[x] for x in v if x in linked_id_map]
-            if names:
-                raw_fields[k] = ", ".join(names)
-            else:
-                raw_fields[k] = f"{len(v)} record{'s' if len(v) != 1 else ''}"
+    for k, v in meta.items():
+        display = _fmt(v)
+        if display is not None:
+            raw_fields[k] = display
+
+    # Expose slot values that aren't in BUILTIN_FIELDS so they're available in the
+    # field selector's "Additional" section (e.g. Status).
+    for slot, field_name in (("status", "Status"),):
+        val = row.get(slot)
+        if val is not None and field_name not in raw_fields:
+            raw_fields[field_name] = str(val)
 
     return {
-        "id": r["id"],
-        "canonicalId": canonical_id,
-        "assetNumber": r["fields"].get("ID"),
-        "name": resolve_name(r["fields"].get("Name")),
-        "devName": resolve_name(r["fields"].get("Dev Name")),
-        "productId": product_id,
-        "product": product_names.get(product_id, product_id) if product_id else None,
-        "itemType": item_type_names.get(item_type_id, item_type_id) if item_type_id else None,
-        "team": resolve_name(r["fields"].get("Team (from Product)")),
-        "priority": r["fields"].get("Priority"),
-        "projectDate": (
-            (milestone4[0] if isinstance(milestone4, list) else milestone4)
-            if milestone4
-            else None
-        ),
-        "rawFields": raw_fields,
+        "id":           row["source_record_id"],
+        "canonicalId":  row.get("canonical_asset_id"),
+        "assetNumber":  row.get("asset_number"),
+        "name":         row.get("name") or "",
+        "devName":      row.get("dev_name"),
+        "productId":    product_id,
+        "product":      product_name,
+        "itemType":     item_type,
+        "team":         team,
+        "priority":     row.get("priority"),
+        "projectDate":  row.get("project_date"),
+        "rawFields":    raw_fields,
     }
 
 
-@router.get("/products")
-async def get_products():
-    records = await select_all(
-        config.tables["products"],
-        {"fields": ["Product"], "sort": [{"field": "Product", "direction": "asc"}]},
+async def _fetch_ref_table(owner_type: str, owner_id: str, table: str) -> list[dict]:
+    r = await db_client.get(
+        _url(f"/rest/v1/{table}"),
+        params={
+            "owner_type":  f"eq.{owner_type}",
+            "owner_id":    f"eq.{owner_id}",
+            "source_type": "eq.airtable",
+            "select":      "source_record_id,name",
+        },
+        headers=_headers(),
     )
-    return [{"id": r["id"], "name": r["fields"].get("Product", r["id"])} for r in records]
+    r.raise_for_status()
+    return r.json()
 
+
+async def _fetch_products_map(owner_type: str, owner_id: str) -> tuple[dict, dict]:
+    """Returns (source_record_id → name, name → source_record_id) for replicated_products."""
+    rows = await _fetch_ref_table(owner_type, owner_id, "replicated_products")
+    id_to_name = {p["source_record_id"]: p["name"] for p in rows}
+    name_to_id = {p["name"]: p["source_record_id"] for p in rows}
+    return id_to_name, name_to_id
+
+
+async def _fetch_item_types_map(owner_type: str, owner_id: str) -> dict:
+    """Returns source_record_id → name for replicated_item_types."""
+    rows = await _fetch_ref_table(owner_type, owner_id, "replicated_item_types")
+    return {r["source_record_id"]: r["name"] for r in rows}
+
+
+# ── Products ──────────────────────────────────────────────────────────────────
+
+@router.get("/products")
+async def get_products(user: CurrentUser = Depends(get_current_user)):
+    owner_type, owner_id = _owner(user)
+    r = await db_client.get(
+        _url("/rest/v1/replicated_products"),
+        params={
+            "owner_type":  f"eq.{owner_type}",
+            "owner_id":    f"eq.{owner_id}",
+            "source_type": "eq.airtable",
+            "select":      "source_record_id,name",
+            "order":       "name.asc",
+        },
+        headers=_headers(),
+    )
+    r.raise_for_status()
+    return [{"id": p["source_record_id"], "name": p["name"]} for p in r.json()]
+
+
+# ── Asset list ────────────────────────────────────────────────────────────────
 
 @router.get("")
 @router.get("/")
@@ -159,62 +157,86 @@ async def get_assets(
     productId: Optional[str] = Query(None),
     current_user: CurrentUser = Depends(get_current_user),
 ):
-    records, product_names, item_type_names, task_names, review_names = await asyncio.gather(
-        select_all(
-            config.tables["assets"],
-            {"sort": [{"field": "Name", "direction": "asc"}]},
-        ),
-        _fetch_product_names(),
-        _fetch_item_type_names(),
-        _fetch_task_names(),
-        _fetch_review_names(),
+    owner_type, owner_id = _owner(current_user)
+
+    asset_params = {
+        "owner_type":  f"eq.{owner_type}",
+        "owner_id":    f"eq.{owner_id}",
+        "source_type": "eq.airtable",
+        "order":       "name.asc",
+    }
+
+    asset_r, (prod_id_to_name, prod_name_to_id), it_id_to_name = await asyncio.gather(
+        db_client.get(_url("/rest/v1/replicated_assets"), params=asset_params, headers=_headers()),
+        _fetch_products_map(owner_type, owner_id),
+        _fetch_item_types_map(owner_type, owner_id),
     )
-    linked_id_map = {**product_names, **item_type_names, **task_names, **review_names}
-    canonical_map = await get_or_create_canonical_ids([r["id"] for r in records], current_user.studio_id)
+    asset_r.raise_for_status()
+    rows = asset_r.json()
 
-    assets = [
-        _normalize_asset(r, product_names, item_type_names, linked_id_map, canonical_map.get(r["id"]))
-        for r in records
-    ]
     if productId:
-        assets = [a for a in assets if a["productId"] == productId]
-    return assets
+        target_name = prod_id_to_name.get(productId)
+        rows = [
+            row for row in rows
+            if productId in (row.get("meta") or {}).get("Product", [])
+            or (target_name and row.get("product") == target_name)
+        ]
 
+    return [_build_asset_response(r, prod_id_to_name, prod_name_to_id, it_id_to_name) for r in rows]
+
+
+# ── Field list (for detail panel field picker) ───────────────────────────────
 
 @router.get("/fields")
-async def get_asset_fields():
-    token = os.environ.get("AIRTABLE_TOKEN", "")
-    base_id = os.environ.get("AIRTABLE_BASE_ID", "")
-    r = await http_client.get(
-        f"https://api.airtable.com/v0/meta/bases/{base_id}/tables",
-        headers={"Authorization": f"Bearer {token}"},
+async def get_asset_fields(user: CurrentUser = Depends(get_current_user)):
+    """Return discovered source fields from the synced field mapping."""
+    owner_type, owner_id = _owner(user)
+    r = await db_client.get(
+        _url("/rest/v1/source_field_mappings"),
+        params={
+            "owner_type":  f"eq.{owner_type}",
+            "owner_id":    f"eq.{owner_id}",
+            "source_type": "eq.airtable",
+            "select":      "mappings",
+        },
+        headers=_headers(),
     )
-    if not r.is_success:
-        raise HTTPException(
-            status_code=502,
-            detail=f"Airtable metadata API returned {r.status_code}. "
-                   "Ensure your token has the 'schema.bases:read' scope.",
-        )
-    tables = r.json().get("tables", [])
-    table = next((t for t in tables if t["name"] == config.tables["assets"]), None)
-    if not table:
-        raise HTTPException(status_code=404, detail=f"Assets table '{config.tables['assets']}' not found in schema")
-    return [{"name": f["name"], "type": f["type"]} for f in table.get("fields", [])]
+    r.raise_for_status()
+    rows = r.json()
+    if not rows:
+        return []
+    mappings = rows[0].get("mappings") or []
+    return [{"name": m["source_field_name"], "type": "text"} for m in mappings]
 
+
+# ── Single asset ──────────────────────────────────────────────────────────────
 
 @router.get("/{asset_id}")
 async def get_asset(asset_id: str, current_user: CurrentUser = Depends(get_current_user)):
-    record, product_names, item_type_names, task_names, review_names, canonical_map = await asyncio.gather(
-        find_record(config.tables["assets"], asset_id),
-        _fetch_product_names(),
-        _fetch_item_type_names(),
-        _fetch_task_names(),
-        _fetch_review_names(),
-        get_or_create_canonical_ids([asset_id], current_user.studio_id),
-    )
-    linked_id_map = {**product_names, **item_type_names, **task_names, **review_names}
-    return _normalize_asset(record, product_names, item_type_names, linked_id_map, canonical_map.get(asset_id))
+    owner_type, owner_id = _owner(current_user)
 
+    asset_r, (prod_id_to_name, prod_name_to_id), it_id_to_name = await asyncio.gather(
+        db_client.get(
+            _url("/rest/v1/replicated_assets"),
+            params={
+                "owner_type":       f"eq.{owner_type}",
+                "owner_id":         f"eq.{owner_id}",
+                "source_type":      "eq.airtable",
+                "source_record_id": f"eq.{asset_id}",
+            },
+            headers=_headers(),
+        ),
+        _fetch_products_map(owner_type, owner_id),
+        _fetch_item_types_map(owner_type, owner_id),
+    )
+    asset_r.raise_for_status()
+    rows = asset_r.json()
+    if not rows:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    return _build_asset_response(rows[0], prod_id_to_name, prod_name_to_id, it_id_to_name)
+
+
+# ── Name update (write-back to source) ───────────────────────────────────────
 
 class NameUpdate(BaseModel):
     name: str

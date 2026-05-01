@@ -2918,3 +2918,64 @@ body {
 .sv-asset-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 .sv-asset-list .am-asset-row { border-bottom: 1px solid var(--border); }
 .sv-asset-list .am-asset-row:last-child { border-bottom: none; }
+
+/* ---- Field Mapping (Settings modal) ---- */
+
+.fm-container { display: flex; flex-direction: column; gap: 16px; }
+
+.fm-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.fm-description { font-size: 13px; color: var(--text-muted); line-height: 1.5; flex: 1; }
+.fm-actions { display: flex; gap: 8px; flex-shrink: 0; }
+
+.fm-status {
+  font-size: 12px;
+  color: var(--text-muted);
+  min-height: 16px;
+}
+
+.fm-empty, .fm-error {
+  font-size: 13px;
+  color: var(--text-muted);
+  text-align: center;
+  padding: 24px 0;
+}
+.fm-error { color: var(--err); }
+
+.fm-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.fm-table thead th {
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.fm-table tbody tr:hover { background: var(--surface-2); }
+.fm-table td { padding: 7px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.fm-table tbody tr:last-child td { border-bottom: none; }
+
+.fm-field-name { color: var(--text); font-weight: 500; }
+
+.fm-slot-select {
+  width: 100%;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--text);
+  font-size: 13px;
+  padding: 5px 8px;
+  cursor: pointer;
+}
+.fm-slot-select:focus { outline: none; border-color: var(--accent); }
+.fm-slot-select option { background: var(--surface); }
