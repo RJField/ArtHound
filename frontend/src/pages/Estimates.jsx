@@ -2,7 +2,6 @@ import { useState, useEffect, useRef, useLayoutEffect } from 'react'
 import { apiFetch } from '../lib/api'
 import { cn } from '../lib/utils'
 import EstimateWizardModal from '../components/EstimateWizardModal'
-import CsvImportModal from '../components/CsvImportModal'
 
 // ── Matrix Table ──────────────────────────────────────────────────────────────
 
@@ -13,21 +12,19 @@ function renderTags(arr) {
   ))
 }
 
-function MatrixTable({ source, reloadKey }) {
+function MatrixTable({ reloadKey }) {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const tableRef = useRef(null)
 
-  const endpoint = source === 'arthound' ? '/api/setup/matrix-table-pg' : '/api/setup/matrix-table'
-
   useEffect(() => {
     setLoading(true)
     setError(null)
-    apiFetch(endpoint)
+    apiFetch('/api/setup/matrix-table-pg')
       .then(d => { setData(d); setLoading(false) })
       .catch(e => { setError(e.message); setLoading(false) })
-  }, [endpoint, reloadKey])
+  }, [reloadKey])
 
   // Apply sticky left offsets after table renders
   useEffect(() => {
@@ -152,13 +149,11 @@ function MatrixTable({ source, reloadKey }) {
 // ── Estimates Page ────────────────────────────────────────────────────────────
 
 export default function Estimates() {
-  const [wizardMode, setWizardMode] = useState(null) // null | 'airtable' | 'arthound'
-  const [showCsv, setShowCsv] = useState(false)
+  const [showWizard, setShowWizard] = useState(false)
   const [reloadKey, setReloadKey] = useState(0)
-  const [activeTab, setActiveTab] = useState('arthound') // 'airtable' | 'arthound'
 
   function handleComplete() {
-    setWizardMode(null)
+    setShowWizard(false)
     setReloadKey(k => k + 1)
   }
 
@@ -170,60 +165,24 @@ export default function Estimates() {
       <div className="flex items-center gap-2 flex-wrap shrink-0">
         <h1 className="text-foreground text-sm font-semibold mr-2">Estimates</h1>
         <button
-          onClick={() => setWizardMode('airtable')}
-          className={cn(btn, 'border-border text-muted hover:text-foreground')}
-        >
-          Setup (Airtable)
-        </button>
-        <button
-          onClick={() => setWizardMode('arthound')}
+          onClick={() => setShowWizard(true)}
           className={cn(btn, 'border-accent text-accent hover:bg-accent/10')}
         >
-          Setup (ArtHound)
+          Setup
         </button>
-        <button
-          onClick={() => setShowCsv(true)}
-          className={cn(btn, 'border-border text-muted hover:text-foreground')}
-        >
-          Import CSV
-        </button>
-      </div>
-
-      {/* Tab bar */}
-      <div className="flex gap-1 shrink-0 border-b border-border">
-        {[
-          { key: 'arthound', label: 'ArtHound Matrix' },
-          { key: 'airtable', label: 'Airtable Matrix' },
-        ].map(t => (
-          <button
-            key={t.key}
-            onClick={() => setActiveTab(t.key)}
-            className={cn(
-              'px-3 py-2 text-xs font-medium cursor-pointer transition-colors border-b-2 -mb-px',
-              activeTab === t.key
-                ? 'text-foreground border-accent'
-                : 'text-muted border-transparent hover:text-foreground'
-            )}
-          >
-            {t.label}
-          </button>
-        ))}
       </div>
 
       {/* Matrix table */}
       <div className="flex-1 overflow-auto">
-        <MatrixTable key={`${activeTab}-${reloadKey}`} source={activeTab} reloadKey={reloadKey} />
+        <MatrixTable reloadKey={reloadKey} />
       </div>
 
-      {/* Modals */}
-      {wizardMode && (
+      {showWizard && (
         <EstimateWizardModal
-          mode={wizardMode}
-          onClose={() => setWizardMode(null)}
+          onClose={() => setShowWizard(false)}
           onComplete={handleComplete}
         />
       )}
-      {showCsv && <CsvImportModal onClose={() => setShowCsv(false)} />}
     </main>
   )
 }

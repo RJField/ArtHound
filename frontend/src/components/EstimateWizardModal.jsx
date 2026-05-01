@@ -443,7 +443,7 @@ function Step3({ wiz, setWiz }) {
       </div>
 
       <p className="text-muted text-xs">
-        {selectedCount} of {combos.length} combination{combos.length !== 1 ? 's' : ''} selected — will be added as columns to <strong className="text-foreground">Task Templates</strong>.
+        {selectedCount} of {combos.length} combination{combos.length !== 1 ? 's' : ''} selected — will be included in the ArtHound matrix.
       </p>
 
       <div className="overflow-x-auto max-h-72 overflow-y-auto border border-border rounded-lg">
@@ -482,41 +482,12 @@ function Step3({ wiz, setWiz }) {
 // ── Step 4: Options ───────────────────────────────────────────────────────────
 
 function Step4({ wiz, setWiz }) {
-  const [colsWithData, setColsWithData] = useState([])
-
-  useEffect(() => {
-    apiFetch('/api/setup/matrix-table')
-      .then(data => {
-        setColsWithData((data.combinations || []).filter(c =>
-          (data.tasks || []).some(t => t.estimates[c.colName] != null)
-        ))
-      })
-      .catch(() => {})
-  }, [])
-
   return (
     <div className="flex flex-col gap-5 p-5">
       <div>
-        <p className="text-foreground text-sm font-medium mb-0.5">Prefill new columns from</p>
-        <p className="text-muted text-xs mb-2">Copy estimate values from an existing column into all newly created columns.</p>
-        <select
-          value={wiz.prefillCol}
-          onChange={e => setWiz(w => ({ ...w, prefillCol: e.target.value }))}
-          className="text-sm bg-surface-2 border border-border rounded-md px-2 py-1.5 text-foreground w-full"
-        >
-          <option value="">— None —</option>
-          {colsWithData.map(c => <option key={c.colName} value={c.colName}>{c.label}</option>)}
-        </select>
-      </div>
-
-      <div>
-        <p className="text-foreground text-sm font-medium mb-0.5">
-          {wiz.mode === 'arthound' ? 'Reset matrix' : 'Previously generated columns'}
-        </p>
+        <p className="text-foreground text-sm font-medium mb-0.5">Reset matrix</p>
         <p className="text-muted text-xs mb-2">
-          {wiz.mode === 'arthound'
-            ? 'If enabled, all existing estimate values for this studio will be cleared before writing new rows.'
-            : 'If enabled, all columns from the previous setup run will be deleted from Task Templates before creating new ones.'}
+          If enabled, all existing estimate values for this studio will be cleared before writing new rows.
         </p>
         <label className="flex items-center gap-2 cursor-pointer">
           <input
@@ -525,9 +496,7 @@ function Step4({ wiz, setWiz }) {
             onChange={e => setWiz(w => ({ ...w, clearExisting: e.target.checked }))}
             className="accent-accent"
           />
-          <span className="text-sm text-foreground">
-            {wiz.mode === 'arthound' ? 'Clear existing matrix' : 'Delete previously generated columns'}
-          </span>
+          <span className="text-sm text-foreground">Clear existing matrix</span>
         </label>
       </div>
     </div>
@@ -544,7 +513,6 @@ function Step5({ wiz, onCreated }) {
 
   const fields = [...wiz.selected]
   const activeCombos = wiz.combos.filter((_, i) => !wiz.excluded.has(i))
-  const isPg = wiz.mode === 'arthound'
 
   useEffect(() => {
     if (ran.current) return
@@ -554,14 +522,12 @@ function Step5({ wiz, onCreated }) {
       field,
       type: wiz.fields.find(f => f.name === field)?.type ?? 'unknown',
     }))
-    const endpoint = isPg ? '/api/setup/create-matrix-pg' : '/api/setup/create-matrix'
 
-    apiFetch(endpoint, {
+    apiFetch('/api/setup/create-matrix-pg', {
       method: 'POST',
       body: JSON.stringify({
         variables,
         combinations: activeCombos,
-        prefillCol: wiz.prefillCol,
         clearExisting: wiz.clearExisting,
       }),
     })
@@ -573,9 +539,7 @@ function Step5({ wiz, onCreated }) {
     return (
       <div className="p-8 flex items-center justify-center">
         <p className="text-muted text-sm">
-          {isPg
-            ? `Syncing ${activeCombos.length} combination${activeCombos.length !== 1 ? 's' : ''} to ArtHound Matrix…`
-            : `Adding ${activeCombos.length} column${activeCombos.length !== 1 ? 's' : ''} to Task Templates…`}
+          {`Syncing ${activeCombos.length} combination${activeCombos.length !== 1 ? 's' : ''} to ArtHound Matrix…`}
         </p>
       </div>
     )
@@ -596,47 +560,22 @@ function Step5({ wiz, onCreated }) {
       <span className="text-success text-2xl">✓</span>
       <p className="text-foreground text-sm font-medium">Done</p>
       <div className="flex flex-wrap items-center gap-2 justify-center">
-        {isPg ? (
-          <>
-            <span className="bg-surface-2 text-foreground text-xs px-2 py-1 rounded-full">{result.stepsUpserted} workflow steps</span>
-            <span className="bg-surface-2 text-foreground text-xs px-2 py-1 rounded-full">{result.matrixRows} matrix rows</span>
-            {result.cleared && <span className="text-muted text-xs">previous matrix cleared</span>}
-            {result.prefillPending && <span className="text-muted text-xs">Prefilling from <strong>{wiz.prefillCol}</strong> in background</span>}
-          </>
-        ) : (
-          <>
-            <strong className="text-foreground text-xs">{result.templatesTable}</strong>
-            <span className="bg-surface-2 text-foreground text-xs px-2 py-1 rounded-full">{result.created} added</span>
-            {result.skipped > 0 && <span className="text-muted text-xs">{result.skipped} already existed</span>}
-            {result.deleted > 0  && <span className="text-muted text-xs">{result.deleted} deleted</span>}
-            {result.prefillPending && <span className="text-muted text-xs">Prefilling from <strong>{wiz.prefillCol}</strong> in background</span>}
-          </>
-        )}
+        <span className="bg-surface-2 text-foreground text-xs px-2 py-1 rounded-full">{result.stepsUpserted} workflow steps</span>
+        <span className="bg-surface-2 text-foreground text-xs px-2 py-1 rounded-full">{result.matrixRows} matrix rows</span>
+        {result.cleared && <span className="text-muted text-xs">previous matrix cleared</span>}
       </div>
       <p className="text-muted text-xs text-center max-w-xs">
-        {isPg
-          ? 'Estimates are stored in ArtHound. Edit day values directly in the matrix view.'
-          : 'estimates.config.js has been updated. Download the CSV to fill in day estimates offline.'}
+        Estimates are stored in ArtHound. Edit day values directly in the matrix view.
       </p>
-      {!isPg && (
-        <a
-          href="/api/setup/export-csv"
-          download="estimate-matrix.csv"
-          className="text-xs text-accent hover:text-accent-hover border border-accent/40 px-3 py-1.5 rounded-md mt-1"
-        >
-          ⬇ Download CSV
-        </a>
-      )}
     </div>
   )
 }
 
 // ── Main modal ────────────────────────────────────────────────────────────────
 
-export default function EstimateWizardModal({ mode, onClose, onComplete }) {
+export default function EstimateWizardModal({ onClose, onComplete }) {
   const [wiz, setWiz] = useState({
     step: 1,
-    mode,
     fields: [],
     selected: new Set(),
     values: {},
@@ -646,11 +585,8 @@ export default function EstimateWizardModal({ mode, onClose, onComplete }) {
     filters: {},
     groupBy: '',
     result: null,
-    prefillCol: '',
     clearExisting: false,
   })
-
-  const title = mode === 'arthound' ? 'ArtHound Matrix Setup' : 'Estimation Engine Setup'
 
   async function goNext() {
     if (wiz.step === 1 && !wiz.selected.size) return toast.error('Select at least one variable field')
@@ -670,7 +606,7 @@ export default function EstimateWizardModal({ mode, onClose, onComplete }) {
       <div className="bg-surface border border-border rounded-xl w-full max-w-2xl max-h-[90vh] flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-border shrink-0">
-          <h2 className="text-foreground text-base font-semibold">{title}</h2>
+          <h2 className="text-foreground text-base font-semibold">ArtHound Matrix Setup</h2>
           <button onClick={onClose} className="text-muted hover:text-foreground text-xl cursor-pointer leading-none">×</button>
         </div>
 
