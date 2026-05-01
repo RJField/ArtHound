@@ -27,7 +27,7 @@ def _comments_url(review_id: str) -> str:
 
 router = APIRouter()
 
-SCREENSHOTS_DIR = Path(__file__).parent.parent / "public" / "reviews"
+SCREENSHOTS_DIR = Path(__file__).parent.parent / "media" / "reviews"
 SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
 
 

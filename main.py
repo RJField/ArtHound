@@ -8,8 +8,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, Request
 from fastapi.exceptions import HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
+from pathlib import Path
+from fastapi.responses import FileResponse, JSONResponse
 
 from lib.airtable import http_client, find_record
 from lib.db import db_client, _url, _headers
@@ -77,8 +77,10 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",
+        "http://localhost:5173",
         "http://localhost:8000",
         "http://127.0.0.1:3000",
+        "http://127.0.0.1:5173",
         "http://127.0.0.1:8000",
     ],
     allow_credentials=True,
@@ -140,8 +142,30 @@ async def global_exception_handler(request: Request, exc: Exception):
     return JSONResponse(status_code=500, content={"error": str(exc)})
 
 
-# Static files last so API routes take precedence
-app.mount("/", StaticFiles(directory="public", html=True), name="static")
+# User-uploaded screenshots — stored outside dist so they survive rebuilds.
+# URL pattern /reviews/{filename} kept intentionally so existing Airtable
+# attachment URLs remain valid.
+_MEDIA = Path("media")
+
+@app.get("/reviews/{filename}")
+async def serve_screenshot(filename: str):
+    file = _MEDIA / "reviews" / filename
+    if not file.is_file():
+        raise HTTPException(status_code=404, detail="Not found")
+    return FileResponse(file)
+
+
+# SPA fallback — serve React build for all non-API paths.
+# File requests (JS/CSS/images) are served from dist; everything else gets index.html
+# so React Router handles client-side navigation.
+_DIST = Path("frontend/dist")
+
+@app.get("/{full_path:path}")
+async def spa_fallback(full_path: str):
+    file = _DIST / full_path
+    if file.is_file():
+        return FileResponse(file)
+    return FileResponse(_DIST / "index.html")
 
 
 if __name__ == "__main__":
