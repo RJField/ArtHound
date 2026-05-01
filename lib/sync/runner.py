@@ -19,6 +19,7 @@ from lib.sync.normalizer import (
     normalize_reference,
 )
 from lib.sync.writer import (
+    delete_orphaned_records,
     load_existing_hashes,
     save_default_mappings,
     upsert_assets,
@@ -198,6 +199,19 @@ async def run_sync(
             await upsert_assets(owner_type, owner_id, source_type, assets_to_write, canonical_map)
             await upsert_products(owner_type, owner_id, source_type, norm_products)
             await upsert_item_types(owner_type, owner_id, source_type, norm_item_types)
+
+            # ── Deletion detection ────────────────────────────────────────────
+            # Assets: only on full sync (delta fetch is incomplete by design).
+            # Products + item_types: always — they are always fetched in full.
+            orphaned = await delete_orphaned_records(
+                owner_type, owner_id, source_type,
+                fetched_asset_ids={r["source_record_id"] for r in norm_assets},
+                fetched_product_ids={r["source_record_id"] for r in norm_products},
+                fetched_item_type_ids={r["source_record_id"] for r in norm_item_types},
+                full_sync=not is_delta,
+            )
+            if orphaned:
+                log.info("Orphan cleanup: %d rows deleted for %s/%s", orphaned, owner_type, owner_id)
 
         # ── Update cursor ─────────────────────────────────────────────────────
         await _save_cursor(owner_type, owner_id, source_type, sync_started)

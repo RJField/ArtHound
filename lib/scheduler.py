@@ -5,7 +5,7 @@ from typing import Optional
 
 from lib.airtable import select_all, find_record
 from lib.db import db_client, _url, _headers
-from lib.canonical import get_studio_id
+from lib.canonical import get_studio_id, get_or_create_canonical_ids
 from lib.utils import resolve_name, link_id
 import config
 
@@ -88,8 +88,12 @@ async def build_schedule(asset_id: str) -> dict:
             return str(name) if name is not None else ""
         return str(raw)
 
-    # -- Load estimates from ArtHound Matrix (Postgres) --
+    # -- Resolve canonical asset ID and studio --
     studio_id = await get_studio_id()
+    canonical_map = await get_or_create_canonical_ids([asset_id], studio_id)
+    canonical_asset_id = canonical_map.get(asset_id)
+
+    # -- Load estimates from ArtHound Matrix (Postgres) --
     r_cfg = await db_client.get(
         _url("/rest/v1/estimate_config"),
         params={"studio_id": f"eq.{studio_id}", "select": "variable_fields"},
@@ -225,26 +229,32 @@ async def build_schedule(asset_id: str) -> dict:
         dates = task_dates[template_id]
         tasks.append(
             {
-                "templateId": template_id,
-                "taskName": f"{info['taskName']} - {asset_name} - {info['craft']}",
-                "craft": info["craft"],
-                "capCraftIds": info["capCraftIds"],
-                "estimate": estimate,
-                "startDate": dates["startDate"].isoformat(),
-                "endDate": dates["endDate"].isoformat(),
+                "templateId":     template_id,
+                "workflowStepId": step_lookup.get(template_id),
+                "taskName":       f"{info['taskName']} - {asset_name} - {info['craft']}",
+                "craft":          info["craft"],
+                "capCraftIds":    info["capCraftIds"],
+                "estimate":       estimate,
+                "startDate":      dates["startDate"].isoformat(),
+                "endDate":        dates["endDate"].isoformat(),
             }
         )
 
     return {
         "asset": {
-            "id": asset_id,
-            "name": asset_name,
-            "itemType": asset_item_name,
-            "team": asset_team,
-            "priority": strategic_priority,
-            "projectDate": project_date.isoformat(),
-            "estimateCol": estimate_col,
+            "id":               asset_id,
+            "canonicalAssetId": canonical_asset_id,
+            "name":             asset_name,
+            "itemType":         asset_item_name,
+            "team":             asset_team,
+            "priority":         strategic_priority,
+            "projectDate":      project_date.isoformat(),
+            "estimateCol":      estimate_col,
         },
-        "tasks": tasks,
-        "warnings": warnings,
+        # Internal fields used by the route to write generated_tasks snapshots.
+        # Not intended for the frontend response.
+        "_studioId":       studio_id,
+        "_variableValues": asset_var_values,
+        "tasks":           tasks,
+        "warnings":        warnings,
     }

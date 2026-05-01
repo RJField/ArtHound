@@ -7,5 +7,6 @@ export const state = {
   focusedAsset:      null,
   homeView:          'home',
   taskView:          'list',
+  taskSource:        'airtable',  // 'airtable' | 'arthound'
   lastTasks:         null,
 };

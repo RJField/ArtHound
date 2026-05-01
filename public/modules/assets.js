@@ -112,9 +112,23 @@ async function focusAsset(id) {
   state.focusedAsset = asset;
   renderAssetMeta(asset);
 
+  await _fetchAndRenderTasks(id, asset);
+}
+
+async function _fetchAndRenderTasks(id, asset) {
   $('am-tasks-content').innerHTML = '<div class="list-state">Loading…</div>';
   try {
-    const tasks = await apiFetch(`/api/schedule/tasks?assetId=${encodeURIComponent(id)}`);
+    let tasks;
+    if (state.taskSource === 'arthound') {
+      if (!asset?.canonicalId) {
+        $('am-tasks-content').innerHTML = '<div class="list-state">No ArtHound record — asset may not have been synced yet.</div>';
+        return;
+      }
+      tasks = await apiFetch(`/api/schedule/tasks-local?canonicalAssetId=${encodeURIComponent(asset.canonicalId)}`);
+    } else {
+      const nameParam = asset?.name ? `&assetName=${encodeURIComponent(asset.name)}` : '';
+      tasks = await apiFetch(`/api/schedule/tasks?assetId=${encodeURIComponent(id)}${nameParam}`);
+    }
     renderAssetTasks(tasks);
   } catch (err) {
     $('am-tasks-content').innerHTML = `<div class="list-state error">${esc(err.message)}</div>`;
@@ -202,8 +216,10 @@ function renderAssetTasksTimeline(tasks) {
   `;
 }
 
-// Event delegation — wired once, survives re-renders
+// Event delegation — wired once, survives re-renders.
+// ArtHound snapshot tasks have no Airtable record to detail-open.
 $('am-tasks-content').addEventListener('click', e => {
+  if (state.taskSource === 'arthound') return;
   const row = e.target.closest('.am-task-row[data-task-id]');
   if (row) openTaskDetail(row.dataset.taskId, row.dataset.taskName);
 });
@@ -216,6 +232,15 @@ function setTaskView(view) {
 }
 $('am-tasks-list-btn').addEventListener('click', () => setTaskView('list'));
 $('am-tasks-timeline-btn').addEventListener('click', () => setTaskView('timeline'));
+
+function setTaskSource(source) {
+  state.taskSource = source;
+  $('am-tasks-src-airtable').classList.toggle('active', source === 'airtable');
+  $('am-tasks-src-arthound').classList.toggle('active', source === 'arthound');
+  if (state.focusedAssetId) _fetchAndRenderTasks(state.focusedAssetId, state.focusedAsset);
+}
+$('am-tasks-src-airtable').addEventListener('click', () => setTaskSource('airtable'));
+$('am-tasks-src-arthound').addEventListener('click', () => setTaskSource('arthound'));
 
 async function openTaskDetail(taskId, taskName) {
   openDetailModal({ title: taskName, fields: [{ label: '', value: 'Loading…' }] });
@@ -442,8 +467,7 @@ $amGenerateBtn.addEventListener('click', async () => {
       + (result.warnings?.length ? `<ul class="gen-warnings">${result.warnings.map(w => `<li>${esc(w)}</li>`).join('')}</ul>` : '');
     showToast(`${result.created} tasks created for ${assetIds.length} assets`, 'success');
     if (state.focusedAssetId && assetIds.includes(state.focusedAssetId)) {
-      const tasks = await apiFetch(`/api/schedule/tasks?assetId=${encodeURIComponent(state.focusedAssetId)}`);
-      renderAssetTasks(tasks);
+      await _fetchAndRenderTasks(state.focusedAssetId, state.focusedAsset);
     }
   } catch (err) {
     $amGenStatus.innerHTML = `<span class="status-err">✗ ${esc(err.message)}</span>`;

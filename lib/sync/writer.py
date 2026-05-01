@@ -1,6 +1,9 @@
+import logging
 from datetime import datetime, timezone
 
 from lib.db import db_client, _url, _headers
+
+log = logging.getLogger(__name__)
 
 _BATCH = 200
 
@@ -119,6 +122,72 @@ async def upsert_item_types(
         for r in records
     ]
     await _upsert("replicated_item_types", "owner_type,owner_id,source_type,source_record_id", rows)
+
+
+async def delete_orphaned_records(
+    owner_type: str,
+    owner_id: str,
+    source_type: str,
+    fetched_asset_ids: set[str],
+    fetched_product_ids: set[str],
+    fetched_item_type_ids: set[str],
+    full_sync: bool,
+) -> int:
+    """
+    Delete rows from replicated tables whose source_record_id is no longer
+    present in the source. Called after the write phase of a sync.
+
+    Assets: only checked on full sync — delta fetches only changed records, so
+    the fetched set is incomplete and cannot be used for set comparison.
+
+    Products and item_types: always checked — they are always fetched in full
+    regardless of sync mode.
+
+    Returns the total number of rows deleted across all tables.
+    """
+    checks: list[tuple[str, set[str]]] = []
+    if full_sync:
+        checks.append(("replicated_assets", fetched_asset_ids))
+    checks.append(("replicated_products", fetched_product_ids))
+    checks.append(("replicated_item_types", fetched_item_type_ids))
+
+    base_params = {
+        "select":      "source_record_id",
+        "owner_type":  f"eq.{owner_type}",
+        "owner_id":    f"eq.{owner_id}",
+        "source_type": f"eq.{source_type}",
+    }
+
+    total_deleted = 0
+
+    for table, fetched_ids in checks:
+        r = await db_client.get(
+            _url(f"/rest/v1/{table}"),
+            params=base_params,
+            headers=_headers(),
+        )
+        r.raise_for_status()
+        existing_ids = {row["source_record_id"] for row in r.json()}
+
+        orphaned = existing_ids - fetched_ids
+        if not orphaned:
+            continue
+
+        del_r = await db_client.delete(
+            _url(f"/rest/v1/{table}"),
+            params={
+                **{k: v for k, v in base_params.items() if k != "select"},
+                "source_record_id": f"in.({','.join(orphaned)})",
+            },
+            headers=_headers({"Prefer": "return=minimal"}),
+        )
+        if del_r.is_success:
+            log.info("Deleted %d orphaned rows from %s for %s/%s", len(orphaned), table, owner_type, owner_id)
+            total_deleted += len(orphaned)
+        else:
+            log.warning("Failed to delete orphans from %s: %s %s", table, del_r.status_code, del_r.text)
+
+    return total_deleted
 
 
 async def save_default_mappings(
