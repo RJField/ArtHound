@@ -23,7 +23,7 @@ FIELD_CATEGORY = {
 }
 
 
-@router.get("/")
+@router.get("")
 async def get_schema():
     token = os.environ.get("AIRTABLE_TOKEN")
     base_id = os.environ.get("AIRTABLE_BASE_ID")

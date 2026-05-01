@@ -119,7 +119,9 @@ async def get_reviews():
         linked_ids = r["fields"].get("Assets") or []
         asset_name = ", ".join(asset_name_map.get(aid, aid) for aid in linked_ids)
         attachments = r["fields"].get("Attachments") or []
-        screenshot = attachments[0].get("url") if attachments else None
+        first_att = attachments[0] if attachments else None
+        screenshot = first_att.get("url") if first_att else None
+        screenshot_type = first_att.get("type", "") if first_att else ""
         f = r["fields"]
         dn = display_map.get(r["id"], {})
         result.append(
@@ -132,6 +134,7 @@ async def get_reviews():
                 "notes": f.get("Notes", ""),
                 "submittedAt": f.get("Submitted At", ""),
                 "screenshot": screenshot,
+                "screenshotType": screenshot_type,
                 # All Airtable fields as display strings — rendered dynamically in the UI.
                 # Lookup fields return resolved names; collaborators return display name.
                 "fields": dn,

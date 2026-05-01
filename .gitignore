@@ -3,3 +3,5 @@ node_modules/
 .env.example
 __pycache__/
 *.pyc
+perforce_todo.md
+pitch.md

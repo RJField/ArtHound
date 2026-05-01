@@ -1,8 +1,11 @@
 import asyncio
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any, List, Optional
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from fastapi.responses import Response
@@ -10,6 +13,7 @@ from pydantic import BaseModel
 
 from lib.airtable import select_all, update_records, http_client
 from lib.auth import CurrentUser, require_studio
+from lib.db import db_client, _url, _headers
 from lib.utils import link_id
 import config
 
@@ -21,6 +25,9 @@ ESTIMATES_CONFIG_PATH = Path(__file__).parent.parent / "estimates.config.json"
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+_RESERVED_KEYS = {"_variableFields", "_fieldIds"}
+
 
 def read_estimates_config() -> dict:
     try:
@@ -105,11 +112,11 @@ async def delete_field(table_id: str, field_id: str) -> None:
         headers={"Authorization": f"Bearer {token}"},
     )
     if not r.is_success:
-        body = r.json()
-        raise ValueError(
-            body.get("error", {}).get("message")
-            or f"Failed to delete field {field_id}: {r.status_code}"
-        )
+        try:
+            body = r.json()
+        except Exception:
+            body = r.text
+        raise ValueError(f"Delete field failed (HTTP {r.status_code}): {body}")
 
 
 async def add_field_to_table(
@@ -124,8 +131,9 @@ async def add_field_to_table(
     )
     body = r.json()
     if not r.is_success:
+        err = body.get("error", {})
         raise ValueError(
-            body.get("error", {}).get("message")
+            (err.get("message") if isinstance(err, dict) else str(err))
             or f'Failed to add field "{name}": {r.status_code}'
         )
     return body
@@ -268,6 +276,127 @@ async def get_asset_combinations(field: List[str] = Query(default=[])):
     return {"combinations": combinations}
 
 
+@router.get("/matrix-table-pg")
+async def get_matrix_table_pg(current_user: CurrentUser = Depends(require_studio)):
+    studio_id = current_user.studio_id
+    if not studio_id:
+        raise HTTPException(status_code=403, detail="No studio linked to this user")
+
+    # Fetch config, steps, dependencies, and matrix rows in parallel
+    r_cfg, r_steps, r_matrix = await asyncio.gather(
+        db_client.get(
+            _url("/rest/v1/estimate_config"),
+            params={"studio_id": f"eq.{studio_id}", "select": "variable_fields"},
+            headers=_headers(),
+        ),
+        db_client.get(
+            _url("/rest/v1/workflow_steps"),
+            params={"studio_id": f"eq.{studio_id}", "select": "id,name,craft"},
+            headers=_headers(),
+        ),
+        db_client.get(
+            _url("/rest/v1/estimate_matrix"),
+            params={
+                "studio_id": f"eq.{studio_id}",
+                "select": "workflow_step_id,variable_values,estimate_days",
+                "limit": "10000",
+            },
+            headers=_headers(),
+        ),
+    )
+
+    cfg_rows = r_cfg.json()
+    if not cfg_rows:
+        return {"variableFields": [], "combinations": [], "tasks": [], "attributeFields": []}
+    variable_fields = cfg_rows[0]["variable_fields"]
+
+    steps = r_steps.json()
+    step_by_id = {s["id"]: s for s in steps}
+
+    # Dependencies (fetch only if steps exist)
+    dep_names: dict = {s["id"]: [] for s in steps}
+    if steps:
+        ids_csv = ",".join(s["id"] for s in steps)
+        r_deps = await db_client.get(
+            _url("/rest/v1/workflow_step_dependencies"),
+            params={"step_id": f"in.({ids_csv})", "select": "step_id,depends_on_step_id"},
+            headers=_headers(),
+        )
+        dep_graph = {s["id"]: [] for s in steps}
+        for d in r_deps.json():
+            dep_graph[d["step_id"]].append(d["depends_on_step_id"])
+            dep_on = step_by_id.get(d["depends_on_step_id"])
+            if dep_on:
+                dep_names[d["step_id"]].append(dep_on["name"])
+    else:
+        dep_graph = {}
+
+    # Topological sort (iterative post-order DFS)
+    visited: set = set()
+    sorted_ids: list = []
+    for start in dep_graph:
+        if start in visited:
+            continue
+        stack = [(start, False)]
+        while stack:
+            node, post = stack.pop()
+            if post:
+                sorted_ids.append(node)
+                continue
+            if node in visited:
+                continue
+            visited.add(node)
+            stack.append((node, True))
+            for nxt in dep_graph.get(node, []):
+                if nxt not in visited:
+                    stack.append((nxt, False))
+
+    # Build step estimates: step_id → {combo_key → days}
+    _DEFAULT_COL = "__default__"
+    matrix_rows = r_matrix.json()
+    step_estimates: dict = {}
+    all_combo_keys: set = set()
+    for row in matrix_rows:
+        sid = row["workflow_step_id"]
+        vv = row["variable_values"]
+        key = _DEFAULT_COL if not vv else "|".join(str(vv.get(f, "")) for f in variable_fields)
+        all_combo_keys.add(key)
+        step_estimates.setdefault(sid, {})[key] = row["estimate_days"]
+
+    regular_keys = sorted(k for k in all_combo_keys if k != _DEFAULT_COL)
+    combinations = [
+        {"key": k, "colName": k, "label": " | ".join(k.split("|"))}
+        for k in regular_keys
+    ]
+    if _DEFAULT_COL in all_combo_keys:
+        combinations.append({"key": "Default", "colName": _DEFAULT_COL, "label": "Default"})
+
+    tasks = []
+    for idx, step_id in enumerate(sorted_ids):
+        s = step_by_id.get(step_id)
+        if not s:
+            continue
+        linked_values = {}
+        if s.get("craft"):
+            linked_values["Craft"] = [s["craft"]]
+        tasks.append({
+            "id": step_id,
+            "step": idx + 1,
+            "name": s["name"],
+            "linkedValues": linked_values,
+            "dependsOn": dep_names.get(step_id, []),
+            "estimates": step_estimates.get(step_id, {}),
+        })
+
+    attribute_fields = ["Craft"] if any(s.get("craft") for s in steps) else []
+    return {
+        "variableFields": variable_fields,
+        "combinations": combinations,
+        "tasks": tasks,
+        "attributeFields": attribute_fields,
+    }
+
+
 @router.get("/matrix-table")
 async def get_matrix_table():
     estimates_config = read_estimates_config()
@@ -275,7 +404,7 @@ async def get_matrix_table():
     config_col_map = {
         col_name: key.replace("|", " | ")
         for key, col_name in estimates_config.items()
-        if key != "_variableFields"
+        if key not in _RESERVED_KEYS
     }
 
     DEP_FIELDS = {"Depends upon", "Depended upon"}
@@ -407,7 +536,7 @@ async def create_matrix(
     background_tasks: BackgroundTasks,
     _: CurrentUser = Depends(require_studio),
 ):
-    variable_fields = [v.field for v in body.variables]
+    variable_fields = sorted(v.field for v in body.variables)
 
     tables = await fetch_base_schema()
     templates_table = next((t for t in tables if t["name"] == config.tables["templates"]), None)
@@ -419,32 +548,44 @@ async def create_matrix(
 
     if body.clearExisting:
         prev_config = read_estimates_config()
-        prev_col_names = [v for k, v in prev_config.items() if k != "_variableFields"]
-        for field_name in prev_col_names:
-            field = existing_fields.get(field_name)
-            if field:
+        prev_col_names = [v for k, v in prev_config.items() if k not in _RESERVED_KEYS]
+        # Always resolve to current IDs from the live schema — stored _fieldIds can go stale
+        # if fields were manually deleted/recreated since the last wizard run.
+        for col_name in prev_col_names:
+            field = existing_fields.get(col_name)
+            if not field or not isinstance(field, dict) or "id" not in field:
+                logger.info("clearExisting: %r not found in schema, skipping", col_name)
+                continue
+            try:
                 await delete_field(templates_table["id"], field["id"])
-                del existing_fields[field_name]
-                deleted.append(field_name)
+                del existing_fields[col_name]
+                deleted.append(col_name)
+            except ValueError as e:
+                logger.warning("delete_field(%s / %s) failed: %s", col_name, field["id"], e)
 
     created = []
     skipped = []
     config_map: dict = {}
+    field_ids: list = []
 
     for combo in body.combinations:
         col_name = to_column_name(combo, variable_fields)
         config_key = to_config_key(combo, variable_fields)
 
         if col_name in existing_fields:
+            existing = existing_fields[col_name]
+            if isinstance(existing, dict) and "id" in existing:
+                field_ids.append(existing["id"])
             skipped.append(col_name)
         else:
-            await add_field_to_table(templates_table["id"], col_name, "number", {"precision": 1})
+            new_field = await add_field_to_table(templates_table["id"], col_name, "number", {"precision": 1})
+            field_ids.append(new_field["id"])
             created.append(col_name)
-            existing_fields[col_name] = True  # type: ignore
+            existing_fields[col_name] = new_field
 
         config_map[config_key] = col_name
 
-    config_obj = {"_variableFields": variable_fields, **config_map}
+    config_obj = {"_variableFields": variable_fields, "_fieldIds": field_ids, **config_map}
     ESTIMATES_CONFIG_PATH.write_text(json.dumps(config_obj, indent=2), encoding="utf-8")
 
     target_cols = created + skipped
@@ -489,6 +630,184 @@ async def create_matrix(
     }
 
 
+@router.post("/create-matrix-pg")
+async def create_matrix_pg(
+    body: CreateMatrixBody,
+    background_tasks: BackgroundTasks,
+    current_user: CurrentUser = Depends(require_studio),
+):
+    """ArtHound-native estimation matrix stored in Postgres instead of Airtable columns."""
+    studio_id = current_user.studio_id
+    if not studio_id:
+        raise HTTPException(status_code=403, detail="No studio linked to this user")
+
+    variable_fields = sorted(v.field for v in body.variables)
+
+    # 1. Clear existing matrix rows for this studio if requested (trivial in Postgres)
+    if body.clearExisting:
+        await db_client.delete(
+            _url("/rest/v1/estimate_matrix"),
+            params={"studio_id": f"eq.{studio_id}"},
+            headers=_headers(),
+        )
+
+    # 2. Upsert estimate_config for this studio
+    await db_client.post(
+        _url("/rest/v1/estimate_config"),
+        params={"on_conflict": "studio_id"},
+        headers=_headers({"Prefer": "resolution=merge-duplicates,return=minimal"}),
+        json={"studio_id": studio_id, "variable_fields": variable_fields},
+    )
+
+    # 3. Fetch Airtable templates (with string cell format for craft names)
+    templates, templates_str = await asyncio.gather(
+        select_all(config.tables["templates"]),
+        select_all(config.tables["templates"], {
+            "cellFormat": "string",
+            "timeZone": "America/Los_Angeles",
+            "userLocale": "en-us",
+        }),
+    )
+    craft_name_by_template = {
+        r["id"]: (r["fields"].get("Crafts") or "").split(",")[0].strip()
+        for r in templates_str
+    }
+
+    # 4. Upsert workflow_steps from Airtable templates
+    step_rows = [
+        {
+            "studio_id": studio_id,
+            "name": t["fields"].get("Task") or "Untitled",
+            "craft": craft_name_by_template.get(t["id"], ""),
+            "airtable_template_id": t["id"],
+        }
+        for t in templates
+    ]
+    r = await db_client.post(
+        _url("/rest/v1/workflow_steps"),
+        params={"on_conflict": "studio_id,airtable_template_id"},
+        headers=_headers({"Prefer": "resolution=merge-duplicates,return=representation"}),
+        json=step_rows,
+    )
+    if not r.is_success:
+        raise HTTPException(status_code=500, detail=f"Failed to upsert workflow_steps: {r.text}")
+
+    workflow_steps = r.json()
+    template_to_step_id = {row["airtable_template_id"]: row["id"] for row in workflow_steps}
+
+    # 5. Sync workflow_step_dependencies from Airtable "Depends upon" field
+    step_ids = [row["id"] for row in workflow_steps]
+    if step_ids:
+        # Clear stale deps for this studio's steps before reinserting
+        ids_csv = ",".join(step_ids)
+        await db_client.delete(
+            _url("/rest/v1/workflow_step_dependencies"),
+            params={"step_id": f"in.({ids_csv})"},
+            headers=_headers(),
+        )
+        dep_rows = []
+        for t in templates:
+            step_id = template_to_step_id.get(t["id"])
+            if not step_id:
+                continue
+            for l in (t["fields"].get("Depends upon") or []):
+                dep_template_id = link_id(l)
+                if not dep_template_id:
+                    continue
+                dep_step_id = template_to_step_id.get(dep_template_id)
+                if dep_step_id:
+                    dep_rows.append({"step_id": step_id, "depends_on_step_id": dep_step_id})
+        if dep_rows:
+            await db_client.post(
+                _url("/rest/v1/workflow_step_dependencies"),
+                params={"on_conflict": "step_id,depends_on_step_id"},
+                headers=_headers({"Prefer": "resolution=ignore-duplicates,return=minimal"}),
+                json=dep_rows,
+            )
+
+    # 6. Upsert estimate_matrix rows: one per (workflow_step × active combo)
+    active_combos = body.combinations
+    matrix_rows = []
+    for t in templates:
+        step_id = template_to_step_id.get(t["id"])
+        if not step_id:
+            continue
+        for combo in active_combos:
+            variable_values = {f: combo["values"].get(f, {}).get("name", "") for f in variable_fields}
+            matrix_rows.append({
+                "studio_id": studio_id,
+                "workflow_step_id": step_id,
+                "variable_values": variable_values,
+                "estimate_days": 0,
+            })
+
+    if matrix_rows:
+        r = await db_client.post(
+            _url("/rest/v1/estimate_matrix"),
+            params={"on_conflict": "studio_id,workflow_step_id,variable_values"},
+            headers=_headers({"Prefer": "resolution=ignore-duplicates,return=minimal"}),
+            json=matrix_rows,
+        )
+        if not r.is_success:
+            raise HTTPException(status_code=500, detail=f"Failed to upsert estimate_matrix: {r.text}")
+
+    # Always upsert a Default row (variable_values={}) for every step — used as fallback
+    # when no specific combination matches an asset. Existing values are preserved.
+    default_rows = [
+        {"studio_id": studio_id, "workflow_step_id": sid, "variable_values": {}, "estimate_days": 0}
+        for sid in template_to_step_id.values()
+    ]
+    if default_rows:
+        await db_client.post(
+            _url("/rest/v1/estimate_matrix"),
+            params={"on_conflict": "studio_id,workflow_step_id,variable_values"},
+            headers=_headers({"Prefer": "resolution=ignore-duplicates,return=minimal"}),
+            json=default_rows,
+        )
+
+    # 7. Prefill from existing Airtable column if requested
+    prefill_pending = False
+    if body.prefillCol and templates:
+        prefill_pending = True
+
+        async def run_pg_prefill():
+            try:
+                await asyncio.sleep(1.0)
+                # Read Airtable template records with the prefill column value
+                records = await select_all(config.tables["templates"], {"fields": ["Task", body.prefillCol]})
+                updates = []
+                for rec in records:
+                    val = rec["fields"].get(body.prefillCol)
+                    if val is None:
+                        continue
+                    step_id = template_to_step_id.get(rec["id"])
+                    if not step_id:
+                        continue
+                    try:
+                        days = float(val)
+                    except (TypeError, ValueError):
+                        continue
+                    # Update all matrix rows for this step to the prefill value
+                    await db_client.patch(
+                        _url("/rest/v1/estimate_matrix"),
+                        params={"studio_id": f"eq.{studio_id}", "workflow_step_id": f"eq.{step_id}"},
+                        headers=_headers(),
+                        json={"estimate_days": days},
+                    )
+                print(f"[pg-prefill] done, updated {len(records)} steps")
+            except Exception as e:
+                print(f"[pg-prefill error] {e}")
+
+        background_tasks.add_task(run_pg_prefill)
+
+    return {
+        "stepsUpserted": len(step_rows),
+        "matrixRows": len(matrix_rows),
+        "cleared": body.clearExisting,
+        "prefillPending": prefill_pending,
+    }
+
+
 class ImportCSVBody(BaseModel):
     headers: List[str]
     rows: List[List[str]]
@@ -505,7 +824,7 @@ async def import_csv(body: ImportCSVBody, _: CurrentUser = Depends(require_studi
         raise HTTPException(status_code=400, detail='CSV must have a "Task" column')
 
     estimates_config = read_estimates_config()
-    valid_cols = {v for k, v in estimates_config.items() if k != "_variableFields"}
+    valid_cols = {v for k, v in estimates_config.items() if k not in _RESERVED_KEYS}
 
     col_map = [
         {"idx": i, "colName": h}
@@ -554,7 +873,7 @@ async def import_csv(body: ImportCSVBody, _: CurrentUser = Depends(require_studi
 @router.get("/export-csv")
 async def export_csv():
     estimates_config = read_estimates_config()
-    col_entries = [(k, v) for k, v in estimates_config.items() if k != "_variableFields"]
+    col_entries = [(k, v) for k, v in estimates_config.items() if k not in _RESERVED_KEYS]
     if not col_entries:
         raise HTTPException(
             status_code=400,

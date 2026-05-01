@@ -1,17 +1,15 @@
+import asyncio
 import json
 from datetime import date, timedelta
-from pathlib import Path
 from typing import Optional
 
 from lib.airtable import select_all, find_record
+from lib.db import db_client, _url, _headers
+from lib.canonical import get_studio_id, get_or_create_canonical_ids
 from lib.utils import resolve_name, link_id
 import config
 
-ESTIMATES_CONFIG_PATH = Path(__file__).parent.parent / "estimates.config.json"
-
-
-def sanitize(s: str) -> str:
-    return "".join(c for c in str(s) if c.isalnum())[:25] or "unknown"
+DEFAULT_MATRIX_KEY = json.dumps({}, sort_keys=True)  # sentinel for the default estimate row
 
 
 def subtract_working_days(d: date, days: int) -> date:
@@ -90,21 +88,69 @@ async def build_schedule(asset_id: str) -> dict:
             return str(name) if name is not None else ""
         return str(raw)
 
-    try:
-        estimates_config = json.loads(ESTIMATES_CONFIG_PATH.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError):
-        estimates_config = {}
+    # -- Resolve canonical asset ID and studio --
+    studio_id = await get_studio_id()
+    canonical_map = await get_or_create_canonical_ids([asset_id], studio_id)
+    canonical_asset_id = canonical_map.get(asset_id)
 
-    var_fields = estimates_config.get("_variableFields", [])
-    if not var_fields:
+    # -- Load estimates from ArtHound Matrix (Postgres) --
+    r_cfg = await db_client.get(
+        _url("/rest/v1/estimate_config"),
+        params={"studio_id": f"eq.{studio_id}", "select": "variable_fields"},
+        headers=_headers(),
+    )
+    cfg_rows = r_cfg.json()
+    if not cfg_rows:
         raise ValueError(
-            "Variable fields not configured — run the Estimation Engine Setup wizard first (⚙ button)"
+            "ArtHound Matrix not configured — run the ArtHound Matrix Setup wizard first"
         )
 
-    estimate_col = "_".join(sanitize(resolve_field_value(f(fn))) for fn in var_fields)
+    var_fields = cfg_rows[0]["variable_fields"]
+    r_steps, r_matrix = await asyncio.gather(
+        db_client.get(
+            _url("/rest/v1/workflow_steps"),
+            params={"studio_id": f"eq.{studio_id}", "select": "id,airtable_template_id"},
+            headers=_headers(),
+        ),
+        db_client.get(
+            _url("/rest/v1/estimate_matrix"),
+            params={
+                "studio_id": f"eq.{studio_id}",
+                "select": "workflow_step_id,variable_values,estimate_days",
+                "limit": "10000",
+            },
+            headers=_headers(),
+        ),
+    )
+    step_lookup: dict = {
+        row["airtable_template_id"]: row["id"]
+        for row in r_steps.json()
+        if row.get("airtable_template_id")
+    }
+    matrix_lookup: dict = {}  # (step_id, variable_values_key) → float
+    for row in r_matrix.json():
+        key = (row["workflow_step_id"], json.dumps(row["variable_values"], sort_keys=True))
+        matrix_lookup[key] = float(row["estimate_days"] or 0)
+
+    asset_var_values = {fn: resolve_field_value(f(fn)) for fn in var_fields}
+    variable_values_key = json.dumps(asset_var_values, sort_keys=True)
+    estimate_col = " | ".join(asset_var_values[fn] for fn in var_fields)
+
     asset_team = resolve_field_value(f("Team (from Product)"))
 
-    templates = await select_all(config.tables["templates"])
+    templates, templates_str = await asyncio.gather(
+        select_all(config.tables["templates"]),
+        select_all(config.tables["templates"], {
+            "cellFormat": "string",
+            "timeZone": "America/Los_Angeles",
+            "userLocale": "en-us",
+        }),
+    )
+    # cellFormat=string returns linked record values as display names (comma-separated).
+    craft_name_by_template = {
+        r["id"]: (r["fields"].get("Crafts") or "").split(",")[0].strip()
+        for r in templates_str
+    }
 
     task_graph: dict = {}
     task_estimates: dict = {}
@@ -123,10 +169,15 @@ async def build_schedule(asset_id: str) -> dict:
         if not matches_item:
             continue
 
-        estimate = tf(estimate_col) if estimate_col else 0
+        step_id = step_lookup.get(template_id)
+        if step_id:
+            specific = matrix_lookup.get((step_id, variable_values_key))
+            estimate = specific if specific is not None else matrix_lookup.get((step_id, DEFAULT_MATRIX_KEY), 0)
+        else:
+            estimate = 0
         task_estimates[template_id] = estimate if estimate is not None else 0
 
-        craft_links = tf("Craft") or []
+        craft_links = tf("Crafts") or []
         cap_craft_ids = (
             [lid for l in craft_links if (lid := link_id(l))]
             if isinstance(craft_links, list)
@@ -134,7 +185,7 @@ async def build_schedule(asset_id: str) -> dict:
         )
         task_info[template_id] = {
             "taskName": tf("Task") or "Untitled",
-            "craft": resolve_name(craft_links[0] if craft_links else None) or "",
+            "craft": craft_name_by_template.get(template_id, ""),
             "capCraftIds": cap_craft_ids,
         }
 
@@ -161,6 +212,7 @@ async def build_schedule(asset_id: str) -> dict:
 
     asset_name = resolve_name(f("Name")) or asset_id
     tasks = []
+    warnings = []
 
     for template_id in sorted_ids:
         info = task_info.get(template_id)
@@ -168,30 +220,41 @@ async def build_schedule(asset_id: str) -> dict:
             continue
         estimate = task_estimates.get(template_id, 0)
         if not estimate or estimate <= 0:
+            warnings.append(
+                f"'{info['taskName']}' skipped — no estimate found for [{estimate_col}] "
+                f"and no Default set"
+            )
             continue
 
         dates = task_dates[template_id]
         tasks.append(
             {
-                "templateId": template_id,
-                "taskName": f"{info['taskName']} - {asset_name} - {info['craft']}",
-                "craft": info["craft"],
-                "capCraftIds": info["capCraftIds"],
-                "estimate": estimate,
-                "startDate": dates["startDate"].isoformat(),
-                "endDate": dates["endDate"].isoformat(),
+                "templateId":     template_id,
+                "workflowStepId": step_lookup.get(template_id),
+                "taskName":       f"{info['taskName']} - {asset_name} - {info['craft']}",
+                "craft":          info["craft"],
+                "capCraftIds":    info["capCraftIds"],
+                "estimate":       estimate,
+                "startDate":      dates["startDate"].isoformat(),
+                "endDate":        dates["endDate"].isoformat(),
             }
         )
 
     return {
         "asset": {
-            "id": asset_id,
-            "name": asset_name,
-            "itemType": asset_item_name,
-            "team": asset_team,
-            "priority": strategic_priority,
-            "projectDate": project_date.isoformat(),
-            "estimateCol": estimate_col,
+            "id":               asset_id,
+            "canonicalAssetId": canonical_asset_id,
+            "name":             asset_name,
+            "itemType":         asset_item_name,
+            "team":             asset_team,
+            "priority":         strategic_priority,
+            "projectDate":      project_date.isoformat(),
+            "estimateCol":      estimate_col,
         },
-        "tasks": tasks,
+        # Internal fields used by the route to write generated_tasks snapshots.
+        # Not intended for the frontend response.
+        "_studioId":       studio_id,
+        "_variableValues": asset_var_values,
+        "tasks":           tasks,
+        "warnings":        warnings,
     }
