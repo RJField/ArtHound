@@ -29,7 +29,7 @@ export function AuthProvider({ children }) {
   useEffect(() => {
     if (!session || syncFired.current) return
     syncFired.current = true
-    apiFetch('/api/sync/run', { method: 'POST' }).catch(console.warn)
+    apiFetch('/api/sync/run', { method: 'POST', body: JSON.stringify({}) }).catch(console.warn)
   }, [session])
 
   async function signOut() {

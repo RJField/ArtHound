@@ -20,22 +20,23 @@ class StepBody(BaseModel):
 
 
 async def _fetch_steps_with_deps(studio_id: str):
-    r_steps = await db_client.get(
+    r = await db_client.get(
         _url("/rest/v1/workflow_steps"),
-        params={"studio_id": f"eq.{studio_id}", "select": "id,name,craft", "order": "created_at.asc"},
+        params={
+            "studio_id": f"eq.{studio_id}",
+            "select": "id,name,craft,step_deps:workflow_step_dependencies!step_id(depends_on_step_id)",
+            "order": "created_at.asc",
+        },
         headers=_headers(),
     )
-    steps = r_steps.json()
+    rows = r.json()
 
-    deps = []
-    if steps:
-        ids_csv = ",".join(s["id"] for s in steps)
-        r_deps = await db_client.get(
-            _url("/rest/v1/workflow_step_dependencies"),
-            params={"step_id": f"in.({ids_csv})", "select": "step_id,depends_on_step_id"},
-            headers=_headers(),
-        )
-        deps = r_deps.json()
+    steps = [{"id": s["id"], "name": s["name"], "craft": s["craft"]} for s in rows]
+    deps = [
+        {"step_id": s["id"], "depends_on_step_id": d["depends_on_step_id"]}
+        for s in rows
+        for d in (s.get("step_deps") or [])
+    ]
 
     return steps, deps
 

@@ -260,7 +260,7 @@ export default function Assets() {
         body: JSON.stringify({ assetIds }),
       })
       setGenResult(result)
-      toast.success(`${result.created} tasks created`)
+      toast.success(`${result.created} tasks created and synced`)
       if (focusedAssetId && assetIds.includes(focusedAssetId)) {
         await loadTasks(focusedAssetId, focusedAsset, taskSource)
       }

@@ -43,11 +43,12 @@ async def _build_context(user: CurrentUser) -> str:
     if not owner_id:
         return "No studio or vendor linked to this account — cannot load asset data."
 
-    asset_r, fm_r = await _parallel_fetch(owner_type, owner_id)
+    asset_r, fm_r, tasks_r = await _parallel_fetch(owner_type, owner_id)
 
     assets   = asset_r.json() if asset_r.is_success else []
     fm_rows  = fm_r.json() if fm_r.is_success else []
     mappings = (fm_rows[0].get("mappings") or []) if fm_rows else []
+    tasks    = tasks_r.json() if tasks_r and tasks_r.is_success else []
 
     if not assets:
         return "No assets have been synced yet. Run a sync from Settings first."
@@ -79,7 +80,6 @@ async def _build_context(user: CurrentUser) -> str:
             str(a.get(col) if a.get(col) is not None else "—")
             for col in ("name", "product", "item_type", "status", "priority", "project_date", "asset_number")
         )
-        # Append useful meta fields (milestone dates, team, etc.)
         meta = a.get("meta") or {}
         extras = []
         for k, v in meta.items():
@@ -90,6 +90,35 @@ async def _build_context(user: CurrentUser) -> str:
         if extras:
             row += " | " + "; ".join(extras)
         lines.append(row)
+
+    if tasks:
+        crafts      = Counter(t.get("craft") or "—" for t in tasks)
+        src_types   = Counter(t.get("source_type") or "—" for t in tasks)
+        lines += [
+            "",
+            f"GENERATED TASKS — {len(tasks)} active tasks",
+            "",
+            "BREAKDOWN BY CRAFT:",
+            *[f"  {c}: {n}" for c, n in crafts.most_common()],
+            "",
+            "BREAKDOWN BY SOURCE TYPE:",
+            *[f"  {s}: {n}" for s, n in src_types.most_common()],
+            "",
+            "TASK LIST — columns: task_name | craft | estimate_days | start_date | end_date | generated_at | variable_values",
+        ]
+        for t in tasks:
+            vars_display = str(t.get("variable_values") or "—")
+            lines.append(
+                " | ".join([
+                    str(t.get("task_name") or "—"),
+                    str(t.get("craft") or "—"),
+                    str(t.get("estimate_days") if t.get("estimate_days") is not None else "—"),
+                    str(t.get("start_date") or "—"),
+                    str(t.get("end_date") or "—"),
+                    str(t.get("generated_at") or "—"),
+                    vars_display,
+                ])
+            )
 
     return "\n".join(lines)
 
@@ -103,7 +132,7 @@ async def _parallel_fetch(owner_type: str, owner_id: str):
         "source_type": "eq.airtable",
     }
 
-    return await asyncio.gather(
+    coros = [
         db_client.get(
             _url("/rest/v1/replicated_assets"),
             params={**params_base, "select": f"{_SLOTS},meta", "order": "product.asc,name.asc"},
@@ -114,7 +143,27 @@ async def _parallel_fetch(owner_type: str, owner_id: str):
             params={**params_base, "select": "mappings"},
             headers=_headers(),
         ),
-    )
+    ]
+
+    if owner_type == "studio":
+        coros.append(
+            db_client.get(
+                _url("/rest/v1/generated_tasks"),
+                params={
+                    "studio_id":  f"eq.{owner_id}",
+                    "deleted_at": "is.null",
+                    "select":     "task_name,craft,estimate_days,start_date,end_date,generated_at,variable_values,source_type",
+                    "order":      "generated_at.desc",
+                },
+                headers=_headers({"Range": "0-999"}),
+            )
+        )
+
+    results   = await asyncio.gather(*coros)
+    asset_r   = results[0]
+    fm_r      = results[1]
+    tasks_r   = results[2] if owner_type == "studio" else None
+    return asset_r, fm_r, tasks_r
 
 
 @router.post("/chat")

@@ -1,5 +1,7 @@
 import os
+import time
 from dataclasses import dataclass, field
+from typing import Optional
 
 import jwt
 from jwt import PyJWKClient
@@ -12,6 +14,23 @@ bearer_scheme = HTTPBearer()
 
 # Cached JWKS client — fetches Supabase's public keys once, refreshes every 5 min
 _jwks_client: PyJWKClient | None = None
+
+# Per-user membership cache: user_id -> (studio_id, vendor_id, cached_at)
+# Keyed strictly by verified JWT sub — no cross-user leakage possible.
+# TTL of 60s means a removed member retains access for at most one minute.
+_MEMBERSHIP_TTL = 60
+_membership_cache: dict[str, tuple[Optional[str], Optional[str], float]] = {}
+
+
+def _get_cached_membership(user_id: str) -> tuple[Optional[str], Optional[str]] | None:
+    entry = _membership_cache.get(user_id)
+    if entry is not None and (time.monotonic() - entry[2]) < _MEMBERSHIP_TTL:
+        return entry[0], entry[1]
+    return None
+
+
+def _set_cached_membership(user_id: str, studio_id: Optional[str], vendor_id: Optional[str]) -> None:
+    _membership_cache[user_id] = (studio_id, vendor_id, time.monotonic())
 
 
 def _get_jwks_client() -> PyJWKClient:
@@ -84,30 +103,38 @@ async def get_current_user(
             detail="No valid role assigned to this account",
         )
 
-    studio_id = None
-    vendor_id = None
+    user_id = payload["sub"]
+    cached = _get_cached_membership(user_id)
 
-    if role == "studio":
-        r = await db_client.get(
-            _url("/rest/v1/studio_members"),
-            params={"select": "studio_id", "user_id": f"eq.{payload['sub']}"},
-            headers=_headers(),
-        )
-        rows = r.json()
-        if rows:
-            studio_id = rows[0]["studio_id"]
-    elif role == "vendor":
-        r = await db_client.get(
-            _url("/rest/v1/vendor_members"),
-            params={"select": "vendor_id", "user_id": f"eq.{payload['sub']}"},
-            headers=_headers(),
-        )
-        rows = r.json()
-        if rows:
-            vendor_id = rows[0]["vendor_id"]
+    if cached is not None:
+        studio_id, vendor_id = cached
+    else:
+        studio_id = None
+        vendor_id = None
+
+        if role == "studio":
+            r = await db_client.get(
+                _url("/rest/v1/studio_members"),
+                params={"select": "studio_id", "user_id": f"eq.{user_id}"},
+                headers=_headers(),
+            )
+            rows = r.json()
+            if rows:
+                studio_id = rows[0]["studio_id"]
+        elif role == "vendor":
+            r = await db_client.get(
+                _url("/rest/v1/vendor_members"),
+                params={"select": "vendor_id", "user_id": f"eq.{user_id}"},
+                headers=_headers(),
+            )
+            rows = r.json()
+            if rows:
+                vendor_id = rows[0]["vendor_id"]
+
+        _set_cached_membership(user_id, studio_id, vendor_id)
 
     return CurrentUser(
-        id=payload["sub"],
+        id=user_id,
         email=payload.get("email", ""),
         role=role,
         studio_id=studio_id,
