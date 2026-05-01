@@ -25,6 +25,7 @@ from routes.workflow_steps import router as workflow_steps_router
 from routes.payload import router as payload_router
 from routes.numbersbot import router as numbersbot_router
 from routes.sync import router as sync_router, webhook_router as sync_webhook_router
+from routes.user import router as user_router
 
 log = logging.getLogger(__name__)
 
@@ -97,6 +98,7 @@ app.include_router(workflow_steps_router, prefix="/api/workflow-steps",   depend
 app.include_router(payload_router,        prefix="/api/payloads")
 app.include_router(numbersbot_router,     prefix="/api/numbersbot",  dependencies=_auth)
 app.include_router(sync_router,           prefix="/api/sync",        dependencies=_auth)
+app.include_router(user_router,           prefix="/api/user",        dependencies=_auth)
 # Webhook routes are public — protected by WEBHOOK_SECRET, not JWT
 app.include_router(sync_webhook_router,   prefix="/api/sync")
 

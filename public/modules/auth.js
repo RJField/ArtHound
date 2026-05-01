@@ -1,4 +1,4 @@
-import { $, setSupabaseClient, setAuthFailHandler, apiFetch } from './ui.js';
+import { $, esc, setSupabaseClient, setAuthFailHandler, apiFetch } from './ui.js';
 import { state } from './state.js';
 
 let _navigate = null;
@@ -160,6 +160,75 @@ function initSignup() {
   }
 }
 
+async function _renderUserModal($body) {
+  $body.innerHTML = '<div class="list-state">Loading…</div>';
+  try {
+    const [me, orgs] = await Promise.all([
+      apiFetch('/api/user/me'),
+      apiFetch('/api/user/orgs'),
+    ]);
+
+    const roleLabel = me.role === 'studio' ? 'Studio' : 'Vendor';
+    const currentOrgName = me.org ? me.org.name : 'None assigned';
+    const currentOrgId   = me.org ? me.org.id   : '';
+
+    $body.innerHTML = `
+      <div style="margin-bottom:16px">
+        <div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);margin-bottom:4px">Email</div>
+        <div style="font-weight:500">${esc(me.email)}</div>
+      </div>
+      <div style="margin-bottom:24px">
+        <div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);margin-bottom:4px">Role</div>
+        <div style="font-weight:500">${esc(roleLabel)}</div>
+      </div>
+
+      <div style="border-top:1px solid var(--border);padding-top:20px">
+        <div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);margin-bottom:4px">Assigned ${esc(roleLabel)}</div>
+        <div style="font-weight:500;margin-bottom:20px">${esc(currentOrgName)}</div>
+
+        <div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);margin-bottom:8px">
+          Change ${esc(roleLabel)}
+        </div>
+
+        <!-- TEMPORARY: Manual org assignment for pre-onboarding dev use.
+             Replace with a proper studio/vendor invite and onboarding flow.
+             This should not be user-facing in production. -->
+        <div style="display:flex;gap:8px;align-items:center">
+          <select id="user-assign-select" class="login-input" style="flex:1;height:36px;cursor:pointer;padding:0 10px">
+            <option value="">— Select ${esc(roleLabel)} —</option>
+            ${orgs.map(o => `<option value="${esc(o.id)}"${o.id === currentOrgId ? ' selected' : ''}>${esc(o.name)}</option>`).join('')}
+          </select>
+          <button class="btn btn-primary btn-sm" id="user-assign-save">Save</button>
+        </div>
+        <div id="user-assign-msg" style="font-size:12px;min-height:1.4em;margin-top:8px"></div>
+      </div>
+    `;
+
+    document.getElementById('user-assign-save').addEventListener('click', async () => {
+      const orgId = document.getElementById('user-assign-select').value;
+      const $msg  = document.getElementById('user-assign-msg');
+      if (!orgId) {
+        $msg.style.color = 'var(--err)';
+        $msg.textContent = `Select a ${roleLabel.toLowerCase()} first.`;
+        return;
+      }
+      $msg.style.color = 'var(--text-muted)';
+      $msg.textContent = 'Saving…';
+      try {
+        await apiFetch('/api/user/assign', { method: 'POST', body: JSON.stringify({ org_id: orgId }) });
+        $msg.style.color = 'var(--ok)';
+        $msg.textContent = 'Saved. Sign out and back in to apply.';
+      } catch {
+        $msg.style.color = 'var(--err)';
+        $msg.textContent = 'Failed to save. Try again.';
+      }
+    });
+
+  } catch {
+    $body.innerHTML = '<div class="list-state" style="color:var(--err)">Failed to load account info.</div>';
+  }
+}
+
 export function initAuth(navigateFn) {
   _navigate = navigateFn;
 
@@ -208,7 +277,12 @@ export function initAuth(navigateFn) {
   // User / Settings modals
   const $userOverlay     = document.getElementById('user-modal-overlay');
   const $settingsOverlay = document.getElementById('settings-modal-overlay');
-  document.getElementById('user-btn').addEventListener('click', () => $userOverlay.classList.add('open'));
+  const $userModalBody   = document.getElementById('user-modal-body');
+
+  document.getElementById('user-btn').addEventListener('click', async () => {
+    $userOverlay.classList.add('open');
+    await _renderUserModal($userModalBody);
+  });
   document.getElementById('user-modal-close').addEventListener('click', () => $userOverlay.classList.remove('open'));
   $userOverlay.addEventListener('click', e => { if (e.target === $userOverlay) $userOverlay.classList.remove('open'); });
   document.getElementById('settings-btn').addEventListener('click', () => $settingsOverlay.classList.add('open'));
