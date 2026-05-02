@@ -159,11 +159,8 @@ async def _parallel_fetch(owner_type: str, owner_id: str):
             )
         )
 
-    results   = await asyncio.gather(*coros)
-    asset_r   = results[0]
-    fm_r      = results[1]
-    tasks_r   = results[2] if owner_type == "studio" else None
-    return asset_r, fm_r, tasks_r
+    results = await asyncio.gather(*coros)
+    return results[0], results[1], results[2] if owner_type == "studio" else None
 
 
 @router.post("/chat")

@@ -177,7 +177,7 @@ function StepCredentials({ onSuccess }) {
 
 // ── Step 2: Discover schema ───────────────────────────────────────────────────
 
-function StepDiscover({ onSuccess }) {
+function StepDiscover({ onSuccess, onBack }) {
   const [loading, setLoading] = useState(true)
   const [tables, setTables]   = useState([])
   const [error, setError]     = useState(null)
@@ -231,13 +231,19 @@ function StepDiscover({ onSuccess }) {
               </div>
             ))}
           </div>
-          <button
-            onClick={() => onSuccess(tables)}
-            className="px-4 py-2 rounded-md bg-accent text-white text-sm font-medium hover:bg-accent-hover transition-colors cursor-pointer"
-          >
-            Continue to hierarchy
-          </button>
+          <div className="flex gap-2">
+            <button onClick={onBack} className="px-4 py-2 rounded-md bg-surface-2 text-foreground text-sm font-medium hover:bg-surface-3 transition-colors cursor-pointer">Back</button>
+            <button
+              onClick={() => onSuccess(tables)}
+              className="flex-1 px-4 py-2 rounded-md bg-accent text-white text-sm font-medium hover:bg-accent-hover transition-colors cursor-pointer"
+            >
+              Continue to hierarchy
+            </button>
+          </div>
         </>
+      )}
+      {!loading && error && (
+        <button onClick={onBack} className="self-start px-4 py-2 rounded-md bg-surface-2 text-foreground text-sm font-medium hover:bg-surface-3 transition-colors cursor-pointer">Back</button>
       )}
     </div>
   )
@@ -308,9 +314,7 @@ function EntityPanel({ entity, tables, definitions, onChange }) {
     }
   }
 
-  const isComplete = def.table_id && (
-    !entity.parent || (def.rel_field_id && def.rel_direction)
-  )
+  const isComplete = !!def.table_id
 
   return (
     <div className={`rounded-lg border p-4 flex flex-col gap-4 transition-colors ${isComplete ? 'border-accent/40' : 'border-border'}`}>
@@ -445,7 +449,7 @@ function EntityPanel({ entity, tables, definitions, onChange }) {
 }
 
 
-function StepHierarchy({ tables, onSuccess }) {
+function StepHierarchy({ tables, onSuccess, onBack }) {
   const [definitions, setDefinitions] = useState({ product: {}, asset: {}, task: {} })
   const [saving, setSaving]           = useState(false)
   const [error, setError]             = useState(null)
@@ -466,7 +470,6 @@ function StepHierarchy({ tables, onSuccess }) {
   const allComplete = ENTITIES.every(e => {
     const def = definitions[e.type]
     if (!def?.table_id) return false
-    if (e.parent && !def.rel_field_id) return false
     return true
   })
 
@@ -515,16 +518,19 @@ function StepHierarchy({ tables, onSuccess }) {
       ))}
       {error && <p className="text-error text-sm">{error}</p>}
       <div className="flex items-center justify-between pt-1">
-        <p className="text-muted text-xs">
-          {allComplete ? 'All entities defined' : 'Define all three entities to continue'}
-        </p>
-        <button
-          onClick={save}
-          disabled={saving || !allComplete}
-          className="px-4 py-2 rounded-md bg-accent text-white text-sm font-medium hover:bg-accent-hover transition-colors cursor-pointer disabled:opacity-40"
-        >
-          {saving ? 'Saving…' : 'Save & continue'}
-        </button>
+        <button onClick={onBack} className="px-4 py-2 rounded-md bg-surface-2 text-foreground text-sm font-medium hover:bg-surface-3 transition-colors cursor-pointer">Back</button>
+        <div className="flex items-center gap-3">
+          <p className="text-muted text-xs">
+            {allComplete ? 'All entities defined' : 'Define all three entities to continue'}
+          </p>
+          <button
+            onClick={save}
+            disabled={saving || !allComplete}
+            className="px-4 py-2 rounded-md bg-accent text-white text-sm font-medium hover:bg-accent-hover transition-colors cursor-pointer disabled:opacity-40"
+          >
+            {saving ? 'Saving…' : 'Save & continue'}
+          </button>
+        </div>
       </div>
     </div>
   )
@@ -533,7 +539,7 @@ function StepHierarchy({ tables, onSuccess }) {
 
 // ── Step 4: Map fields ────────────────────────────────────────────────────────
 
-function StepMapFields({ sourceFields, onSuccess }) {
+function StepMapFields({ sourceFields, onSuccess, onBack }) {
   const [assignments, setAssignments] = useState({})
   const [saving, setSaving]           = useState(false)
   const [error, setError]             = useState(null)
@@ -626,18 +632,21 @@ function StepMapFields({ sourceFields, onSuccess }) {
       </div>
       {error && <p className="text-error text-sm">{error}</p>}
       <div className="flex items-center justify-between">
-        <p className="text-muted text-xs">
-          {allRequiredMapped
-            ? 'All required fields mapped'
-            : `${REQUIRED_SLOTS.length - mappedRequired.length} required field(s) still unmapped`}
-        </p>
-        <button
-          onClick={save}
-          disabled={saving || !allRequiredMapped}
-          className="px-4 py-2 rounded-md bg-accent text-white text-sm font-medium hover:bg-accent-hover transition-colors cursor-pointer disabled:opacity-40"
-        >
-          {saving ? 'Saving…' : 'Save & continue'}
-        </button>
+        <button onClick={onBack} className="px-4 py-2 rounded-md bg-surface-2 text-foreground text-sm font-medium hover:bg-surface-3 transition-colors cursor-pointer">Back</button>
+        <div className="flex items-center gap-3">
+          <p className="text-muted text-xs">
+            {allRequiredMapped
+              ? 'All required fields mapped'
+              : `${REQUIRED_SLOTS.length - mappedRequired.length} required field(s) still unmapped`}
+          </p>
+          <button
+            onClick={save}
+            disabled={saving || !allRequiredMapped}
+            className="px-4 py-2 rounded-md bg-accent text-white text-sm font-medium hover:bg-accent-hover transition-colors cursor-pointer disabled:opacity-40"
+          >
+            {saving ? 'Saving…' : 'Save & continue'}
+          </button>
+        </div>
       </div>
     </div>
   )
@@ -646,7 +655,7 @@ function StepMapFields({ sourceFields, onSuccess }) {
 
 // ── Step 5: Review ────────────────────────────────────────────────────────────
 
-function StepReview({ definitions, isReset, onStart }) {
+function StepReview({ definitions, isReset, onStart, onBack }) {
   const [loading, setLoading] = useState(false)
   const [error, setError]     = useState(null)
 
@@ -699,13 +708,16 @@ function StepReview({ definitions, isReset, onStart }) {
 
       {error && <p className="text-error text-sm">{error}</p>}
 
-      <button
-        onClick={start}
-        disabled={loading}
-        className="px-4 py-2 rounded-md bg-accent text-white text-sm font-medium hover:bg-accent-hover transition-colors cursor-pointer disabled:opacity-40"
-      >
-        {loading ? 'Starting…' : isReset ? 'Reset & re-sync' : 'Start sync'}
-      </button>
+      <div className="flex gap-2">
+        <button onClick={onBack} className="px-4 py-2 rounded-md bg-surface-2 text-foreground text-sm font-medium hover:bg-surface-3 transition-colors cursor-pointer">Back</button>
+        <button
+          onClick={start}
+          disabled={loading}
+          className="flex-1 px-4 py-2 rounded-md bg-accent text-white text-sm font-medium hover:bg-accent-hover transition-colors cursor-pointer disabled:opacity-40"
+        >
+          {loading ? 'Starting…' : isReset ? 'Reset & re-sync' : 'Start sync'}
+        </button>
+      </div>
     </div>
   )
 }
@@ -863,18 +875,21 @@ export default function ProjectInit() {
           {step === 2 && (
             <StepDiscover
               onSuccess={t => { setTables(t); setSourceFields(t[0]?.fields || []); setStep(3) }}
+              onBack={() => setStep(1)}
             />
           )}
           {step === 3 && (
             <StepHierarchy
               tables={tables}
               onSuccess={defs => { setDefinitions(defs); setStep(4) }}
+              onBack={() => setStep(2)}
             />
           )}
           {step === 4 && (
             <StepMapFields
               sourceFields={getAssetFields()}
               onSuccess={() => setStep(5)}
+              onBack={() => setStep(3)}
             />
           )}
           {step === 5 && (
@@ -882,6 +897,7 @@ export default function ProjectInit() {
               definitions={definitions}
               isReset={isReset}
               onStart={id => { setJobId(id); setStep(6) }}
+              onBack={() => setStep(4)}
             />
           )}
           {step === 6 && (

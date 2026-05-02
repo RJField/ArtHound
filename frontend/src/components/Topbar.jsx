@@ -32,7 +32,10 @@ export default function Topbar() {
     <>
       <header className="h-12 flex items-center px-4 gap-4 border-b border-border bg-surface shrink-0">
         {/* Logo */}
-        <span className="text-foreground font-semibold text-sm tracking-wide mr-2">ArtHound</span>
+        <div className="flex items-center gap-2 mr-2">
+          <img src="/ArtHound_logo.png" alt="ArtHound" className="w-6 h-6 rounded object-cover" />
+          <span className="text-foreground font-semibold text-sm tracking-wide">ArtHound</span>
+        </div>
 
         {/* Nav */}
         <nav className="flex items-center gap-1 flex-1">

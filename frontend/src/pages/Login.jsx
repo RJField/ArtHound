@@ -33,7 +33,11 @@ export default function Login() {
   }
 
   return (
-    <div className="flex items-center justify-center min-h-screen p-8">
+    <div className="flex items-center justify-center min-h-screen p-8 relative overflow-hidden">
+      <div
+        className="absolute inset-0 bg-cover bg-center opacity-10 pointer-events-none"
+        style={{ backgroundImage: 'url(/ArtHound_logo.png)' }}
+      />
       <form
         onSubmit={handleLogin}
         className="bg-surface border border-border rounded-xl p-8 w-full max-w-sm flex flex-col gap-4"
@@ -80,6 +84,8 @@ export default function Login() {
         >
           Create account
         </button>
+
+        <p className="text-muted text-xs text-center mt-2">© 2026 FieldTech. All rights reserved.</p>
       </form>
 
       {signupOpen && <SignupModal onClose={() => setSignupOpen(false)} />}

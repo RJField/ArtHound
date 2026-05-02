@@ -42,7 +42,7 @@ export default function UserModal({ onClose }) {
 
   async function handleReconcile() {
     try {
-      await apiFetch('/api/sync/reconcile-tasks', { method: 'POST' })
+      await apiFetch('/api/schedule/reconcile-tasks', { method: 'POST' })
     } catch (err) {
       console.warn('Reconcile error:', err)
     }

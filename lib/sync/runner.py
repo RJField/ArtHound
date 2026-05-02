@@ -53,13 +53,6 @@ async def _get_credentials(owner_type: str, owner_id: str, source_type: str) -> 
     if rows:
         return decrypt_credentials(rows[0]["credentials"])
 
-    # Env-var fallback (single-studio setup)
-    if source_type == "airtable":
-        token = os.environ.get("AIRTABLE_TOKEN")
-        base_id = os.environ.get("AIRTABLE_BASE_ID")
-        if token and base_id:
-            return {"api_token": token, "base_id": base_id}
-
     return None
 
 
@@ -93,7 +86,10 @@ async def _get_entity_definitions(owner_type: str, owner_id: str, source_type: s
         },
         headers=_headers(),
     )
-    return {row["entity_type"]: row for row in r.json()}
+    data = r.json()
+    if not isinstance(data, list):
+        return {}
+    return {row["entity_type"]: row for row in data}
 
 
 async def _get_cursor(owner_type: str, owner_id: str, source_type: str) -> str | None:

@@ -184,6 +184,7 @@ async def get_products(user: CurrentUser = Depends(get_current_user)):
 @router.get("/")
 async def get_assets(
     productId: Optional[str] = Query(None),
+    unassigned: bool = Query(False),
     current_user: CurrentUser = Depends(get_current_user),
 ):
     owner_type, owner_id = _owner(current_user)
@@ -203,7 +204,14 @@ async def get_assets(
     asset_r.raise_for_status()
     rows = asset_r.json()
 
-    if productId:
+    if unassigned:
+        def _has_no_product(row: dict) -> bool:
+            if row.get("product"):
+                return False
+            meta_product = (row.get("meta") or {}).get("Product") or []
+            return len(meta_product) == 0
+        rows = [row for row in rows if _has_no_product(row)]
+    elif productId:
         target_name = prod_id_to_name.get(productId)
         def _matches_product(row: dict) -> bool:
             if target_name and row.get("product") == target_name:
@@ -277,9 +285,23 @@ class NameUpdate(BaseModel):
 
 @router.patch("/{asset_id}/name")
 async def update_asset_name(
-    asset_id: str, body: NameUpdate, _: CurrentUser = Depends(require_studio)
+    asset_id: str, body: NameUpdate, current_user: CurrentUser = Depends(require_studio)
 ):
     if not body.name:
         raise HTTPException(status_code=400, detail="name is required")
+    owner_type, owner_id = _owner(current_user)
+    r = await db_client.get(
+        _url("/rest/v1/replicated_assets"),
+        params={
+            "owner_type":       f"eq.{owner_type}",
+            "owner_id":         f"eq.{owner_id}",
+            "source_record_id": f"eq.{asset_id}",
+            "select":           "source_record_id",
+        },
+        headers=_headers(),
+    )
+    r.raise_for_status()
+    if not r.json():
+        raise HTTPException(status_code=404, detail="Asset not found")
     await update_records(config.tables["assets"], [{"id": asset_id, "fields": {"Name": body.name}}])
     return {"ok": True}

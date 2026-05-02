@@ -176,13 +176,18 @@ export default function Assets() {
     setMetaFields(buildMetaFields(focusedAsset))
   }, [focusedAsset, metaVersion])
 
+  const NO_PRODUCT_ID = '__none__'
+
   async function selectProduct(id) {
     update({ selectedProductId: id, selectedAssetIds: new Set(), focusedAssetId: null, focusedAsset: null })
     setTasks(null)
     setGenResult(null)
     setAssetsLoading(true)
     try {
-      const data = await apiFetch(`/api/assets?productId=${encodeURIComponent(id)}`)
+      const url = id === NO_PRODUCT_ID
+        ? '/api/assets?unassigned=true'
+        : `/api/assets?productId=${encodeURIComponent(id)}`
+      const data = await apiFetch(url)
       update({ assets: data })
     } catch (err) {
       toast.error(err.message)
@@ -299,6 +304,17 @@ export default function Assets() {
               {p.name}
             </div>
           ))}
+          {!productsLoading && (
+            <div
+              onClick={() => selectProduct(NO_PRODUCT_ID)}
+              className={cn(
+                'px-3 py-2 text-sm cursor-pointer truncate transition-colors italic',
+                selectedProductId === NO_PRODUCT_ID ? 'bg-surface-2 text-foreground' : 'text-muted hover:bg-surface-2 hover:text-foreground'
+              )}
+            >
+              No product
+            </div>
+          )}
         </div>
       </div>
 
@@ -315,7 +331,7 @@ export default function Assets() {
             className="accent-accent"
           />
           <span className="text-muted text-xs font-medium flex-1 truncate">
-            {selectedProductId ? (products.find(p => p.id === selectedProductId)?.name ?? '') : 'Assets'}
+            {selectedProductId === NO_PRODUCT_ID ? 'No product' : selectedProductId ? (products.find(p => p.id === selectedProductId)?.name ?? '') : 'Assets'}
           </span>
         </div>
 

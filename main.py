@@ -110,14 +110,42 @@ app.include_router(sync_webhook_router,   prefix="/api/sync")
 app.include_router(auth_router,           prefix="/api/auth")
 
 
-# Generic record fetch — table_key is one of the keys in config.tables (e.g. "assets", "tasks").
-# DB-agnostic contract: fetch a single entity by ID from a named collection.
+# Maps config table keys to their owner-scoped Supabase replicated tables.
+# Only tables listed here can be fetched via this endpoint — others are blocked
+# because we have no way to verify ownership for them.
+_REPLICATED_TABLE: dict[str, str] = {
+    "assets":    "replicated_assets",
+    "products":  "replicated_products",
+    "itemTypes": "replicated_item_types",
+}
+
+
 @app.get("/api/records/{table_key}/{record_id}")
 async def get_record_by_id(
-    table_key: str, record_id: str, _: CurrentUser = Depends(get_current_user)
+    table_key: str, record_id: str, current_user: CurrentUser = Depends(get_current_user)
 ):
     if table_key not in config.tables:
         raise HTTPException(status_code=404, detail=f"Unknown table: {table_key}")
+    replicated = _REPLICATED_TABLE.get(table_key)
+    if not replicated:
+        raise HTTPException(status_code=403, detail="Record lookup not permitted for this table")
+    owner_type = current_user.role
+    owner_id   = current_user.studio_id if current_user.role == "studio" else current_user.vendor_id
+    if not owner_id:
+        raise HTTPException(status_code=403, detail="No studio/vendor linked to account")
+    ownership = await db_client.get(
+        _url(f"/rest/v1/{replicated}"),
+        params={
+            "owner_type":       f"eq.{owner_type}",
+            "owner_id":         f"eq.{owner_id}",
+            "source_record_id": f"eq.{record_id}",
+            "select":           "source_record_id",
+        },
+        headers=_headers(),
+    )
+    ownership.raise_for_status()
+    if not ownership.json():
+        raise HTTPException(status_code=404, detail="Record not found")
     try:
         record = await find_record(config.tables[table_key], record_id)
     except Exception:

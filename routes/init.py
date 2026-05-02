@@ -314,11 +314,6 @@ async def save_entity_definition(
     owner_type, owner_id = _owner(user)
 
     parent_entity_type = _PARENT_OF[body.entity_type]
-    if parent_entity_type and (not body.rel_field_id or not body.rel_direction):
-        raise HTTPException(
-            status_code=422,
-            detail=f"{body.entity_type} requires rel_field_id and rel_direction",
-        )
 
     r = await db_client.post(
         _url("/rest/v1/source_entity_definitions"

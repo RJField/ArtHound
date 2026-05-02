@@ -1,4 +1,6 @@
+import asyncio
 import logging
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -100,6 +102,59 @@ async def assign_org(body: AssignBody, user: CurrentUser = Depends(get_current_u
     if r.status_code not in (200, 201):
         raise HTTPException(status_code=500, detail="Failed to save assignment")
     return {"ok": True}
+
+
+# ── Studio summary ───────────────────────────────────────────────────────────
+
+@router.get("/studio-summary")
+async def studio_summary(user: CurrentUser = Depends(get_current_user)):
+    """Key counts for the studio home dashboard. All queries run in parallel."""
+    owner_type, owner_id = _owner(user)
+    if owner_type != "studio":
+        raise HTTPException(status_code=403, detail="Studio access required")
+
+    now = datetime.now(timezone.utc).isoformat()
+    count_hdrs = _headers({"Prefer": "count=exact"})
+
+    asset_r, product_r, share_r, task_r, cursor_r = await asyncio.gather(
+        db_client.get(_url("/rest/v1/replicated_assets"),
+                      params={"owner_type": "eq.studio", "owner_id": f"eq.{owner_id}",
+                              "select": "id"},
+                      headers=count_hdrs),
+        db_client.get(_url("/rest/v1/replicated_products"),
+                      params={"owner_type": "eq.studio", "owner_id": f"eq.{owner_id}",
+                              "select": "id"},
+                      headers=count_hdrs),
+        db_client.get(_url("/rest/v1/payload_dispatches"),
+                      params={"sender_studio_id": f"eq.{owner_id}",
+                              "revoked_at": "is.null", "expires_at": f"gt.{now}",
+                              "select": "id"},
+                      headers=count_hdrs),
+        db_client.get(_url("/rest/v1/generated_tasks"),
+                      params={"studio_id": f"eq.{owner_id}", "deleted_at": "is.null",
+                              "select": "id"},
+                      headers=count_hdrs),
+        db_client.get(_url("/rest/v1/sync_cursors"),
+                      params={"owner_type": "eq.studio", "owner_id": f"eq.{owner_id}",
+                              "select": "last_synced_at"},
+                      headers=_headers()),
+    )
+
+    def _count(r) -> int:
+        # PostgREST returns count in Content-Range: 0-N/TOTAL or */0
+        cr = r.headers.get("content-range", "*/0")
+        total = cr.split("/")[-1]
+        return int(total) if total.isdigit() else 0
+
+    cursor_rows = cursor_r.json() if cursor_r.is_success else []
+
+    return {
+        "asset_count":    _count(asset_r),
+        "product_count":  _count(product_r),
+        "active_shares":  _count(share_r),
+        "task_count":     _count(task_r),
+        "last_synced_at": cursor_rows[0]["last_synced_at"] if isinstance(cursor_rows, list) and cursor_rows else None,
+    }
 
 
 # ── Delete account ────────────────────────────────────────────────────────────
