@@ -12,6 +12,7 @@ import VendorInbox from './pages/VendorInbox'
 import Reviews from './pages/Reviews'
 import Assets from './pages/Assets'
 import Estimates from './pages/Estimates'
+import ProjectInit from './pages/ProjectInit'
 
 function AuthGuard() {
   const { session, loading } = useAuth()
@@ -32,6 +33,20 @@ function AuthGuard() {
       <Outlet />
     </div>
   )
+}
+
+// Redirect studio users who haven't completed init to the wizard.
+// Vendors are not gated — they don't manage a source tool.
+function InitGuard() {
+  const { session, loading, profile, role, initialized } = useAuth()
+
+  if (loading || !session) return null
+  if (!profile) return null  // profile still loading
+
+  if (role === 'studio' && !initialized) {
+    return <Navigate to="/init" replace />
+  }
+  return <Outlet />
 }
 
 function RoleRedirect() {
@@ -57,15 +72,20 @@ export default function App() {
           <Routes>
             <Route path="/login" element={<Login />} />
             <Route element={<AuthGuard />}>
-              <Route index element={<RoleRedirect />} />
-              <Route path="/home"        element={<StudioHome />} />
-              <Route path="/vendor-home" element={<VendorHome />} />
-              <Route path="/assets"      element={<Assets />} />
-              <Route path="/shares"      element={<Shares />} />
-              <Route path="/estimates"   element={<Estimates />} />
-              <Route path="/workflows"   element={<Workflows />} />
-              <Route path="/reviews"     element={<Reviews />} />
-              <Route path="/inbox"       element={<VendorInbox />} />
+              {/* Init wizard — shown to studio users before first sync */}
+              <Route path="/init" element={<ProjectInit />} />
+              {/* App routes — gated behind InitGuard for studio users */}
+              <Route element={<InitGuard />}>
+                <Route index element={<RoleRedirect />} />
+                <Route path="/home"        element={<StudioHome />} />
+                <Route path="/vendor-home" element={<VendorHome />} />
+                <Route path="/assets"      element={<Assets />} />
+                <Route path="/shares"      element={<Shares />} />
+                <Route path="/estimates"   element={<Estimates />} />
+                <Route path="/workflows"   element={<Workflows />} />
+                <Route path="/reviews"     element={<Reviews />} />
+                <Route path="/inbox"       element={<VendorInbox />} />
+              </Route>
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

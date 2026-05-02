@@ -47,10 +47,11 @@ def default_mappings_from_schema(schema_fields: list[SchemaField]) -> list[dict]
         if slot:
             seen_slots.add(slot)
         mappings.append({
-            "source_field_id":   field.id,
-            "source_field_name": field.name,
-            "source_field_type": field.type,
-            "arthound_slot":     slot,
+            "source_field_id":      field.id,
+            "source_field_name":    field.name,
+            "source_field_type":    field.type,
+            "source_field_options": field.options,
+            "arthound_slot":        slot,
         })
 
     return mappings

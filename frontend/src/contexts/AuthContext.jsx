@@ -44,12 +44,13 @@ export function AuthProvider({ children }) {
     setProfile(data)
   }
 
-  const role    = session?.user?.app_metadata?.role ?? null
-  const isAdmin = session?.user?.email === 'rjfield@pm.me'
-  const loading = session === undefined
+  const role        = session?.user?.app_metadata?.role ?? null
+  const isAdmin     = session?.user?.email === 'rjfield@pm.me'
+  const loading     = session === undefined
+  const initialized = profile?.org?.initialized_at != null
 
   return (
-    <AuthContext.Provider value={{ session, profile, role, isAdmin, loading, signOut, refreshProfile }}>
+    <AuthContext.Provider value={{ session, profile, role, isAdmin, loading, initialized, signOut, refreshProfile }}>
       {children}
     </AuthContext.Provider>
   )

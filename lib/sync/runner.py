@@ -10,8 +10,9 @@ from datetime import datetime, timezone
 import httpx
 
 from lib.canonical import get_or_create_canonical_ids
+from lib.crypto import decrypt_credentials
 from lib.db import db_client, _url, _headers
-from lib.sync.connectors.airtable import AirtableConnector
+from lib.sync.connectors.airtable import AirtableConnector, build_filter_formula
 from lib.sync.differ import find_changes
 from lib.sync.normalizer import (
     default_mappings_from_schema,
@@ -50,7 +51,7 @@ async def _get_credentials(owner_type: str, owner_id: str, source_type: str) -> 
     )
     rows = r.json()
     if rows:
-        return rows[0]["credentials"]
+        return decrypt_credentials(rows[0]["credentials"])
 
     # Env-var fallback (single-studio setup)
     if source_type == "airtable":
@@ -75,6 +76,24 @@ async def _get_mappings(owner_type: str, owner_id: str, source_type: str) -> lis
     )
     rows = r.json()
     return rows[0]["mappings"] if rows else None
+
+
+async def _get_entity_definitions(owner_type: str, owner_id: str, source_type: str) -> dict:
+    """
+    Return {entity_type: definition} for all configured entity definitions.
+    Empty dict if none configured — callers fall back to config.tables.
+    """
+    r = await db_client.get(
+        _url("/rest/v1/source_entity_definitions"),
+        params={
+            "owner_type":  f"eq.{owner_type}",
+            "owner_id":    f"eq.{owner_id}",
+            "source_type": f"eq.{source_type}",
+            "select":      "entity_type,table_id,table_name,filters,rel_field_id,rel_direction",
+        },
+        headers=_headers(),
+    )
+    return {row["entity_type"]: row for row in r.json()}
 
 
 async def _get_cursor(owner_type: str, owner_id: str, source_type: str) -> str | None:
@@ -150,6 +169,8 @@ async def run_sync(
         cursor = None if full else await _get_cursor(owner_type, owner_id, source_type)
         is_delta = cursor is not None
 
+        entity_defs = await _get_entity_definitions(owner_type, owner_id, source_type)
+
         async with httpx.AsyncClient(timeout=60.0) as client:
             if source_type == "airtable":
                 connector = AirtableConnector(
@@ -161,8 +182,6 @@ async def run_sync(
                 raise ValueError(f"Unsupported source_type: {source_type}")
 
             # ── Field schema + mappings ───────────────────────────────────────
-            # Schema is always fetched — provides field types for the adapter
-            # even on delta syncs where mappings already exist.
             schema_fields = await connector.fetch_asset_schema()
             field_type_map = {f.name: f.type for f in schema_fields}
 
@@ -172,10 +191,38 @@ async def run_sync(
                 await save_default_mappings(owner_type, owner_id, source_type, mappings)
                 log.info("Generated default field mappings for %s/%s", owner_type, owner_id)
 
-            # ── Fetch ─────────────────────────────────────────────────────────
-            raw_assets = await connector.fetch_assets(since=cursor if is_delta else None)
-            raw_products = await connector.fetch_products()
-            raw_item_types = await connector.fetch_item_types()
+            # ── Fetch — use entity definitions when available, else config.tables
+            asset_def    = entity_defs.get("asset")
+            product_def  = entity_defs.get("product")
+            task_def     = entity_defs.get("task")
+
+            if asset_def:
+                formula = build_filter_formula(asset_def.get("filters") or [])
+                raw_assets = await connector.fetch_entity(
+                    table_id=asset_def["table_id"],
+                    filter_formula=formula,
+                    since=cursor if is_delta else None,
+                )
+            else:
+                raw_assets = await connector.fetch_assets(since=cursor if is_delta else None)
+
+            if product_def:
+                formula = build_filter_formula(product_def.get("filters") or [])
+                raw_products = await connector.fetch_entity(
+                    table_id=product_def["table_id"],
+                    filter_formula=formula,
+                )
+            else:
+                raw_products = await connector.fetch_products()
+
+            if task_def:
+                formula = build_filter_formula(task_def.get("filters") or [])
+                raw_item_types = await connector.fetch_entity(
+                    table_id=task_def["table_id"],
+                    filter_formula=formula,
+                )
+            else:
+                raw_item_types = await connector.fetch_item_types()
 
             # ── Normalize reference entities first ────────────────────────────
             # Reference tables are always fetched in full and normalized before

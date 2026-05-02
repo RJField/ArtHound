@@ -15,6 +15,7 @@ class SchemaField:
     name: str
     type: str
     category: str
+    options: dict = field(default_factory=dict)  # full source field options (choices, linkedTableId, etc.)
 
 
 class BaseConnector(ABC):

@@ -1,15 +1,22 @@
 import { useState, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { apiFetch } from '../lib/api'
 
 export default function UserModal({ onClose }) {
-  const { profile, role, isAdmin, refreshProfile } = useAuth()
+  const { profile, role, isAdmin, refreshProfile, signOut } = useAuth()
+  const navigate = useNavigate()
   const [orgs, setOrgs]           = useState(null)
   const [selectedOrg, setSelected] = useState('')
   const [assigning, setAssigning] = useState(false)
   const [error, setError]         = useState(null)
 
-  // Fetch org list only when there's no assigned org yet
+  // Delete account state
+  const [showDeleteZone, setShowDeleteZone] = useState(false)
+  const [deleteConfirm, setDeleteConfirm]   = useState('')
+  const [deleting, setDeleting]             = useState(false)
+  const [deleteError, setDeleteError]       = useState(null)
+
   useEffect(() => {
     if (profile?.org) return
     apiFetch('/api/user/orgs').then(setOrgs).catch(console.warn)
@@ -38,6 +45,20 @@ export default function UserModal({ onClose }) {
       await apiFetch('/api/sync/reconcile-tasks', { method: 'POST' })
     } catch (err) {
       console.warn('Reconcile error:', err)
+    }
+  }
+
+  async function handleDeleteAccount() {
+    if (deleteConfirm !== 'DELETE') return
+    setDeleting(true)
+    setDeleteError(null)
+    try {
+      await apiFetch('/api/user/account', { method: 'DELETE' })
+      await signOut()
+      navigate('/login', { replace: true })
+    } catch (err) {
+      setDeleteError(err.message)
+      setDeleting(false)
     }
   }
 
@@ -101,6 +122,53 @@ export default function UserModal({ onClose }) {
             </button>
           </div>
         )}
+
+        {/* Danger zone */}
+        <div className="pt-2 border-t border-border">
+          {!showDeleteZone ? (
+            <button
+              onClick={() => setShowDeleteZone(true)}
+              className="text-xs text-error/70 hover:text-error transition-colors cursor-pointer"
+            >
+              Delete account…
+            </button>
+          ) : (
+            <div className="flex flex-col gap-3">
+              <p className="text-error text-xs font-medium">Delete account</p>
+              <p className="text-muted text-xs">
+                This permanently deletes all your integration data, tasks, and settings.
+                Canonical asset IDs are preserved. This cannot be undone.
+              </p>
+              <p className="text-muted text-xs">
+                Type <span className="text-foreground font-mono">DELETE</span> to confirm:
+              </p>
+              <input
+                type="text"
+                value={deleteConfirm}
+                onChange={e => setDeleteConfirm(e.target.value)}
+                placeholder="DELETE"
+                className="bg-surface-2 border border-error/40 rounded-lg px-3 py-2 text-foreground text-sm outline-none focus:border-error font-mono"
+              />
+              {deleteError && <p className="text-error text-xs">{deleteError}</p>}
+              <div className="flex gap-2">
+                <button
+                  onClick={handleDeleteAccount}
+                  disabled={deleting || deleteConfirm !== 'DELETE'}
+                  className="flex-1 px-3 py-2 rounded-lg bg-error text-white text-sm font-medium hover:bg-error/80 transition-colors cursor-pointer disabled:opacity-40"
+                >
+                  {deleting ? 'Deleting…' : 'Delete everything'}
+                </button>
+                <button
+                  onClick={() => { setShowDeleteZone(false); setDeleteConfirm(''); setDeleteError(null) }}
+                  disabled={deleting}
+                  className="px-3 py-2 rounded-lg bg-surface-2 text-foreground text-sm hover:bg-surface-3 transition-colors cursor-pointer disabled:opacity-40"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   )
