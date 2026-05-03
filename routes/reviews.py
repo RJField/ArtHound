@@ -1,217 +1,234 @@
-import asyncio
-import base64
-import os
-import random
-import string
-from datetime import datetime, timezone
-from pathlib import Path
 from typing import Optional
-from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from lib.airtable import select_all, create_records, update_records, http_client
 from lib.auth import CurrentUser, require_studio
-import config
-
-
-def _at_headers():
-    return {"Authorization": f"Bearer {os.environ.get('AIRTABLE_TOKEN', '')}"}
-
-
-def _comments_url(review_id: str) -> str:
-    base = os.environ.get("AIRTABLE_BASE_ID", "")
-    table = config.tables["reviews"]
-    return f"https://api.airtable.com/v0/{base}/{table}/{review_id}/comments"
+from lib.db import db_client, _url, _headers
 
 router = APIRouter()
 
-SCREENSHOTS_DIR = Path(__file__).parent.parent / "media" / "reviews"
-SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
+
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
+async def _fetch_asset_meta(studio_id: str, canonical_asset_ids: list[str]) -> dict:
+    """Return dict of canonical_asset_id -> replicated_assets row for the given IDs."""
+    if not canonical_asset_ids:
+        return {}
+    ids_csv = ",".join(canonical_asset_ids)
+    r = await db_client.get(
+        _url("/rest/v1/replicated_assets"),
+        params={
+            "select": "canonical_asset_id,name,item_type,priority,product,status",
+            "owner_type": "eq.studio",
+            "owner_id": f"eq.{studio_id}",
+            "canonical_asset_id": f"in.({ids_csv})",
+        },
+        headers=_headers(),
+    )
+    if not r.is_success:
+        return {}
+    return {row["canonical_asset_id"]: row for row in r.json()}
 
 
-def _server_url() -> str:
-    return os.environ.get("SERVER_URL") or f"http://localhost:{os.environ.get('PORT', '3000')}"
+async def _enrich(reviews: list[dict], studio_id: str) -> list[dict]:
+    """Attach asset metadata to each review."""
+    if not reviews:
+        return []
+    asset_ids = list({rv["canonical_asset_id"] for rv in reviews})
+    meta = await _fetch_asset_meta(studio_id, asset_ids)
+    return [{**rv, "asset": meta.get(rv["canonical_asset_id"])} for rv in reviews]
 
 
-class ReviewSubmitBody(BaseModel):
-    assetName: Optional[str] = None
-    sceneFile: Optional[str] = None
-    artist: Optional[str] = None
-    notes: Optional[str] = None
-    screenshot: Optional[str] = None  # base64-encoded PNG
+def _require_studio_id(user: CurrentUser) -> str:
+    if not user.studio_id:
+        raise HTTPException(status_code=403, detail="No studio linked to this account")
+    return user.studio_id
 
 
-@router.post("/submit")
-async def submit_review(body: ReviewSubmitBody, _: CurrentUser = Depends(require_studio)):
-    asset_link = []
-    if body.assetName:
-        escaped = body.assetName.replace('"', '\\"')
-        matches = await select_all(
-            config.tables["assets"],
-            {"filterByFormula": f'{{Name}} = "{escaped}"', "maxRecords": 1, "fields": ["Name"]},
-        )
-        if matches:
-            asset_link = [matches[0]["id"]]
+# ── Models ─────────────────────────────────────────────────────────────────────
 
-    screenshot_file = None
-    if body.screenshot:
-        buf = base64.b64decode(body.screenshot)
-        rand = "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
-        screenshot_file = f"{int(datetime.now().timestamp() * 1000)}_{rand}.png"
-        (SCREENSHOTS_DIR / screenshot_file).write_bytes(buf)
+class ReviewCreate(BaseModel):
+    canonical_asset_id: str
+    source_record_id: Optional[str] = None
+    description: Optional[str] = None
+    status: Optional[str] = None
 
-    fields: dict = {
-        "Scene File": body.sceneFile or "",
-        "Artist": body.artist or "",
-        "Notes": body.notes or "",
-        "Status": "Pending",
-        "Submitted At": datetime.now(timezone.utc).isoformat(),
-    }
-    if asset_link:
-        fields["Assets"] = asset_link
-    if screenshot_file:
-        fields["Attachments"] = [{"url": f"{_server_url()}/reviews/{screenshot_file}"}]
 
-    records = await create_records(config.tables["reviews"], [fields])
-    return {"ok": True, "id": records[0]["id"]}
+class StatusUpdate(BaseModel):
+    status: Optional[str] = None
+
+
+# ── Routes ─────────────────────────────────────────────────────────────────────
+
+@router.get("/assets")
+async def list_assets_for_picker(user: CurrentUser = Depends(require_studio)):
+    """Return canonical assets with replicated names for the create-review picker."""
+    studio_id = _require_studio_id(user)
+
+    r = await db_client.get(
+        _url("/rest/v1/canonical_assets"),
+        params={
+            "select": "id,airtable_record_id",
+            "studio_id": f"eq.{studio_id}",
+            "order": "created_at.asc",
+        },
+        headers=_headers(),
+    )
+    if not r.is_success:
+        raise HTTPException(status_code=502, detail="Failed to fetch assets")
+
+    canonical = r.json()
+    if not canonical:
+        return []
+
+    ids_csv = ",".join(a["id"] for a in canonical)
+    r2 = await db_client.get(
+        _url("/rest/v1/replicated_assets"),
+        params={
+            "select": "canonical_asset_id,name,source_record_id",
+            "owner_type": "eq.studio",
+            "owner_id": f"eq.{studio_id}",
+            "canonical_asset_id": f"in.({ids_csv})",
+        },
+        headers=_headers(),
+    )
+
+    name_map: dict = {}
+    source_map: dict = {}
+    if r2.is_success:
+        for row in r2.json():
+            name_map[row["canonical_asset_id"]] = row.get("name", "")
+            source_map[row["canonical_asset_id"]] = row.get("source_record_id", "")
+
+    return [
+        {
+            "id": a["id"],
+            "name": name_map.get(a["id"]) or a.get("airtable_record_id", a["id"]),
+            "source_record_id": source_map.get(a["id"]) or a.get("airtable_record_id"),
+        }
+        for a in canonical
+    ]
 
 
 @router.get("")
 @router.get("/")
-async def get_reviews(_user: CurrentUser = Depends(require_studio)):
-    # Two parallel calls: main (JSON) preserves types for linked-record IDs and
-    # ISO dates; display (string) resolves lookup-of-linked-record fields to
-    # their human-readable primary field values instead of raw record IDs.
-    records, display_records = await asyncio.gather(
-        select_all(
-            config.tables["reviews"],
-            {"sort": [{"field": "Submitted At", "direction": "desc"}]},
-        ),
-        select_all(
-            config.tables["reviews"],
-            {
-                "cellFormat": "string",
-                "timeZone": "America/Los_Angeles",
-                "userLocale": "en-us",
-            },
-        ),
-    )
+async def list_reviews(user: CurrentUser = Depends(require_studio)):
+    studio_id = _require_studio_id(user)
 
-    display_map: dict = {r["id"]: r.get("fields", {}) for r in display_records}
-
-    asset_ids = list({
-        aid for r in records for aid in (r["fields"].get("Assets") or [])
-    })
-
-    asset_name_map: dict = {}
-    if asset_ids:
-        formula = ",".join(f'RECORD_ID()="{aid}"' for aid in asset_ids)
-        asset_records = await select_all(
-            config.tables["assets"],
-            {"filterByFormula": f"OR({formula})", "fields": ["Name"]},
-        )
-        asset_name_map = {r["id"]: r["fields"].get("Name", "") for r in asset_records}
-
-    result = []
-    for r in records:
-        linked_ids = r["fields"].get("Assets") or []
-        asset_name = ", ".join(asset_name_map.get(aid, aid) for aid in linked_ids)
-        attachments = r["fields"].get("Attachments") or []
-        first_att = attachments[0] if attachments else None
-        screenshot = first_att.get("url") if first_att else None
-        screenshot_type = first_att.get("type", "") if first_att else ""
-        f = r["fields"]
-        dn = display_map.get(r["id"], {})
-        result.append(
-            {
-                "id": r["id"],
-                "assetName": asset_name,
-                "assetIds": linked_ids,
-                "status": f.get("Status", "Pending"),
-                "artist": f.get("Artist", ""),
-                "notes": f.get("Notes", ""),
-                "submittedAt": f.get("Submitted At", ""),
-                "screenshot": screenshot,
-                "screenshotType": screenshot_type,
-                # All Airtable fields as display strings — rendered dynamically in the UI.
-                # Lookup fields return resolved names; collaborators return display name.
-                "fields": dn,
-            }
-        )
-    return result
-
-
-@router.get("/status-options")
-async def get_status_options(_user: CurrentUser = Depends(require_studio)):
-    token = os.environ.get("AIRTABLE_TOKEN", "")
-    base_id = os.environ.get("AIRTABLE_BASE_ID", "")
-    r = await http_client.get(
-        f"https://api.airtable.com/v0/meta/bases/{base_id}/tables",
-        headers={"Authorization": f"Bearer {token}"},
+    r = await db_client.get(
+        _url("/rest/v1/asset_reviews"),
+        params={
+            "select": "*",
+            "studio_id": f"eq.{studio_id}",
+            "order": "created_at.desc",
+        },
+        headers=_headers(),
     )
     if not r.is_success:
-        raise HTTPException(status_code=502, detail=f"Airtable metadata API returned {r.status_code}")
-    tables = r.json().get("tables", [])
-    table = next((t for t in tables if t["name"] == config.tables["reviews"]), None)
-    if not table:
-        raise HTTPException(status_code=404, detail=f"Reviews table '{config.tables['reviews']}' not found in schema")
-    field = next((f for f in table.get("fields", []) if f["name"] == "Status"), None)
-    if not field:
-        raise HTTPException(status_code=404, detail="Status field not found in reviews table")
-    choices = [c["name"] for c in field.get("options", {}).get("choices", [])]
-    return {"options": choices}
+        raise HTTPException(status_code=502, detail="Failed to fetch reviews")
+
+    return await _enrich(r.json(), studio_id)
 
 
-class StatusUpdate(BaseModel):
-    status: str
+@router.post("")
+async def create_review(body: ReviewCreate, user: CurrentUser = Depends(require_studio)):
+    studio_id = _require_studio_id(user)
+
+    # Verify the canonical_asset belongs to this studio — prevents cross-studio writes.
+    check = await db_client.get(
+        _url("/rest/v1/canonical_assets"),
+        params={
+            "select": "id",
+            "id": f"eq.{body.canonical_asset_id}",
+            "studio_id": f"eq.{studio_id}",
+        },
+        headers=_headers(),
+    )
+    if not check.is_success or not check.json():
+        raise HTTPException(status_code=404, detail="Asset not found in this studio")
+
+    r = await db_client.post(
+        _url("/rest/v1/asset_reviews"),
+        json={
+            "studio_id": studio_id,
+            "canonical_asset_id": body.canonical_asset_id,
+            "source_record_id": body.source_record_id or None,
+            "description": body.description or None,
+            "status": body.status or None,
+            "created_by_email": user.email,
+        },
+        headers=_headers({"Prefer": "return=representation"}),
+    )
+    if not r.is_success:
+        raise HTTPException(status_code=502, detail="Failed to create review")
+
+    rows = r.json()
+    if not rows:
+        raise HTTPException(status_code=502, detail="Review created but not returned")
+
+    enriched = await _enrich([rows[0]], studio_id)
+    return enriched[0]
+
+
+@router.get("/{review_id}")
+async def get_review(review_id: str, user: CurrentUser = Depends(require_studio)):
+    studio_id = _require_studio_id(user)
+
+    r = await db_client.get(
+        _url("/rest/v1/asset_reviews"),
+        params={
+            "select": "*",
+            "id": f"eq.{review_id}",
+            "studio_id": f"eq.{studio_id}",
+        },
+        headers=_headers(),
+    )
+    if not r.is_success or not r.json():
+        raise HTTPException(status_code=404, detail="Review not found")
+
+    enriched = await _enrich([r.json()[0]], studio_id)
+    return enriched[0]
 
 
 @router.patch("/{review_id}/status")
 async def update_review_status(
-    review_id: str, body: StatusUpdate, _: CurrentUser = Depends(require_studio)
+    review_id: str, body: StatusUpdate, user: CurrentUser = Depends(require_studio)
 ):
-    if not body.status:
-        raise HTTPException(status_code=400, detail="status required")
-    base_id = os.environ.get("AIRTABLE_BASE_ID", "")
-    table_enc = quote(config.tables["reviews"], safe="")
-    r = await http_client.patch(
-        f"https://api.airtable.com/v0/{base_id}/{table_enc}",
-        headers={**_at_headers(), "Content-Type": "application/json"},
-        json={"records": [{"id": review_id, "fields": {"Status": body.status}}]},
+    studio_id = _require_studio_id(user)
+
+    r = await db_client.patch(
+        _url("/rest/v1/asset_reviews"),
+        params={
+            "id": f"eq.{review_id}",
+            "studio_id": f"eq.{studio_id}",
+        },
+        json={"status": body.status or None},
+        headers=_headers({"Prefer": "return=representation"}),
     )
     if not r.is_success:
-        msg = r.json().get("error", {}).get("message", f"Airtable returned {r.status_code}")
-        raise HTTPException(status_code=502, detail=msg)
+        raise HTTPException(status_code=502, detail="Failed to update status")
+    if not r.json():
+        raise HTTPException(status_code=404, detail="Review not found")
     return {"ok": True}
 
 
-@router.get("/{review_id}/comments")
-async def get_comments(review_id: str, _user: CurrentUser = Depends(require_studio)):
-    r = await http_client.get(_comments_url(review_id), headers=_at_headers())
-    if not r.is_success:
-        msg = r.json().get("error", {}).get("message", f"Airtable returned {r.status_code}")
-        raise HTTPException(status_code=502, detail=msg)
-    return r.json().get("comments", [])
+@router.delete("/{review_id}")
+async def delete_review(review_id: str, user: CurrentUser = Depends(require_studio)):
+    studio_id = _require_studio_id(user)
 
-
-class CommentBody(BaseModel):
-    text: str
-
-
-@router.post("/{review_id}/comments")
-async def add_comment(
-    review_id: str, body: CommentBody, _: CurrentUser = Depends(require_studio)
-):
-    if not body.text.strip():
-        raise HTTPException(status_code=400, detail="Comment text is required")
-    r = await http_client.post(
-        _comments_url(review_id),
-        headers={**_at_headers(), "Content-Type": "application/json"},
-        json={"text": body.text},
+    # Filter by both studio_id and created_by_email — only the creator can delete.
+    r = await db_client.delete(
+        _url("/rest/v1/asset_reviews"),
+        params={
+            "id": f"eq.{review_id}",
+            "studio_id": f"eq.{studio_id}",
+            "created_by_email": f"eq.{user.email}",
+        },
+        headers=_headers({"Prefer": "return=representation"}),
     )
     if not r.is_success:
-        msg = r.json().get("error", {}).get("message", f"Airtable returned {r.status_code}")
-        raise HTTPException(status_code=502, detail=msg)
-    return r.json()
+        raise HTTPException(status_code=502, detail="Failed to delete review")
+    if not r.json():
+        raise HTTPException(status_code=404, detail="Review not found or you are not the creator")
+    return {"ok": True}

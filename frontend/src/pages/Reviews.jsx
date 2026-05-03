@@ -1,21 +1,20 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { toast } from 'sonner'
-import { apiFetch, makeRecordResolver } from '../lib/api'
-import { fieldDisplayString } from '../lib/fields'
-import DetailModal from '../components/DetailModal'
+import { apiFetch } from '../lib/api'
 import { cn } from '../lib/utils'
 
-// ── Constants ──────────────────────────────────────────────────────────────
+// ── Constants ──────────────────────────────────────────────────────────────────
+
+const STATUS_OPTS = ['Pending', 'In Progress', 'Approved', 'Changes Requested']
 
 const STATUS_STYLE = {
   'Pending':           { color: '#fbbf24', bg: 'rgba(251,191,36,0.12)' },
+  'In Progress':       { color: '#60a5fa', bg: 'rgba(96,165,250,0.12)' },
   'Approved':          { color: '#34d399', bg: 'rgba(52,211,153,0.12)' },
   'Changes Requested': { color: '#f87171', bg: 'rgba(248,113,113,0.12)' },
 }
 
-const RV_SKIP = new Set(['Status', 'Attachments', 'Assets', 'Notes'])
-
-// ── Filter dropdown ────────────────────────────────────────────────────────
+// ── Filter dropdown ────────────────────────────────────────────────────────────
 
 function FilterDropdown({ label, options, active, onChange }) {
   const [open, setOpen] = useState(false)
@@ -73,135 +72,160 @@ function FilterDropdown({ label, options, active, onChange }) {
   )
 }
 
-// ── Media preview ──────────────────────────────────────────────────────────
+// ── Field row ──────────────────────────────────────────────────────────────────
 
-function MediaPreview({ src, type }) {
-  if (!src) {
-    return <div className="flex items-center justify-center h-32 bg-surface-2 rounded-lg text-muted text-xs">No attachment</div>
-  }
-  const ext = src.split('?')[0].split('.').pop().toLowerCase()
-  const isVideo = (type || '').startsWith('video/') || ['mp4', 'webm', 'mov', 'ogg', 'm4v'].includes(ext)
-  if (isVideo) {
-    return <video src={src} controls playsInline preload="metadata" className="w-full rounded-lg max-h-64 bg-black" />
-  }
-  return <img src={src} alt="Attachment" className="w-full rounded-lg max-h-64 object-contain bg-surface-2" />
-}
-
-// ── Inline field list (reuses DetailModal's row pattern without the overlay) ──
-
-function FieldList({ fields, onDrillIn }) {
+function FieldRow({ label, value, span }) {
+  const display = value != null && value !== '' ? String(value) : '—'
   return (
-    <div className="flex flex-col divide-y divide-border/50">
-      {fields.map((f, i) => {
-        const display = f.value != null && f.value !== '' ? String(f.value) : '—'
-        const isLinked = f.type === 'linked-record' && f.resolve
-        return (
-          <div
-            key={i}
-            onClick={isLinked ? () => onDrillIn(f) : undefined}
-            className={cn(
-              'flex items-start gap-4 py-2',
-              isLinked && 'cursor-pointer group'
-            )}
-          >
-            <span className="text-muted text-xs w-24 shrink-0 pt-0.5">{f.label}</span>
-            <span className={cn(
-              'text-sm flex-1',
-              display === '—' ? 'text-border' : 'text-foreground',
-              isLinked && display !== '—' ? 'text-p2 group-hover:underline' : '',
-              f.span === 'full' ? 'whitespace-pre-wrap' : ''
-            )}>
-              {display}
-              {isLinked && display !== '—' && <span className="ml-1 text-muted text-xs">↗</span>}
-            </span>
-          </div>
-        )
-      })}
+    <div className="flex items-start gap-4 py-2 border-b border-border/50 last:border-0">
+      <span className="text-muted text-xs w-28 shrink-0 pt-0.5">{label}</span>
+      <span className={cn(
+        'text-sm flex-1',
+        display === '—' ? 'text-border' : 'text-foreground',
+        span === 'full' && 'whitespace-pre-wrap'
+      )}>
+        {display}
+      </span>
     </div>
   )
 }
 
-// ── Comments ───────────────────────────────────────────────────────────────
+// ── New Review Modal ───────────────────────────────────────────────────────────
 
-function CommentsSection({ reviewId }) {
-  const [comments, setComments] = useState(null)
-  const [text, setText]         = useState('')
-  const [posting, setPosting]   = useState(false)
+function NewReviewModal({ onClose, onCreated }) {
+  const [assets, setAssets]       = useState([])
+  const [loadingAssets, setLoadingAssets] = useState(true)
+  const [submitting, setSubmitting] = useState(false)
+  const [form, setForm] = useState({
+    canonical_asset_id: '',
+    source_record_id: '',
+    description: '',
+    status: '',
+  })
 
   useEffect(() => {
-    load()
-  }, [reviewId])
+    apiFetch('/api/reviews/assets')
+      .then(data => {
+        setAssets(data)
+        if (data.length === 1) {
+          setForm(f => ({
+            ...f,
+            canonical_asset_id: data[0].id,
+            source_record_id: data[0].source_record_id || '',
+          }))
+        }
+      })
+      .catch(err => toast.error(err.message))
+      .finally(() => setLoadingAssets(false))
+  }, [])
 
-  async function load() {
-    setComments(null)
-    try {
-      const data = await apiFetch(`/api/reviews/${encodeURIComponent(reviewId)}/comments`)
-      setComments(data)
-    } catch (err) {
-      toast.error(err.message)
-      setComments([])
-    }
+  function handleAssetChange(id) {
+    const asset = assets.find(a => a.id === id)
+    setForm(f => ({
+      ...f,
+      canonical_asset_id: id,
+      source_record_id: asset?.source_record_id || '',
+    }))
   }
 
-  async function post() {
-    const trimmed = text.trim()
-    if (!trimmed) return
-    setPosting(true)
+  async function submit() {
+    if (!form.canonical_asset_id) { toast.error('Please select an asset'); return }
+    setSubmitting(true)
     try {
-      await apiFetch(`/api/reviews/${encodeURIComponent(reviewId)}/comments`, {
+      const review = await apiFetch('/api/reviews', {
         method: 'POST',
-        body: JSON.stringify({ text: trimmed }),
+        body: JSON.stringify({
+          canonical_asset_id: form.canonical_asset_id,
+          source_record_id:   form.source_record_id  || null,
+          description:        form.description        || null,
+          status:             form.status             || null,
+        }),
       })
-      setText('')
-      await load()
+      toast.success('Review created')
+      onCreated(review)
     } catch (err) {
       toast.error(err.message)
     } finally {
-      setPosting(false)
+      setSubmitting(false)
     }
   }
 
-  function handleKeyDown(e) {
-    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); post() }
-  }
-
   return (
-    <div className="flex flex-col gap-3 pt-4 border-t border-border mt-4">
-      <p className="text-foreground text-xs font-semibold uppercase tracking-wide">Comments</p>
-
-      {comments === null && <p className="text-muted text-xs">Loading…</p>}
-
-      {comments?.length === 0 && <p className="text-muted text-xs">No comments yet.</p>}
-
-      {comments?.map(c => (
-        <div key={c.id ?? c.createdTime} className="flex flex-col gap-1">
-          <div className="flex items-center gap-2">
-            <span className="text-foreground text-xs font-medium">
-              {c.author?.name || c.author?.email || 'Unknown'}
-            </span>
-            <span className="text-muted text-xs">{new Date(c.createdTime).toLocaleString()}</span>
-          </div>
-          <p className="text-foreground text-sm whitespace-pre-wrap">{c.text}</p>
-        </div>
-      ))}
-
-      <div className="flex flex-col gap-2 mt-1">
-        <textarea
-          value={text}
-          onChange={e => setText(e.target.value)}
-          onKeyDown={handleKeyDown}
-          rows={2}
-          placeholder="Add a comment… (Ctrl+Enter to post)"
-          className="bg-surface-2 border border-border rounded-lg px-3 py-2 text-foreground text-sm outline-none focus:border-accent resize-none"
-        />
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+      onClick={e => e.target === e.currentTarget && onClose()}
+    >
+      <div className="bg-surface border border-border rounded-xl shadow-2xl w-full max-w-md p-6 flex flex-col gap-4">
         <div className="flex items-center justify-between">
-          <span className="text-muted text-xs">Ctrl+Enter to post</span>
-          <button
-            onClick={post}
-            disabled={posting || !text.trim()}
-            className="px-3 py-1.5 rounded-md bg-accent text-white text-xs font-medium hover:bg-accent-hover cursor-pointer disabled:opacity-40"
+          <h2 className="text-foreground font-semibold">New Review</h2>
+          <button onClick={onClose} className="text-muted hover:text-foreground text-xl leading-none cursor-pointer">×</button>
+        </div>
+
+        <div className="flex flex-col gap-1">
+          <label className="text-muted text-xs">Asset (ArtHound) *</label>
+          {loadingAssets ? (
+            <p className="text-muted text-xs py-1">Loading assets…</p>
+          ) : (
+            <select
+              value={form.canonical_asset_id}
+              onChange={e => handleAssetChange(e.target.value)}
+              className="bg-surface-2 border border-border rounded-md px-3 py-2 text-foreground text-sm outline-none focus:border-accent cursor-pointer"
+            >
+              <option value="">Select an asset…</option>
+              {assets.map(a => (
+                <option key={a.id} value={a.id}>{a.name || a.id}</option>
+              ))}
+            </select>
+          )}
+        </div>
+
+        <div className="flex flex-col gap-1">
+          <label className="text-muted text-xs">Asset (Airtable ID)</label>
+          <input
+            type="text"
+            value={form.source_record_id}
+            onChange={e => setForm(f => ({ ...f, source_record_id: e.target.value }))}
+            placeholder="Auto-filled from asset selection"
+            className="bg-surface-2 border border-border rounded-md px-3 py-2 text-foreground text-sm outline-none focus:border-accent"
+          />
+        </div>
+
+        <div className="flex flex-col gap-1">
+          <label className="text-muted text-xs">Description</label>
+          <textarea
+            value={form.description}
+            onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
+            rows={3}
+            placeholder="Describe the review…"
+            className="bg-surface-2 border border-border rounded-md px-3 py-2 text-foreground text-sm outline-none focus:border-accent resize-none"
+          />
+        </div>
+
+        <div className="flex flex-col gap-1">
+          <label className="text-muted text-xs">Status</label>
+          <select
+            value={form.status}
+            onChange={e => setForm(f => ({ ...f, status: e.target.value }))}
+            className="bg-surface-2 border border-border rounded-md px-3 py-2 text-foreground text-sm outline-none focus:border-accent cursor-pointer"
           >
-            {posting ? 'Posting…' : 'Post comment'}
+            <option value="">None</option>
+            {STATUS_OPTS.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </div>
+
+        <div className="flex justify-end gap-2 pt-2 border-t border-border">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 rounded-md border border-border text-muted text-sm hover:text-foreground cursor-pointer"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={submit}
+            disabled={submitting || !form.canonical_asset_id}
+            className="px-4 py-2 rounded-md bg-accent text-white text-sm font-medium hover:bg-accent-hover cursor-pointer disabled:opacity-40"
+          >
+            {submitting ? 'Creating…' : 'Create Review'}
           </button>
         </div>
       </div>
@@ -209,27 +233,44 @@ function CommentsSection({ reviewId }) {
   )
 }
 
-// ── Main page ──────────────────────────────────────────────────────────────
+// ── Asset metadata card ────────────────────────────────────────────────────────
+
+function AssetMeta({ asset }) {
+  return (
+    <div className="rounded-lg bg-surface-2 border border-border px-4 py-3">
+      <p className="text-foreground text-xs font-semibold uppercase tracking-wide mb-1">Asset</p>
+      {!asset ? (
+        <p className="text-muted text-xs py-1">Metadata unavailable</p>
+      ) : (
+        <div className="flex flex-col">
+          <FieldRow label="Name"      value={asset.name} />
+          <FieldRow label="Item Type" value={asset.item_type} />
+          <FieldRow label="Priority"  value={asset.priority} />
+          <FieldRow label="Product"   value={asset.product} />
+          <FieldRow label="Status"    value={asset.status} />
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Main page ──────────────────────────────────────────────────────────────────
 
 export default function Reviews() {
-  const [reviews, setReviews]         = useState([])
-  const [statusOptions, setStatusOpts] = useState([])
-  const [selectedId, setSelectedId]   = useState(null)
-  const [loading, setLoading]         = useState(true)
-  const [filters, setFilters]         = useState({ status: new Set(), artist: new Set() })
-  const [linkedModal, setLinkedModal] = useState(null) // {title, badge, fields}
+  const [reviews, setReviews]       = useState([])
+  const [selectedId, setSelectedId] = useState(null)
+  const [loading, setLoading]       = useState(true)
+  const [filters, setFilters]       = useState({ status: new Set() })
+  const [showNew, setShowNew]       = useState(false)
+  const [updating, setUpdating]     = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
     setSelectedId(null)
     try {
-      const [rvs, statusData] = await Promise.all([
-        apiFetch('/api/reviews'),
-        apiFetch('/api/reviews/status-options').catch(() => ({ options: [] })),
-      ])
-      setReviews(rvs)
-      setStatusOpts(statusData.options)
-      setFilters({ status: new Set(), artist: new Set() })
+      const data = await apiFetch('/api/reviews')
+      setReviews(data)
+      setFilters({ status: new Set() })
     } catch (err) {
       toast.error(err.message)
     } finally {
@@ -240,89 +281,78 @@ export default function Reviews() {
   useEffect(() => { load() }, [load])
 
   async function updateStatus(review, newStatus) {
+    setUpdating(true)
     try {
       await apiFetch(`/api/reviews/${review.id}/status`, {
         method: 'PATCH',
-        body: JSON.stringify({ status: newStatus }),
+        body: JSON.stringify({ status: newStatus || null }),
       })
-      setReviews(prev => prev.map(r => r.id === review.id ? { ...r, status: newStatus } : r))
+      setReviews(prev => prev.map(r =>
+        r.id === review.id ? { ...r, status: newStatus || null } : r
+      ))
       toast.success('Status updated')
     } catch (err) {
       toast.error(err.message)
+    } finally {
+      setUpdating(false)
     }
   }
 
-  async function drillIntoLinked(field) {
-    setLinkedModal({ title: 'Loading…', fields: [] })
+  async function deleteReview(review) {
+    if (!window.confirm('Delete this review? This cannot be undone.')) return
     try {
-      const resolved = await field.resolve()
-      setLinkedModal(resolved)
+      await apiFetch(`/api/reviews/${review.id}`, { method: 'DELETE' })
+      setReviews(prev => prev.filter(r => r.id !== review.id))
+      if (selectedId === review.id) setSelectedId(null)
+      toast.success('Review deleted')
     } catch (err) {
-      setLinkedModal(null)
       toast.error(err.message)
     }
   }
 
-  // Derive filter options from data
-  const allStatuses = [...new Set(reviews.map(r => r.status).filter(Boolean))].sort()
-  const allArtists  = [...new Set(reviews.map(r => r.artist).filter(Boolean))].sort()
+  function handleCreated(review) {
+    setShowNew(false)
+    setReviews(prev => [review, ...prev])
+    setSelectedId(review.id)
+  }
 
+  const allStatuses = [...new Set(reviews.map(r => r.status).filter(Boolean))].sort()
   const filtered = reviews.filter(r => {
     if (filters.status.size && !filters.status.has(r.status)) return false
-    if (filters.artist.size && !filters.artist.has(r.artist)) return false
     return true
   })
-
   const selected = reviews.find(r => r.id === selectedId) ?? null
-
-  // Build fields for selected review detail panel
-  const detailFields = selected ? (() => {
-    const fields = []
-    if (selected.assetIds?.length === 1) {
-      fields.push({
-        label: 'Asset',
-        value: selected.assetName || selected.assetIds[0],
-        type: 'linked-record',
-        resolve: makeRecordResolver('assets', selected.assetIds[0], selected.assetName || selected.assetIds[0]),
-      })
-    } else if (selected.assetName) {
-      fields.push({ label: 'Asset', value: selected.assetName })
-    }
-    Object.entries(selected.fields || {})
-      .filter(([k, v]) => !RV_SKIP.has(k) && v !== '' && v != null)
-      .forEach(([k, v]) => fields.push({ label: k, value: fieldDisplayString(v) }))
-    if (selected.notes) fields.push({ label: 'Notes', value: selected.notes, span: 'full' })
-    return fields
-  })() : []
-
-  const statusOpts = statusOptions.length
-    ? statusOptions
-    : ['Pending', 'Approved', 'Changes Requested']
 
   return (
     <main className="flex flex-1 overflow-hidden">
-      {/* ── Left panel — list ── */}
+
+      {/* ── Left panel ── */}
       <div className="w-72 flex flex-col border-r border-border shrink-0">
+
         {/* Toolbar */}
-        <div className="flex items-center gap-2 p-3 border-b border-border shrink-0">
-          <button onClick={load} className="text-muted text-xs hover:text-foreground cursor-pointer">Refresh</button>
+        <div className="flex items-center justify-between p-3 border-b border-border shrink-0">
+          <button onClick={load} className="text-muted text-xs hover:text-foreground cursor-pointer">
+            Refresh
+          </button>
+          <button
+            onClick={() => setShowNew(true)}
+            className="px-2.5 py-1.5 rounded-md bg-accent text-white text-xs font-medium hover:bg-accent-hover cursor-pointer"
+          >
+            + New Review
+          </button>
         </div>
 
         {/* Filters */}
-        <div className="flex gap-2 px-3 py-2 border-b border-border flex-wrap shrink-0">
-          <FilterDropdown
-            label="Status"
-            options={allStatuses}
-            active={filters.status}
-            onChange={v => setFilters(f => ({ ...f, status: v }))}
-          />
-          <FilterDropdown
-            label="Artist"
-            options={allArtists}
-            active={filters.artist}
-            onChange={v => setFilters(f => ({ ...f, artist: v }))}
-          />
-        </div>
+        {allStatuses.length > 0 && (
+          <div className="flex gap-2 px-3 py-2 border-b border-border flex-wrap shrink-0">
+            <FilterDropdown
+              label="Status"
+              options={allStatuses}
+              active={filters.status}
+              onChange={v => setFilters(f => ({ ...f, status: v }))}
+            />
+          </div>
+        )}
 
         {/* List */}
         <div className="flex-1 overflow-y-auto">
@@ -333,28 +363,36 @@ export default function Reviews() {
             </p>
           )}
           {filtered.map(r => {
-            const style  = STATUS_STYLE[r.status] || { color: '#6b748a', bg: 'rgba(107,116,138,0.12)' }
-            const date   = r.submittedAt ? new Date(r.submittedAt).toLocaleDateString() : '—'
-            const active = selectedId === r.id
+            const style    = STATUS_STYLE[r.status] || { color: '#6b748a', bg: 'rgba(107,116,138,0.12)' }
+            const date     = r.created_at ? new Date(r.created_at).toLocaleDateString() : '—'
+            const assetName = r.asset?.name || '—'
+            const isActive  = selectedId === r.id
             return (
               <div
                 key={r.id}
                 onClick={() => setSelectedId(r.id)}
                 className={cn(
                   'px-3 py-3 border-b border-border cursor-pointer transition-colors',
-                  active ? 'bg-surface-2' : 'hover:bg-surface-2'
+                  isActive ? 'bg-surface-2' : 'hover:bg-surface-2'
                 )}
               >
-                <p className="text-foreground text-sm font-medium truncate mb-1">{r.assetName || '—'}</p>
+                <p className="text-foreground text-sm font-medium truncate mb-0.5">{assetName}</p>
+                {r.description && (
+                  <p className="text-muted text-xs truncate mb-1">{r.description}</p>
+                )}
                 <div className="flex items-center gap-2 flex-wrap">
-                  <span
-                    className="px-2 py-0.5 rounded-full text-xs font-medium"
-                    style={{ color: style.color, background: style.bg }}
-                  >
-                    {r.status}
-                  </span>
-                  <span className="text-muted text-xs">{r.artist || '—'}</span>
-                  <span className="text-muted text-xs">·</span>
+                  {r.status ? (
+                    <span
+                      className="px-2 py-0.5 rounded-full text-xs font-medium"
+                      style={{ color: style.color, background: style.bg }}
+                    >
+                      {r.status}
+                    </span>
+                  ) : (
+                    <span className="px-2 py-0.5 rounded-full text-xs text-muted border border-border/50">
+                      No status
+                    </span>
+                  )}
                   <span className="text-muted text-xs">{date}</span>
                 </div>
               </div>
@@ -363,7 +401,7 @@ export default function Reviews() {
         </div>
       </div>
 
-      {/* ── Right panel — detail ── */}
+      {/* ── Right panel ── */}
       <div className="flex-1 overflow-y-auto">
         {!selected && (
           <div className="flex items-center justify-center h-full">
@@ -373,46 +411,71 @@ export default function Reviews() {
 
         {selected && (
           <div className="p-6 flex flex-col gap-5 max-w-2xl">
+
             {/* Header */}
-            <div>
-              <h2 className="text-foreground text-lg font-semibold">{selected.assetName || '—'}</h2>
-              {selected.artist && <p className="text-muted text-sm">{selected.artist}</p>}
-            </div>
-
-            {/* Media */}
-            <MediaPreview src={selected.screenshot} type={selected.screenshotType} />
-
-            {/* Status */}
-            <div className="flex items-center gap-3">
-              <span className="text-muted text-xs">Status</span>
-              <select
-                value={selected.status || ''}
-                onChange={e => updateStatus(selected, e.target.value)}
-                className="bg-surface-2 border border-border rounded-md px-2 py-1 text-foreground text-sm outline-none focus:border-accent cursor-pointer"
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-foreground text-lg font-semibold">
+                  {selected.asset?.name || 'Review'}
+                </h2>
+                <p className="text-muted text-xs mt-0.5">
+                  {selected.created_by_email} · {new Date(selected.created_at).toLocaleString()}
+                </p>
+              </div>
+              <button
+                onClick={() => deleteReview(selected)}
+                className="text-muted text-xs hover:text-red-400 transition-colors cursor-pointer shrink-0"
               >
-                {statusOpts.map(o => <option key={o} value={o}>{o}</option>)}
-              </select>
-              {selected.status && (() => {
-                const style = STATUS_STYLE[selected.status] || { color: '#6b748a' }
-                return <span className="text-xs font-medium" style={{ color: style.color }}>● {selected.status}</span>
-              })()}
+                Delete
+              </button>
             </div>
 
-            {/* Fields */}
-            {detailFields.length > 0 && (
-              <FieldList fields={detailFields} onDrillIn={drillIntoLinked} />
-            )}
+            {/* Asset metadata */}
+            <AssetMeta asset={selected.asset} />
 
-            {/* Comments */}
-            <CommentsSection reviewId={selected.id} />
+            {/* Review fields */}
+            <div className="rounded-lg border border-border px-4 py-3">
+              <p className="text-foreground text-xs font-semibold uppercase tracking-wide mb-1">Review</p>
+              <div className="flex flex-col">
+                <FieldRow label="Description"     value={selected.description} span="full" />
+                <FieldRow label="Asset (Airtable)" value={selected.source_record_id} />
+              </div>
+
+              {/* Status — inline editor */}
+              <div className="flex items-center gap-3 py-2 mt-1">
+                <span className="text-muted text-xs w-28 shrink-0">Status</span>
+                <select
+                  value={selected.status || ''}
+                  onChange={e => updateStatus(selected, e.target.value)}
+                  disabled={updating}
+                  className="bg-surface-2 border border-border rounded-md px-2 py-1 text-foreground text-sm outline-none focus:border-accent cursor-pointer disabled:opacity-60"
+                >
+                  <option value="">None</option>
+                  {STATUS_OPTS.map(o => <option key={o} value={o}>{o}</option>)}
+                  {/* Preserve any non-standard status value already set */}
+                  {selected.status && !STATUS_OPTS.includes(selected.status) && (
+                    <option value={selected.status}>{selected.status}</option>
+                  )}
+                </select>
+                {selected.status && STATUS_STYLE[selected.status] && (() => {
+                  const s = STATUS_STYLE[selected.status]
+                  return <span className="text-xs font-medium" style={{ color: s.color }}>● {selected.status}</span>
+                })()}
+              </div>
+            </div>
+
           </div>
         )}
       </div>
 
-      {/* Linked record overlay */}
-      {linkedModal && (
-        <DetailModal {...linkedModal} onClose={() => setLinkedModal(null)} />
+      {/* New review modal */}
+      {showNew && (
+        <NewReviewModal
+          onClose={() => setShowNew(false)}
+          onCreated={handleCreated}
+        />
       )}
+
     </main>
   )
 }

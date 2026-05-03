@@ -213,18 +213,6 @@ async def global_exception_handler(request: Request, exc: Exception):
     return JSONResponse(status_code=500, content={"error": str(exc)})
 
 
-# User-uploaded screenshots — stored outside dist so they survive rebuilds.
-# URL pattern /reviews/{filename} kept intentionally so existing Airtable
-# attachment URLs remain valid.
-_MEDIA = Path("media")
-
-@app.get("/reviews/{filename}")
-async def serve_screenshot(filename: str):
-    file = _MEDIA / "reviews" / filename
-    if not file.is_file():
-        raise HTTPException(status_code=404, detail="Not found")
-    return FileResponse(file)
-
 
 # SPA fallback — serve React build for all non-API paths.
 # File requests (JS/CSS/images) are served from dist; everything else gets index.html
