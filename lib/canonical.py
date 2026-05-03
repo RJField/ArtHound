@@ -10,7 +10,9 @@ async def get_studio_id() -> str:
     if _studio_id:
         return _studio_id
 
-    base_id = os.environ["AIRTABLE_BASE_ID"]
+    base_id = os.environ.get("AIRTABLE_BASE_ID")
+    if not base_id:
+        raise RuntimeError("AIRTABLE_BASE_ID is not set and no studio_id was provided — cannot resolve studio")
     r = await db_client.get(
         _url("/rest/v1/studios"),
         params={"select": "id", "airtable_base_id": f"eq.{base_id}"},
