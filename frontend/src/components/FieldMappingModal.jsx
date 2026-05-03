@@ -66,11 +66,9 @@ export default function FieldMappingModal({ onClose }) {
         method: 'POST',
         body: JSON.stringify({ source_type: SOURCE_TYPE, full: true }),
       })
-      setStatus('Full sync started — mapping will refresh shortly.')
-      setTimeout(load, 4000)
+      setTimeout(() => window.location.reload(), 4000)
     } catch (e) {
       setStatus(e.message)
-    } finally {
       setSyncing(false)
     }
   }

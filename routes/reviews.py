@@ -1,6 +1,6 @@
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from lib.auth import CurrentUser, require_studio
@@ -113,16 +113,23 @@ async def list_assets_for_picker(user: CurrentUser = Depends(require_studio)):
 
 @router.get("")
 @router.get("/")
-async def list_reviews(user: CurrentUser = Depends(require_studio)):
+async def list_reviews(
+    canonicalAssetId: Optional[str] = Query(None),
+    user: CurrentUser = Depends(require_studio),
+):
     studio_id = _require_studio_id(user)
+
+    params: dict = {
+        "select":     "*",
+        "studio_id":  f"eq.{studio_id}",
+        "order":      "created_at.desc",
+    }
+    if canonicalAssetId:
+        params["canonical_asset_id"] = f"eq.{canonicalAssetId}"
 
     r = await db_client.get(
         _url("/rest/v1/asset_reviews"),
-        params={
-            "select": "*",
-            "studio_id": f"eq.{studio_id}",
-            "order": "created_at.desc",
-        },
+        params=params,
         headers=_headers(),
     )
     if not r.is_success:

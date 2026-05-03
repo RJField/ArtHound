@@ -250,6 +250,81 @@ async def get_assets(
     return [_build_asset_response(r, prod_id_to_name, prod_name_to_id, it_id_to_name) for r in rows]
 
 
+_SLOT_LABELS: dict[str, str] = {
+    "name":         "Name",
+    "dev_name":     "Dev Name",
+    "item_type":    "Item Type",
+    "priority":     "Priority",
+    "product":      "Product",
+    "project_date": "Date",
+    "status":       "Status",
+    "asset_number": "Asset #",
+}
+
+_DEFAULT_VISIBLE_SLOTS: set[str] = {"name", "item_type", "priority"}
+
+
+# ── View schema (column spec for the asset grid + detail panel) ───────────────
+
+@router.get("/view-schema")
+async def get_view_schema(user: CurrentUser = Depends(get_current_user)):
+    """Return the studio's column spec: mapped slots then unmapped meta fields."""
+    owner_type, owner_id = _owner(user)
+    r = await db_client.get(
+        _url("/rest/v1/source_field_mappings"),
+        params={
+            "owner_type":  f"eq.{owner_type}",
+            "owner_id":    f"eq.{owner_id}",
+            "source_type": "eq.airtable",
+            "select":      "mappings",
+        },
+        headers=_headers(),
+    )
+    r.raise_for_status()
+    rows     = r.json()
+    mappings = rows[0].get("mappings", []) if rows else []
+
+    columns: list[dict] = []
+    seen_slots: set[str] = set()
+
+    for m in mappings:
+        slot = m.get("arthound_slot")
+        if slot and slot in _SLOT_LABELS and slot not in seen_slots:
+            seen_slots.add(slot)
+            columns.append({
+                "id":             f"slot:{slot}",
+                "label":          _SLOT_LABELS[slot],
+                "source":         "slot",
+                "slotKey":        slot,
+                "fieldType":      m.get("source_field_type", "singleLineText"),
+                "defaultVisible": slot in _DEFAULT_VISIBLE_SLOTS,
+            })
+
+    for slot, label in _SLOT_LABELS.items():
+        if slot not in seen_slots:
+            columns.append({
+                "id":             f"slot:{slot}",
+                "label":          label,
+                "source":         "slot",
+                "slotKey":        slot,
+                "fieldType":      "singleLineText",
+                "defaultVisible": slot in _DEFAULT_VISIBLE_SLOTS,
+            })
+
+    for m in mappings:
+        if m.get("arthound_slot") is None:
+            columns.append({
+                "id":             f"meta:{m['source_field_name']}",
+                "label":          m["source_field_name"],
+                "source":         "meta",
+                "fieldName":      m["source_field_name"],
+                "fieldType":      m.get("source_field_type", "singleLineText"),
+                "defaultVisible": False,
+            })
+
+    return {"columns": columns}
+
+
 # ── Field list (for detail panel field picker) ───────────────────────────────
 
 @router.get("/fields")

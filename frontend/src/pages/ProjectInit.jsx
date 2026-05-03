@@ -19,9 +19,9 @@ const ALL_SLOTS = [
 
 const ENTITIES = [
   { type: 'product',   label: 'Product',    parent: null,      desc: 'Top-level grouping (e.g. Film, Game, Season)' },
-  { type: 'asset',     label: 'Asset',      parent: 'product', desc: 'Individual work item (e.g. Character, Prop, Shot)' },
+  { type: 'asset',     label: 'Asset',      parent: 'product', desc: 'Individual piece of output.' },
   { type: 'task',      label: 'Task / Work',parent: 'asset',   desc: 'Unit of work attached to an asset' },
-  { type: 'item_type', label: 'Item Type',  parent: null,      optional: true, desc: 'Lookup table for asset categories (e.g. Character, Prop, Vehicle). Skip if you use a select field instead.' },
+  { type: 'item_type', label: 'Item Type',  parent: null,      optional: true, desc: 'Asset categories (e.g. Character, Prop, Vehicle). Use a separate lookup table or a select field on your asset table.' },
 ]
 
 const OPERATORS = [
@@ -267,6 +267,12 @@ function EntityPanel({ entity, tables, definitions, onChange }) {
   const tableFields = tables.find(t => t.id === def.table_id)?.fields || []
   const validLinkFields = parentTableId ? linkFields(tableFields, parentTableId) : []
 
+  // Non-asset entities can use "select field on assets" instead of a separate table
+  const supportsFieldMode = entity.type !== 'asset'
+  const mode = supportsFieldMode ? (def.mode || 'table') : 'table'
+  const assetTableId = definitions.asset?.table_id
+  const assetTableFields = assetTableId ? (tables.find(t => t.id === assetTableId)?.fields || []) : []
+
   const [preview, setPreview]       = useState(null)
   const [previewing, setPreviewing] = useState(false)
   const [previewErr, setPreviewErr] = useState(null)
@@ -321,7 +327,9 @@ function EntityPanel({ entity, tables, definitions, onChange }) {
     }
   }
 
-  const isComplete = !!def.table_id
+  const isComplete = entity.type === 'item_type'
+    ? (mode === 'select_field' ? !!def.select_field_id : !!def.table_id)
+    : !!def.table_id
 
   return (
     <div className={`rounded-lg border p-4 flex flex-col gap-4 transition-colors ${isComplete ? 'border-accent/40' : 'border-border'}`}>
@@ -338,7 +346,47 @@ function EntityPanel({ entity, tables, definitions, onChange }) {
         </div>
       </div>
 
-      {/* Table selector */}
+      {/* Mode toggle (all non-asset entities) */}
+      {supportsFieldMode && (
+        <div className="flex rounded-md overflow-hidden border border-border text-xs">
+          {[['table', 'Separate table'], ['select_field', 'Select field on assets']].map(([m, label]) => (
+            <button
+              key={m}
+              onClick={() => update({ mode: m, table_id: '', table_name: '', filters: [], select_field_id: '', select_field_name: '' })}
+              className={`flex-1 px-3 py-1.5 cursor-pointer transition-colors ${
+                mode === m ? 'bg-accent text-white' : 'bg-surface-2 text-muted hover:bg-surface-3'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Field picker (select_field mode) */}
+      {supportsFieldMode && mode === 'select_field' && (
+        <label className="flex flex-col gap-1.5">
+          <span className="text-muted text-xs">Field on asset table</span>
+          {!assetTableId ? (
+            <p className="text-warning text-xs">Define the Asset entity first to see its fields.</p>
+          ) : (
+            <select
+              value={def.select_field_id || ''}
+              onChange={e => {
+                const f = assetTableFields.find(f => f.id === e.target.value)
+                update({ select_field_id: e.target.value, select_field_name: f?.name || '' })
+              }}
+              className="bg-surface-2 border border-border rounded-md px-2 py-1.5 text-foreground text-sm outline-none focus:border-accent"
+            >
+              <option value="">— select field —</option>
+              {assetTableFields.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
+            </select>
+          )}
+        </label>
+      )}
+
+      {/* Table selector (table mode only) */}
+      {(!supportsFieldMode || mode === 'table') && (
       <label className="flex flex-col gap-1.5">
         <span className="text-muted text-xs">Table</span>
         <select
@@ -354,9 +402,10 @@ function EntityPanel({ entity, tables, definitions, onChange }) {
           {tables.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
         </select>
       </label>
+      )}
 
       {/* Filters */}
-      {def.table_id && (
+      {def.table_id && mode === 'table' && (
         <div className="flex flex-col gap-2">
           <div className="flex items-center justify-between">
             <span className="text-muted text-xs">Filters <span className="opacity-60">(optional)</span></span>
@@ -430,7 +479,7 @@ function EntityPanel({ entity, tables, definitions, onChange }) {
       )}
 
       {/* Preview */}
-      {def.table_id && (
+      {def.table_id && mode === 'table' && (
         <div className="flex items-center gap-3">
           <button
             onClick={runPreview}
@@ -457,16 +506,141 @@ function EntityPanel({ entity, tables, definitions, onChange }) {
 }
 
 
-function StepHierarchy({ tables, onSuccess, onBack }) {
-  const [definitions, setDefinitions] = useState({ product: {}, asset: {}, task: {}, item_type: {} })
-  const [saving, setSaving]           = useState(false)
-  const [error, setError]             = useState(null)
+// ── Auto-suggest utilities ────────────────────────────────────────────────────
 
-  // Pre-load any saved definitions
+const _PRODUCT_HINTS = /product|project|show|film|game|title|episode|series|season/
+const _TASK_HINTS    = /task|work|shot|subtask|step|ticket/
+const _TYPE_HINTS    = /type|category|kind|class/
+
+function suggestEntitiesFromAsset(assetTableId, tables) {
+  const assetTable = tables.find(t => t.id === assetTableId)
+  if (!assetTable) return {}
+  const s = {}
+  for (const field of assetTable.fields) {
+    if (field.type === 'multipleRecordLinks') {
+      const linkedTableId = field.options?.linkedTableId
+      const linkedTable = tables.find(t => t.id === linkedTableId)
+      if (!linkedTable) continue
+      const combined = (linkedTable.name + ' ' + field.name).toLowerCase()
+      if (!s.product && _PRODUCT_HINTS.test(combined))
+        s.product = { mode: 'table', table_id: linkedTableId, table_name: linkedTable.name, filters: [], rel_field_id: field.id, rel_field_name: field.name, rel_direction: 'child_holds_link' }
+      if (!s.task && _TASK_HINTS.test(combined))
+        s.task = { mode: 'table', table_id: linkedTableId, table_name: linkedTable.name, filters: [], rel_field_id: field.id, rel_field_name: field.name, rel_direction: 'child_holds_link' }
+    }
+    if (field.type === 'singleSelect') {
+      const fl = field.name.toLowerCase()
+      if (!s.item_type && _TYPE_HINTS.test(fl))
+        s.item_type = { mode: 'select_field', select_field_id: field.id, select_field_name: field.name }
+      if (!s.product && _PRODUCT_HINTS.test(fl))
+        s.product = { mode: 'select_field', select_field_id: field.id, select_field_name: field.name }
+    }
+  }
+  return s
+}
+
+
+// ── Step 3: Define asset ──────────────────────────────────────────────────────
+
+const ASSET_ENTITY   = ENTITIES.find(e => e.type === 'asset')
+const OTHER_ENTITIES = ENTITIES.filter(e => e.type !== 'asset')
+
+function StepDefineAsset({ tables, initialDefs, onSuccess, onBack }) {
+  const [definitions, setDefinitions] = useState(
+    { product: {}, asset: {}, task: {}, item_type: {}, ...initialDefs }
+  )
+  const [saving, setSaving] = useState(false)
+  const [error, setError]   = useState(null)
+
   useEffect(() => {
     apiFetch(`/api/init/entity-definitions?source_type=${SOURCE_TYPE}`)
       .then(data => {
-        if (Object.keys(data).length > 0) setDefinitions(prev => ({ ...prev, ...data }))
+        if (data.asset) setDefinitions(prev => ({ ...prev, asset: data.asset }))
+      })
+      .catch(() => {})
+  }, [])
+
+  const assetDef   = definitions.asset || {}
+  const isComplete = !!assetDef.table_id
+
+  async function save() {
+    setSaving(true)
+    setError(null)
+    try {
+      await apiFetch('/api/init/entity-definitions', {
+        method: 'PUT',
+        body: JSON.stringify({
+          source_type:    SOURCE_TYPE,
+          entity_type:    'asset',
+          table_id:       assetDef.table_id,
+          table_name:     assetDef.table_name,
+          filters:        (assetDef.filters || []).filter(f => f.field_id && f.value),
+          rel_field_id:   null,
+          rel_field_name: null,
+          rel_direction:  null,
+        }),
+      })
+      const suggestions = suggestEntitiesFromAsset(assetDef.table_id, tables)
+      onSuccess(assetDef, suggestions)
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      <p className="text-muted text-sm">
+        Define how an Asset is tracked in your data. This will help us understand
+        your data structure for the next steps and help us map this against
+        ArtHound's structure.
+      </p>
+      <EntityPanel
+        entity={ASSET_ENTITY}
+        tables={tables}
+        definitions={definitions}
+        onChange={(type, def) => setDefinitions(prev => ({ ...prev, [type]: def }))}
+      />
+      {error && <p className="text-error text-sm">{error}</p>}
+      <div className="flex items-center justify-between pt-1">
+        <button onClick={onBack} className="px-4 py-2 rounded-md bg-surface-2 text-foreground text-sm font-medium hover:bg-surface-3 transition-colors cursor-pointer">Back</button>
+        <button
+          onClick={save}
+          disabled={saving || !isComplete}
+          className="px-4 py-2 rounded-md bg-accent text-white text-sm font-medium hover:bg-accent-hover transition-colors cursor-pointer disabled:opacity-40"
+        >
+          {saving ? 'Saving…' : 'Continue'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+
+// ── Step 4: Define other entities ─────────────────────────────────────────────
+
+function StepDefineEntities({ tables, initialDefs, onSuccess, onBack }) {
+  const [definitions, setDefinitions] = useState(
+    { product: {}, asset: {}, task: {}, item_type: {}, ...initialDefs }
+  )
+  const [saving, setSaving] = useState(false)
+  const [error, setError]   = useState(null)
+
+  const hasSuggestions = OTHER_ENTITIES.some(e => {
+    const def = initialDefs?.[e.type]
+    return def?.table_id || def?.select_field_id
+  })
+
+  useEffect(() => {
+    apiFetch(`/api/init/entity-definitions?source_type=${SOURCE_TYPE}`)
+      .then(data => {
+        setDefinitions(prev => {
+          const merged = { ...prev }
+          for (const [k, v] of Object.entries(data)) {
+            if (k !== 'asset') merged[k] = v
+          }
+          return merged
+        })
       })
       .catch(() => {})
   }, [])
@@ -475,15 +649,20 @@ function StepHierarchy({ tables, onSuccess, onBack }) {
     setDefinitions(prev => ({ ...prev, [type]: def }))
   }
 
-  const allComplete = ENTITIES.every(e => e.optional || !!definitions[e.type]?.table_id)
+  const allComplete = OTHER_ENTITIES.every(e => {
+    if (e.optional) return true
+    const def = definitions[e.type] || {}
+    return def.mode === 'select_field' ? !!def.select_field_id : !!def.table_id
+  })
 
   async function save() {
     setSaving(true)
     setError(null)
     try {
-      for (const entity of ENTITIES) {
+      for (const entity of OTHER_ENTITIES) {
         const def = definitions[entity.type]
-        if (!def?.table_id) continue  // skip optional entities left unconfigured
+        if (def?.mode === 'select_field') continue
+        if (!def?.table_id) continue
         await apiFetch('/api/init/entity-definitions', {
           method: 'PUT',
           body: JSON.stringify({
@@ -509,10 +688,11 @@ function StepHierarchy({ tables, onSuccess, onBack }) {
   return (
     <div className="flex flex-col gap-4">
       <p className="text-muted text-sm">
-        Tell ArtHound how your data is structured. Define which table represents
-        each entity and how they connect to each other.
+        {hasSuggestions
+          ? 'We\'ve pre-filled suggestions based on your asset table — review and adjust as needed.'
+          : 'Define how products, tasks, and item types connect to your assets.'}
       </p>
-      {ENTITIES.map(entity => (
+      {OTHER_ENTITIES.map(entity => (
         <EntityPanel
           key={entity.type}
           entity={entity}
@@ -526,7 +706,7 @@ function StepHierarchy({ tables, onSuccess, onBack }) {
         <button onClick={onBack} className="px-4 py-2 rounded-md bg-surface-2 text-foreground text-sm font-medium hover:bg-surface-3 transition-colors cursor-pointer">Back</button>
         <div className="flex items-center gap-3">
           <p className="text-muted text-xs">
-            {allComplete ? 'All entities defined' : 'Define all three entities to continue'}
+            {allComplete ? 'All entities defined' : 'Define required entities to continue'}
           </p>
           <button
             onClick={save}
@@ -544,7 +724,7 @@ function StepHierarchy({ tables, onSuccess, onBack }) {
 
 // ── Step 4: Map fields ────────────────────────────────────────────────────────
 
-function StepMapFields({ sourceFields, onSuccess, onBack }) {
+function StepMapFields({ sourceFields, presetSlotFields, onSuccess, onBack }) {
   const [assignments, setAssignments] = useState({})
   const [saving, setSaving]           = useState(false)
   const [error, setError]             = useState(null)
@@ -555,6 +735,9 @@ function StepMapFields({ sourceFields, onSuccess, onBack }) {
         const a = {}
         for (const m of data.mappings) {
           if (m.arthound_slot) a[m.arthound_slot] = m.source_field_id
+        }
+        for (const [slot, fieldId] of Object.entries(presetSlotFields || {})) {
+          if (fieldId && !a[slot]) a[slot] = fieldId
         }
         setAssignments(a)
       })
@@ -689,12 +872,16 @@ function StepReview({ definitions, isReset, onStart, onBack }) {
         </div>
         {ENTITIES.map(e => {
           const def = definitions[e.type]
+          const isSelectField = e.type !== 'asset' && def?.mode === 'select_field'
           return (
             <div key={e.type} className="flex justify-between px-4 py-3">
               <span className="text-muted text-sm">{e.label}</span>
               <span className="text-foreground text-sm font-medium">
-                {def?.table_name || '—'}
-                {def?.filters?.length > 0 && <span className="text-muted text-xs ml-1">({def.filters.length} filter{def.filters.length > 1 ? 's' : ''})</span>}
+                {isSelectField
+                  ? <>{def.select_field_name || '—'} <span className="text-muted text-xs font-normal">(field)</span></>
+                  : def?.table_name || '—'
+                }
+                {!isSelectField && def?.filters?.length > 0 && <span className="text-muted text-xs ml-1">({def.filters.length} filter{def.filters.length > 1 ? 's' : ''})</span>}
               </span>
             </div>
           )
@@ -802,7 +989,7 @@ function StepProgress({ jobId, onComplete, onBack }) {
 }
 
 
-// ── Step 7: Done ──────────────────────────────────────────────────────────────
+// ── Step 8: Done ──────────────────────────────────────────────────────────────
 
 function StepDone({ recordCount, isReset }) {
   const navigate = useNavigate()
@@ -840,7 +1027,8 @@ function StepDone({ recordCount, isReset }) {
 const STEP_TITLES = [
   'Connect source',
   'Discover schema',
-  'Define hierarchy',
+  'Define assets',
+  'Define structure',
   'Map fields',
   'Review',
   'Syncing',
@@ -880,7 +1068,7 @@ export default function ProjectInit() {
         <StepDots
           current={step}
           total={TOTAL_STEPS}
-          onNavigate={step < 6 ? setStep : undefined}
+          onNavigate={step < 7 ? setStep : undefined}
         />
 
         <div className="bg-surface border border-border rounded-xl p-6">
@@ -894,35 +1082,58 @@ export default function ProjectInit() {
             />
           )}
           {step === 3 && (
-            <StepHierarchy
+            <StepDefineAsset
               tables={tables}
-              onSuccess={defs => { setDefinitions(defs); setStep(4) }}
+              initialDefs={definitions}
+              onSuccess={(assetDef, suggestions) => {
+                setDefinitions(prev => ({ ...prev, asset: assetDef, ...suggestions }))
+                setStep(4)
+              }}
               onBack={() => setStep(2)}
             />
           )}
           {step === 4 && (
-            <StepMapFields
-              sourceFields={getAssetFields()}
-              onSuccess={() => setStep(5)}
+            <StepDefineEntities
+              tables={tables}
+              initialDefs={definitions}
+              onSuccess={defs => { setDefinitions(defs); setStep(5) }}
               onBack={() => setStep(3)}
             />
           )}
           {step === 5 && (
-            <StepReview
-              definitions={definitions}
-              isReset={isReset}
-              onStart={id => { setJobId(id); setStep(6) }}
+            <StepMapFields
+              sourceFields={getAssetFields()}
+              presetSlotFields={Object.fromEntries(
+                ['item_type', 'product'].flatMap(slot => {
+                  const def = definitions[slot]
+                  if (def?.mode === 'select_field' && def.select_field_id)
+                    return [[slot, def.select_field_id]]
+                  // Table mode: pre-assign the linking field on the asset
+                  if ((!def?.mode || def.mode === 'table') && def?.rel_field_id)
+                    return [[slot, def.rel_field_id]]
+                  return []
+                })
+              )}
+              onSuccess={() => setStep(6)}
               onBack={() => setStep(4)}
             />
           )}
           {step === 6 && (
-            <StepProgress
-              jobId={jobId}
-              onComplete={count => { setRecordCount(count); setStep(7) }}
+            <StepReview
+              definitions={definitions}
+              isReset={isReset}
+              onStart={id => { setJobId(id); setStep(7) }}
               onBack={() => setStep(5)}
             />
           )}
           {step === 7 && (
+            <StepProgress
+              jobId={jobId}
+              onComplete={count => { setRecordCount(count); setStep(8) }}
+              onBack={() => setStep(6)}
+            />
+          )}
+          {step === 8 && (
             <StepDone recordCount={recordCount} isReset={isReset} />
           )}
         </div>

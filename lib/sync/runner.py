@@ -211,7 +211,7 @@ async def run_sync(
                     filter_formula=formula,
                 )
             else:
-                raw_products = await connector.fetch_products()
+                raw_products = []
 
             if item_type_def:
                 formula = build_filter_formula(item_type_def.get("filters") or [])

@@ -77,26 +77,34 @@ async def select_all(
     return records
 
 
-async def find_record(table_name: str, record_id: str) -> dict:
-    base_id = _base_id()
+async def find_record(table_name: str, record_id: str, *, token: str | None = None, base_id: str | None = None) -> dict:
+    resolved_base_id = base_id or _base_id()
+    resolved_headers = {"Authorization": f"Bearer {token}"} if token else _headers()
     table_enc = quote(table_name, safe="")
     r = await http_client.get(
-        f"{BASE_URL}/{base_id}/{table_enc}/{record_id}",
-        headers=_headers(),
+        f"{BASE_URL}/{resolved_base_id}/{table_enc}/{record_id}",
+        headers=resolved_headers,
     )
     r.raise_for_status()
     return r.json()
 
 
-async def create_records(table_name: str, fields_list: list[dict]) -> list[dict]:
-    base_id = _base_id()
+async def create_records(
+    table_name: str,
+    fields_list: list[dict],
+    *,
+    token: str | None = None,
+    base_id: str | None = None,
+) -> list[dict]:
+    resolved_base_id = base_id or _base_id()
+    resolved_headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"} if token else {**_headers(), "Content-Type": "application/json"}
     table_enc = quote(table_name, safe="")
     results = []
     for i in range(0, len(fields_list), 10):
         batch = [{"fields": f} for f in fields_list[i : i + 10]]
         r = await http_client.post(
-            f"{BASE_URL}/{base_id}/{table_enc}",
-            headers={**_headers(), "Content-Type": "application/json"},
+            f"{BASE_URL}/{resolved_base_id}/{table_enc}",
+            headers=resolved_headers,
             json={"records": batch},
         )
         r.raise_for_status()

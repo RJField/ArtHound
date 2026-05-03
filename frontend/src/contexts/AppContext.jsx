@@ -6,13 +6,8 @@ const AppContext = createContext(null)
 const initial = {
   products:          [],
   selectedProductId: null,
-  assets:            [],
   selectedAssetIds:  new Set(),
   focusedAssetId:    null,
-  focusedAsset:      null,
-  taskView:          'list',      // 'list' | 'timeline'
-  taskSource:        'airtable',  // 'airtable' | 'arthound'
-  lastTasks:         null,
 }
 
 export function AppProvider({ children }) {
