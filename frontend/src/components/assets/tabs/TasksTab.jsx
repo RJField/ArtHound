@@ -71,11 +71,11 @@ function TasksTimeline({ tasks }) {
 
 const SOURCES = [
   { id: 'source',   label: 'Source'   },
-  { id: 'arthound', label: 'Generated' },
+  { id: 'arthound', label: 'ArtHound' },
 ]
 
 export default function TasksTab({ asset, taskRefreshKey }) {
-  const [source,    setSource]    = useState('source')
+  const [source,    setSource]    = useState('arthound')
   const [view,      setView]      = useState('list')
   const [tasks,     setTasks]     = useState(null)
   const [loading,   setLoading]   = useState(false)

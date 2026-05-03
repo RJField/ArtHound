@@ -19,7 +19,8 @@
       "WebSearch",
       "WebFetch(domain:adsknews.autodesk.com)",
       "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\field\\\\Documents\\\\ArtHound\\\\ArtHound\" -Directory)",
-      "Bash(Select-Object Name)"
+      "Bash(Select-Object Name)",
+      "PowerShell(Get-ChildItem -Path \"c:\\\\Users\\\\field\\\\Documents\\\\ArtHound\\\\ArtHound\\\\frontend\\\\src\" -Recurse -Directory | ForEach-Object { $_.FullName.Replace\\(\"c:\\\\Users\\\\field\\\\Documents\\\\ArtHound\\\\ArtHound\\\\frontend\\\\src\\\\\", \"\"\\) } | Sort-Object)"
     ]
   }
 }

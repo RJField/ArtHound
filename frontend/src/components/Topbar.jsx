@@ -7,12 +7,10 @@ import NumbersBotModal from './NumbersBotModal'
 import { cn } from '../lib/utils'
 
 const STUDIO_NAV = [
-  { label: 'Home',       to: '/home' },
-  { label: 'Assets',     to: '/assets' },
-  { label: 'Shares',     to: '/shares' },
-  { label: 'Estimates',  to: '/estimates' },
-  { label: 'Workflows',  to: '/workflows' },
-  { label: 'Reviews',    to: '/reviews' },
+  { label: 'Home',    to: '/home' },
+  { label: 'Assets',  to: '/assets' },
+  { label: 'Shares',  to: '/shares' },
+  { label: 'Reviews', to: '/reviews' },
 ]
 
 const VENDOR_NAV = [

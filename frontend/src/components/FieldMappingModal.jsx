@@ -1,9 +1,16 @@
 import { useState, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { apiFetch } from '../lib/api'
 
 const SOURCE_TYPE = 'airtable'
 
+const SETTINGS_NAV = [
+  { label: 'Estimates', to: '/estimates' },
+  { label: 'Workflows', to: '/workflows' },
+]
+
 export default function FieldMappingModal({ onClose }) {
+  const navigate = useNavigate()
   const [mappings, setMappings]   = useState([])
   const [slots, setSlots]         = useState([])
   const [updatedAt, setUpdatedAt] = useState(null)
@@ -95,6 +102,19 @@ export default function FieldMappingModal({ onClose }) {
         <div className="flex items-center justify-between px-6 py-4 border-b border-border shrink-0">
           <h2 className="text-foreground text-base font-semibold">Field Mapping</h2>
           <button onClick={onClose} className="text-muted hover:text-foreground text-xl cursor-pointer leading-none">×</button>
+        </div>
+
+        {/* Navigation shortcuts */}
+        <div className="flex gap-2 px-6 py-3 border-b border-border shrink-0">
+          {SETTINGS_NAV.map(({ label, to }) => (
+            <button
+              key={to}
+              onClick={() => { onClose(); navigate(to) }}
+              className="px-3 py-1.5 rounded-md bg-surface-2 text-foreground text-xs font-medium hover:bg-surface-3 transition-colors cursor-pointer"
+            >
+              {label}
+            </button>
+          ))}
         </div>
 
         {/* Body */}

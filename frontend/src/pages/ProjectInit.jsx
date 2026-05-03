@@ -30,6 +30,13 @@ const OPERATORS = [
   { value: 'contains', label: 'contains' },
 ]
 
+const SOURCES = [
+  { id: 'airtable', label: 'Airtable',   live: true  },
+  { id: 'jira',     label: 'JIRA',       live: false },
+  { id: 'shotgrid', label: 'ShotGrid',   live: false },
+  { id: 'csv',      label: 'CSV Import', live: false },
+]
+
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -80,6 +87,36 @@ function valueInputForField(field, value, onChange) {
       placeholder="value"
       className="flex-1 bg-surface-3 border border-border rounded px-2 py-1 text-sm text-foreground outline-none focus:border-accent"
     />
+  )
+}
+
+
+// ── Step 0: Choose source ─────────────────────────────────────────────────────
+
+function StepSelectSource({ onSelect }) {
+  return (
+    <div className="flex flex-col gap-5">
+      <p className="text-muted text-sm">
+        Choose the tool you want to connect as your project data source.
+      </p>
+      <div className="grid grid-cols-2 gap-3">
+        {SOURCES.map(src => (
+          <button
+            key={src.id}
+            onClick={src.live ? () => onSelect(src.id) : undefined}
+            disabled={!src.live}
+            className={`flex flex-col items-center justify-center gap-2 px-4 py-8 rounded-xl border text-sm font-medium transition-colors ${
+              src.live
+                ? 'border-border bg-surface-2 text-foreground hover:border-accent/60 hover:bg-surface-3 cursor-pointer'
+                : 'border-border bg-surface-2 text-foreground opacity-40 cursor-not-allowed'
+            }`}
+          >
+            <span>{src.label}</span>
+            {!src.live && <span className="text-xs font-normal text-muted">Coming soon</span>}
+          </button>
+        ))}
+      </div>
+    </div>
   )
 }
 
@@ -1222,6 +1259,7 @@ function StepDone({ recordCount, isReset }) {
 // ── Wizard shell ──────────────────────────────────────────────────────────────
 
 const STEP_TITLES = [
+  'Choose source',
   'Connect source',
   'Discover schema',
   'Define assets',
@@ -1237,7 +1275,7 @@ export default function ProjectInit() {
   const [searchParams]  = useSearchParams()
   const isReset = searchParams.get('reset') === '1'
 
-  const [step, setStep]               = useState(1)
+  const [step, setStep]               = useState(isReset ? 2 : 1)
   const [tables, setTables]           = useState([])
   const [definitions, setDefinitions] = useState({ product: {}, asset: {}, task: {}, item_type: {} })
   const [sourceFields, setSourceFields] = useState([])
@@ -1265,39 +1303,42 @@ export default function ProjectInit() {
         <StepDots
           current={step}
           total={TOTAL_STEPS}
-          onNavigate={step < 7 ? setStep : undefined}
+          onNavigate={step < 8 ? setStep : undefined}
         />
 
         <div className="bg-surface border border-border rounded-xl p-6">
           {step === 1 && (
-            <StepCredentials onSuccess={() => setStep(2)} />
+            <StepSelectSource onSelect={() => setStep(2)} />
           )}
           {step === 2 && (
-            <StepDiscover
-              onSuccess={t => { setTables(t); setSourceFields(t[0]?.fields || []); setStep(3) }}
-              onBack={() => setStep(1)}
-            />
+            <StepCredentials onSuccess={() => setStep(3)} />
           )}
           {step === 3 && (
+            <StepDiscover
+              onSuccess={t => { setTables(t); setSourceFields(t[0]?.fields || []); setStep(4) }}
+              onBack={() => setStep(2)}
+            />
+          )}
+          {step === 4 && (
             <StepDefineAsset
               tables={tables}
               initialDefs={definitions}
               onSuccess={(assetDef, suggestions) => {
                 setDefinitions(prev => ({ ...prev, asset: assetDef, ...suggestions }))
-                setStep(4)
+                setStep(5)
               }}
-              onBack={() => setStep(2)}
-            />
-          )}
-          {step === 4 && (
-            <StepDefineEntities
-              tables={tables}
-              initialDefs={definitions}
-              onSuccess={defs => { setDefinitions(defs); setStep(5) }}
               onBack={() => setStep(3)}
             />
           )}
           {step === 5 && (
+            <StepDefineEntities
+              tables={tables}
+              initialDefs={definitions}
+              onSuccess={defs => { setDefinitions(defs); setStep(6) }}
+              onBack={() => setStep(4)}
+            />
+          )}
+          {step === 6 && (
             <StepMapFields
               sourceFields={getAssetFields()}
               presetSlotFields={Object.fromEntries(
@@ -1311,26 +1352,26 @@ export default function ProjectInit() {
                   return []
                 })
               )}
-              onSuccess={() => setStep(6)}
-              onBack={() => setStep(4)}
-            />
-          )}
-          {step === 6 && (
-            <StepReview
-              definitions={definitions}
-              isReset={isReset}
-              onStart={id => { setJobId(id); setStep(7) }}
+              onSuccess={() => setStep(7)}
               onBack={() => setStep(5)}
             />
           )}
           {step === 7 && (
-            <StepProgress
-              jobId={jobId}
-              onComplete={count => { setRecordCount(count); setStep(8) }}
+            <StepReview
+              definitions={definitions}
+              isReset={isReset}
+              onStart={id => { setJobId(id); setStep(8) }}
               onBack={() => setStep(6)}
             />
           )}
           {step === 8 && (
+            <StepProgress
+              jobId={jobId}
+              onComplete={count => { setRecordCount(count); setStep(9) }}
+              onBack={() => setStep(7)}
+            />
+          )}
+          {step === 9 && (
             <StepDone recordCount={recordCount} isReset={isReset} />
           )}
         </div>
