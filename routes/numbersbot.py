@@ -39,16 +39,25 @@ def _fmt_meta(v) -> str | None:
 
 async def _build_context(user: CurrentUser) -> str:
     owner_type = user.role
-    owner_id   = user.studio_id if user.role == "studio" else user.vendor_id
+    if owner_type not in ("studio", "vendor"):
+        return "Unrecognised account role — cannot load asset data."
+
+    owner_id = user.studio_id if owner_type == "studio" else user.vendor_id
     if not owner_id:
         return "No studio or vendor linked to this account — cannot load asset data."
 
     asset_r, fm_r, tasks_r = await _parallel_fetch(owner_type, owner_id)
 
-    assets   = asset_r.json() if asset_r.is_success else []
-    fm_rows  = fm_r.json() if fm_r.is_success else []
-    mappings = (fm_rows[0].get("mappings") or []) if fm_rows else []
-    tasks    = tasks_r.json() if tasks_r and tasks_r.is_success else []
+    raw_assets = asset_r.json() if asset_r.is_success else []
+    fm_rows    = fm_r.json() if fm_r.is_success else []
+    mappings   = (fm_rows[0].get("mappings") or []) if fm_rows else []
+    tasks      = tasks_r.json() if tasks_r and tasks_r.is_success else []
+
+    # Hard ownership assertion — discard any row that doesn't belong to this user.
+    assets = [
+        a for a in raw_assets
+        if a.get("owner_type") == owner_type and a.get("owner_id") == owner_id
+    ]
 
     if not assets:
         return "No assets have been synced yet. Run a sync from Settings first."
@@ -57,8 +66,9 @@ async def _build_context(user: CurrentUser) -> str:
     item_types = Counter(a.get("item_type") or "—" for a in assets)
     statuses   = Counter(a.get("status") or "—" for a in assets)
 
+    owner_label = "STUDIO" if owner_type == "studio" else "VENDOR"
     lines = [
-        f"STUDIO ASSET INVENTORY: {len(assets)} total assets",
+        f"{owner_label} ASSET INVENTORY: {len(assets)} total assets",
         "",
         "BREAKDOWN BY PRODUCT:",
         *[f"  {p}: {c}" for p, c in products.most_common()],
@@ -135,7 +145,7 @@ async def _parallel_fetch(owner_type: str, owner_id: str):
     coros = [
         db_client.get(
             _url("/rest/v1/replicated_assets"),
-            params={**params_base, "select": f"{_SLOTS},meta", "order": "product.asc,name.asc"},
+            params={**params_base, "select": f"owner_type,owner_id,{_SLOTS},meta", "order": "product.asc,name.asc"},
             headers=_headers({"Range": "0-999"}),
         ),
         db_client.get(
@@ -169,6 +179,7 @@ async def chat(body: ChatRequest, user: CurrentUser = Depends(get_current_user))
 
     client = anthropic.AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
 
+    owner_description = "studio" if user.role == "studio" else "vendor"
     response = await client.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=1024,
@@ -178,7 +189,7 @@ async def chat(body: ChatRequest, user: CurrentUser = Depends(get_current_user))
                 "text": (
                     "You are NumberBot, a production intelligence assistant built into ArtHound — "
                     "an asset management platform for production studios.\n\n"
-                    "You have direct access to this studio's live asset data from the ArtHound database. "
+                    f"You have direct access to this {owner_description}'s live asset data from the ArtHound database. "
                     "Answer questions about assets, products, priorities, statuses, milestone dates, and schedules "
                     "concisely and accurately. You can count, filter, aggregate, and reason about the data. "
                     "If a question requires information not in the data (e.g. detailed task breakdowns), "

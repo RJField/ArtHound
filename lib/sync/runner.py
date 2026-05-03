@@ -18,6 +18,7 @@ from lib.sync.normalizer import (
     default_mappings_from_schema,
     normalize_asset,
     normalize_reference,
+    normalize_task,
 )
 from lib.sync.writer import (
     delete_orphaned_records,
@@ -26,6 +27,7 @@ from lib.sync.writer import (
     upsert_assets,
     upsert_item_types,
     upsert_products,
+    upsert_tasks,
 )
 
 log = logging.getLogger(__name__)
@@ -82,7 +84,7 @@ async def _get_entity_definitions(owner_type: str, owner_id: str, source_type: s
             "owner_type":  f"eq.{owner_type}",
             "owner_id":    f"eq.{owner_id}",
             "source_type": f"eq.{source_type}",
-            "select":      "entity_type,table_id,table_name,filters,rel_field_id,rel_direction",
+            "select":      "entity_type,table_id,table_name,filters,parent_entity_type,rel_field_id,rel_field_name,rel_direction",
         },
         headers=_headers(),
     )
@@ -222,6 +224,17 @@ async def run_sync(
             else:
                 raw_item_types = []
 
+            # Tasks: always fetch in full — no delta support yet; task counts are
+            # typically small and full resolution is simpler than partial resolvers.
+            if task_def:
+                formula = build_filter_formula(task_def.get("filters") or [])
+                raw_tasks = await connector.fetch_entity(
+                    table_id=task_def["table_id"],
+                    filter_formula=formula,
+                )
+            else:
+                raw_tasks = []
+
             # ── Normalize reference entities first ────────────────────────────
             # Reference tables are always fetched in full and normalized before
             # assets so their IDs are available for linked record resolution.
@@ -262,6 +275,13 @@ async def run_sync(
             await upsert_products(owner_type, owner_id, source_type, norm_products)
             await upsert_item_types(owner_type, owner_id, source_type, norm_item_types)
 
+            task_rel_field = task_def.get("rel_field_name") if task_def else None
+            norm_tasks = [
+                normalize_task(r, rel_field_name=task_rel_field, asset_canonical_map=canonical_map)
+                for r in raw_tasks
+            ]
+            await upsert_tasks(owner_type, owner_id, source_type, norm_tasks)
+
             # ── Deletion detection ────────────────────────────────────────────
             # Assets: only on full sync (delta fetch is incomplete by design).
             # Products + item_types: always — they are always fetched in full.
@@ -270,6 +290,7 @@ async def run_sync(
                 fetched_asset_ids={r["source_record_id"] for r in norm_assets},
                 fetched_product_ids={r["source_record_id"] for r in norm_products},
                 fetched_item_type_ids={r["source_record_id"] for r in norm_item_types},
+                fetched_task_ids={r["source_record_id"] for r in norm_tasks} if not is_delta else None,
                 full_sync=not is_delta,
             )
             if orphaned:

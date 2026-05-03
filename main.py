@@ -28,6 +28,7 @@ from routes.sync import router as sync_router, webhook_router as sync_webhook_ro
 from routes.user import router as user_router
 from routes.init import router as init_router
 from routes.auth import router as auth_router
+from routes.tasks import router as tasks_router
 
 log = logging.getLogger(__name__)
 
@@ -46,7 +47,7 @@ async def _poll_loop() -> None:
         try:
             r = await db_client.get(
                 _url("/rest/v1/source_credentials"),
-                params={"select": "owner_type,owner_id,source_type"},
+                params={"select": "owner_type,owner_id,source_type", "owner_type": "eq.studio"},
                 headers=_headers(),
             )
             if r.is_success:
@@ -104,6 +105,7 @@ app.include_router(numbersbot_router,     prefix="/api/numbersbot",  dependencie
 app.include_router(sync_router,           prefix="/api/sync",        dependencies=_auth)
 app.include_router(user_router,           prefix="/api/user",        dependencies=_auth)
 app.include_router(init_router,           prefix="/api/init",        dependencies=_auth)
+app.include_router(tasks_router,          prefix="/api/tasks",        dependencies=_auth)
 # Webhook routes are public — protected by WEBHOOK_SECRET, not JWT
 app.include_router(sync_webhook_router,   prefix="/api/sync")
 # Auth routes are public — no JWT required

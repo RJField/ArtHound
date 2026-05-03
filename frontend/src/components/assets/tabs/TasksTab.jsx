@@ -108,8 +108,14 @@ async function fetchTaskDetail(taskId, taskName) {
 
 // ── Tab ───────────────────────────────────────────────────────────────────────
 
+const SOURCES = [
+  { id: 'source',   label: 'Source'   },
+  { id: 'arthound', label: 'Generated' },
+  { id: 'airtable', label: 'Airtable' },
+]
+
 export default function TasksTab({ asset, taskRefreshKey }) {
-  const [source,    setSource]    = useState('arthound')
+  const [source,    setSource]    = useState('source')
   const [view,      setView]      = useState('list')
   const [tasks,     setTasks]     = useState(null)
   const [loading,   setLoading]   = useState(false)
@@ -122,7 +128,12 @@ export default function TasksTab({ asset, taskRefreshKey }) {
 
     async function load() {
       try {
-        if (source === 'arthound') {
+        if (source === 'source') {
+          const data = await apiFetch(
+            `/api/tasks?asset_source_id=${encodeURIComponent(asset.id)}`
+          )
+          setTasks(data)
+        } else if (source === 'arthound') {
           if (!asset.canonicalId) { setTasks([]); return }
           const data = await apiFetch(
             `/api/schedule/tasks-local?canonicalAssetId=${encodeURIComponent(asset.canonicalId)}`
@@ -145,7 +156,7 @@ export default function TasksTab({ asset, taskRefreshKey }) {
   }, [asset?.id, source, taskRefreshKey])
 
   async function openTaskDetail(taskId, taskName) {
-    if (source === 'arthound') return
+    if (source !== 'airtable') return
     setTaskModal({ title: taskName, fields: [], loading: true })
     try {
       setTaskModal(await fetchTaskDetail(taskId, taskName))
@@ -155,17 +166,23 @@ export default function TasksTab({ asset, taskRefreshKey }) {
     }
   }
 
+  function emptyMessage() {
+    if (source === 'source') return 'No source tasks synced for this asset.'
+    if (source === 'arthound' && !asset?.canonicalId) return 'Asset not yet synced to ArtHound.'
+    return 'No tasks yet — use Generate Work to create them.'
+  }
+
   return (
     <div className="flex flex-col h-full overflow-hidden">
 
       {/* Controls */}
       <div className="flex items-center gap-2 px-3 py-2 border-b border-border shrink-0">
         <div className="flex rounded-md overflow-hidden border border-border text-xs">
-          {['arthound', 'airtable'].map(s => (
-            <button key={s} onClick={() => setSource(s)} className={cn(
-              'px-2 py-1 cursor-pointer transition-colors capitalize',
-              source === s ? 'bg-surface-2 text-foreground' : 'text-muted hover:text-foreground'
-            )}>{s}</button>
+          {SOURCES.map(s => (
+            <button key={s.id} onClick={() => setSource(s.id)} className={cn(
+              'px-2 py-1 cursor-pointer transition-colors',
+              source === s.id ? 'bg-surface-2 text-foreground' : 'text-muted hover:text-foreground'
+            )}>{s.label}</button>
           ))}
         </div>
         <div className="flex rounded-md overflow-hidden border border-border text-xs ml-auto">
@@ -183,16 +200,30 @@ export default function TasksTab({ asset, taskRefreshKey }) {
         {loading && <p className="text-muted text-xs">Loading…</p>}
 
         {!loading && tasks !== null && tasks.length === 0 && (
-          <p className="text-muted text-xs">
-            {source === 'arthound' && !asset?.canonicalId
-              ? 'Asset not yet synced to ArtHound.'
-              : 'No tasks yet — use Generate Work to create them.'}
-          </p>
+          <p className="text-muted text-xs">{emptyMessage()}</p>
         )}
 
-        {tasks?.length > 0 && view === 'timeline' && <TasksTimeline tasks={tasks} />}
+        {tasks?.length > 0 && view === 'timeline' && source !== 'source' && (
+          <TasksTimeline tasks={tasks} />
+        )}
 
-        {tasks?.length > 0 && view === 'list' && (
+        {tasks?.length > 0 && view === 'list' && source === 'source' && (
+          <div className="flex flex-col gap-1">
+            {tasks.map(t => (
+              <div key={t.id} className="flex items-start justify-between gap-4 px-3 py-2 rounded-md">
+                <div className="min-w-0 flex-1">
+                  <p className="text-foreground text-xs truncate">{t.name || '—'}</p>
+                  {t.status && <p className="text-muted text-xs">{t.status}</p>}
+                </div>
+                <span className="text-muted text-xs shrink-0">
+                  {t.estimate != null ? `${t.estimate}` : '—'}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {tasks?.length > 0 && view === 'list' && source !== 'source' && (
           <div className="flex flex-col gap-1">
             {tasks.map(t => (
               <div
@@ -200,7 +231,7 @@ export default function TasksTab({ asset, taskRefreshKey }) {
                 onClick={() => openTaskDetail(t.id, t.task)}
                 className={cn(
                   'flex items-center justify-between gap-4 px-3 py-2 rounded-md',
-                  source !== 'arthound' && 'cursor-pointer hover:bg-surface-2 transition-colors'
+                  source === 'airtable' && 'cursor-pointer hover:bg-surface-2 transition-colors'
                 )}
               >
                 <div className="min-w-0">

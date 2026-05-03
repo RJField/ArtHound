@@ -21,7 +21,7 @@ import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 
-from lib.auth import CurrentUser, get_current_user
+from lib.auth import CurrentUser, get_current_user, require_studio
 from lib.crypto import decrypt_credentials, encrypt_credentials
 from lib.db import db_client, _url, _headers
 from lib.sync.connectors.airtable import AirtableConnector, build_filter_formula
@@ -493,7 +493,7 @@ class StartBody(BaseModel):
 async def start_init(
     body: StartBody,
     background_tasks: BackgroundTasks,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(require_studio),
 ):
     """Gate-check credentials + mappings, then enqueue an init sync job."""
     owner_type, owner_id = _owner(user)
@@ -561,7 +561,7 @@ class ResetBody(BaseModel):
 async def reset_project(
     body: ResetBody,
     background_tasks: BackgroundTasks,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(require_studio),
 ):
     """Wipe replicated data, soft-delete tasks, clear cursor, then re-enqueue."""
     owner_type, owner_id = _owner(user)

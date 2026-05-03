@@ -124,6 +124,36 @@ async def upsert_item_types(
     await _upsert("replicated_item_types", "owner_type,owner_id,source_type,source_record_id", rows)
 
 
+async def upsert_tasks(
+    owner_type: str,
+    owner_id: str,
+    source_type: str,
+    records: list[dict],
+) -> None:
+    if not records:
+        return
+    now = _now()
+    rows = [
+        {
+            "owner_type":              owner_type,
+            "owner_id":                owner_id,
+            "source_type":             source_type,
+            "source_record_id":        r["source_record_id"],
+            "source_last_modified_at": r.get("source_last_modified_at"),
+            "source_hash":             r.get("source_hash"),
+            "source_asset_record_id":  r.get("source_asset_record_id"),
+            "canonical_asset_id":      r.get("canonical_asset_id"),
+            "name":                    r.get("name"),
+            "status":                  r.get("status"),
+            "estimate":                r.get("estimate"),
+            "meta":                    r.get("meta", {}),
+            "synced_at":               now,
+        }
+        for r in records
+    ]
+    await _upsert("replicated_tasks", "owner_type,owner_id,source_type,source_record_id", rows)
+
+
 async def delete_orphaned_records(
     owner_type: str,
     owner_id: str,
@@ -132,6 +162,7 @@ async def delete_orphaned_records(
     fetched_product_ids: set[str],
     fetched_item_type_ids: set[str],
     full_sync: bool,
+    fetched_task_ids: set[str] | None = None,
 ) -> int:
     """
     Delete rows from replicated tables whose source_record_id is no longer
@@ -148,6 +179,8 @@ async def delete_orphaned_records(
     checks: list[tuple[str, set[str]]] = []
     if full_sync:
         checks.append(("replicated_assets", fetched_asset_ids))
+        if fetched_task_ids is not None:
+            checks.append(("replicated_tasks", fetched_task_ids))
     checks.append(("replicated_products", fetched_product_ids))
     checks.append(("replicated_item_types", fetched_item_type_ids))
 

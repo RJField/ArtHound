@@ -619,10 +619,14 @@ function StepDefineAsset({ tables, initialDefs, onSuccess, onBack }) {
 
 // ── Step 4: Define other entities ─────────────────────────────────────────────
 
+const PARENT_ENTITIES = OTHER_ENTITIES.filter(e => e.type !== 'task')
+const CHILD_ENTITIES  = OTHER_ENTITIES.filter(e => e.type === 'task')
+
 function StepDefineEntities({ tables, initialDefs, onSuccess, onBack }) {
   const [definitions, setDefinitions] = useState(
     { product: {}, asset: {}, task: {}, item_type: {}, ...initialDefs }
   )
+  const [taskSkipped, setTaskSkipped] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError]   = useState(null)
 
@@ -649,17 +653,19 @@ function StepDefineEntities({ tables, initialDefs, onSuccess, onBack }) {
     setDefinitions(prev => ({ ...prev, [type]: def }))
   }
 
-  const allComplete = OTHER_ENTITIES.every(e => {
+  const parentComplete = PARENT_ENTITIES.every(e => {
     if (e.optional) return true
     const def = definitions[e.type] || {}
     return def.mode === 'select_field' ? !!def.select_field_id : !!def.table_id
   })
+  const taskComplete = taskSkipped || !!(definitions.task?.table_id)
+  const allComplete  = parentComplete && taskComplete
 
   async function save() {
     setSaving(true)
     setError(null)
     try {
-      for (const entity of OTHER_ENTITIES) {
+      for (const entity of PARENT_ENTITIES) {
         const def = definitions[entity.type]
         if (def?.mode === 'select_field') continue
         if (!def?.table_id) continue
@@ -677,6 +683,24 @@ function StepDefineEntities({ tables, initialDefs, onSuccess, onBack }) {
           }),
         })
       }
+      if (!taskSkipped) {
+        const def = definitions.task
+        if (def?.table_id) {
+          await apiFetch('/api/init/entity-definitions', {
+            method: 'PUT',
+            body: JSON.stringify({
+              source_type:    SOURCE_TYPE,
+              entity_type:    'task',
+              table_id:       def.table_id,
+              table_name:     def.table_name,
+              filters:        (def.filters || []).filter(f => f.field_id && f.value),
+              rel_field_id:   def.rel_field_id || null,
+              rel_field_name: def.rel_field_name || null,
+              rel_direction:  def.rel_direction || null,
+            }),
+          })
+        }
+      }
       onSuccess(definitions)
     } catch (e) {
       setError(e.message)
@@ -685,28 +709,76 @@ function StepDefineEntities({ tables, initialDefs, onSuccess, onBack }) {
     }
   }
 
+  const assetTableName = definitions.asset?.table_name || 'Asset'
+
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-5">
       <p className="text-muted text-sm">
         {hasSuggestions
           ? 'We\'ve pre-filled suggestions based on your asset table — review and adjust as needed.'
-          : 'Define how products, tasks, and item types connect to your assets.'}
+          : 'Define what groups your assets and what work items live under them.'}
       </p>
-      {OTHER_ENTITIES.map(entity => (
-        <EntityPanel
-          key={entity.type}
-          entity={entity}
-          tables={tables}
-          definitions={definitions}
-          onChange={updateDef}
-        />
-      ))}
+
+      {/* Hierarchy visualizer */}
+      <div className="flex items-center gap-2 text-xs text-muted px-1">
+        <span>Parent</span>
+        <span className="text-border">↓</span>
+        <span className="text-foreground font-medium px-1.5 py-0.5 rounded bg-surface-2 border border-border">{assetTableName}</span>
+        <span className="text-border">↓</span>
+        <span>Child</span>
+      </div>
+
+      {/* Parent-level entities */}
+      <div className="flex flex-col gap-3">
+        <p className="text-xs text-muted uppercase tracking-wide">Parent level</p>
+        {PARENT_ENTITIES.map(entity => (
+          <EntityPanel
+            key={entity.type}
+            entity={entity}
+            tables={tables}
+            definitions={definitions}
+            onChange={updateDef}
+          />
+        ))}
+      </div>
+
+      {/* Child-level entities */}
+      <div className="flex flex-col gap-3">
+        <div className="flex items-center justify-between">
+          <p className="text-xs text-muted uppercase tracking-wide">Child level</p>
+          <label className="flex items-center gap-1.5 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={taskSkipped}
+              onChange={e => setTaskSkipped(e.target.checked)}
+              className="accent-accent"
+            />
+            <span className="text-xs text-muted">No tasks in source</span>
+          </label>
+        </div>
+        {taskSkipped ? (
+          <p className="text-muted text-xs px-1">
+            Tasks skipped — ArtHound-generated tasks will still work.
+          </p>
+        ) : (
+          CHILD_ENTITIES.map(entity => (
+            <EntityPanel
+              key={entity.type}
+              entity={entity}
+              tables={tables}
+              definitions={definitions}
+              onChange={updateDef}
+            />
+          ))
+        )}
+      </div>
+
       {error && <p className="text-error text-sm">{error}</p>}
       <div className="flex items-center justify-between pt-1">
         <button onClick={onBack} className="px-4 py-2 rounded-md bg-surface-2 text-foreground text-sm font-medium hover:bg-surface-3 transition-colors cursor-pointer">Back</button>
         <div className="flex items-center gap-3">
           <p className="text-muted text-xs">
-            {allComplete ? 'All entities defined' : 'Define required entities to continue'}
+            {allComplete ? 'Structure defined' : 'Define required entities to continue'}
           </p>
           <button
             onClick={save}
