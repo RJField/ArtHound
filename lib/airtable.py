@@ -29,8 +29,15 @@ def _base_id() -> str:
     return base_id
 
 
-async def select_all(table_name: str, options: dict = {}) -> list:
-    base_id = _base_id()
+async def select_all(
+    table_name: str,
+    options: dict = {},
+    *,
+    token: str | None = None,
+    base_id: str | None = None,
+) -> list:
+    resolved_base_id = base_id or _base_id()
+    resolved_headers = {"Authorization": f"Bearer {token}"} if token else _headers()
     table_enc = quote(table_name, safe="")
     records = []
     offset = None
@@ -56,8 +63,8 @@ async def select_all(table_name: str, options: dict = {}) -> list:
             params.append(("offset", offset))
 
         r = await http_client.get(
-            f"{BASE_URL}/{base_id}/{table_enc}",
-            headers=_headers(),
+            f"{BASE_URL}/{resolved_base_id}/{table_enc}",
+            headers=resolved_headers,
             params=params,
         )
         r.raise_for_status()

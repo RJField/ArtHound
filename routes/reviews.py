@@ -80,7 +80,7 @@ async def submit_review(body: ReviewSubmitBody, _: CurrentUser = Depends(require
 
 @router.get("")
 @router.get("/")
-async def get_reviews():
+async def get_reviews(_user: CurrentUser = Depends(require_studio)):
     # Two parallel calls: main (JSON) preserves types for linked-record IDs and
     # ISO dates; display (string) resolves lookup-of-linked-record fields to
     # their human-readable primary field values instead of raw record IDs.
@@ -144,7 +144,7 @@ async def get_reviews():
 
 
 @router.get("/status-options")
-async def get_status_options():
+async def get_status_options(_user: CurrentUser = Depends(require_studio)):
     token = os.environ.get("AIRTABLE_TOKEN", "")
     base_id = os.environ.get("AIRTABLE_BASE_ID", "")
     r = await http_client.get(
@@ -188,7 +188,7 @@ async def update_review_status(
 
 
 @router.get("/{review_id}/comments")
-async def get_comments(review_id: str):
+async def get_comments(review_id: str, _user: CurrentUser = Depends(require_studio)):
     r = await http_client.get(_comments_url(review_id), headers=_at_headers())
     if not r.is_success:
         msg = r.json().get("error", {}).get("message", f"Airtable returned {r.status_code}")

@@ -166,7 +166,7 @@ async def update_step(step_id: str, body: StepBody, user: CurrentUser = Depends(
 
     await db_client.patch(
         _url("/rest/v1/workflow_steps"),
-        params={"id": f"eq.{step_id}"},
+        params={"id": f"eq.{step_id}", "studio_id": f"eq.{studio_id}"},
         headers=_headers(),
         json={
             "name": body.name.strip(),
@@ -208,7 +208,7 @@ async def delete_step(step_id: str, user: CurrentUser = Depends(require_studio))
 
     await db_client.delete(
         _url("/rest/v1/workflow_steps"),
-        params={"id": f"eq.{step_id}"},
+        params={"id": f"eq.{step_id}", "studio_id": f"eq.{studio_id}"},
         headers=_headers(),
     )
     return {"ok": True}

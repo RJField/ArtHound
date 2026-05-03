@@ -17,7 +17,9 @@
       "Bash(python -c \"from routes.reviews import router; print\\([r.path for r in router.routes]\\)\")",
       "Bash(grep -E '\\\\.\\(js|json\\)$|^d')",
       "WebSearch",
-      "WebFetch(domain:adsknews.autodesk.com)"
+      "WebFetch(domain:adsknews.autodesk.com)",
+      "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\field\\\\Documents\\\\ArtHound\\\\ArtHound\" -Directory)",
+      "Bash(Select-Object Name)"
     ]
   }
 }

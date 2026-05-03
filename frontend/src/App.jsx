@@ -38,10 +38,17 @@ function AuthGuard() {
 // Redirect studio users who haven't completed init to the wizard.
 // Vendors are not gated — they don't manage a source tool.
 function InitGuard() {
-  const { session, loading, profile, role, initialized } = useAuth()
+  const { session, loading, profile, profileLoading, role, initialized } = useAuth()
 
   if (loading || !session) return null
-  if (!profile) return null  // profile still loading
+
+  if (!profile) {
+    return (
+      <div className="flex items-center justify-center flex-1 py-24">
+        <p className="text-muted text-sm">{profileLoading ? 'Loading…' : 'Unable to load profile — please refresh.'}</p>
+      </div>
+    )
+  }
 
   if (role === 'studio' && !initialized) {
     return <Navigate to="/init" replace />

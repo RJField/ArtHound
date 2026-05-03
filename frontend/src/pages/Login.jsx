@@ -12,9 +12,9 @@ export default function Login() {
   const [busy, setBusy]           = useState(false)
   const [signupOpen, setSignupOpen] = useState(false)
 
-  // Already logged in — redirect to appropriate home
+  // Already logged in — let InitGuard decide final destination once profile loads
   if (!loading && session) {
-    return <Navigate to={role === 'vendor' ? '/vendor-home' : '/home'} replace />
+    return <Navigate to="/" replace />
   }
 
   async function handleLogin(e) {

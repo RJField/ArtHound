@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useLayoutEffect } from 'react'
+import { toast } from 'sonner'
 import { apiFetch } from '../lib/api'
 import { cn } from '../lib/utils'
 import EstimateWizardModal from '../components/EstimateWizardModal'
@@ -157,6 +158,19 @@ export default function Estimates() {
     setReloadKey(k => k + 1)
   }
 
+  async function handleSetupClick() {
+    try {
+      const steps = await apiFetch('/api/workflow-steps')
+      if (!steps.length) {
+        toast.warning('No workflow steps found. Add at least one step in the Workflows page before running Setup.')
+        return
+      }
+    } catch {
+      // If the check fails, let the wizard open and surface its own errors
+    }
+    setShowWizard(true)
+  }
+
   const btn = 'px-3 py-1.5 rounded-md text-xs font-medium cursor-pointer border transition-colors'
 
   return (
@@ -165,7 +179,7 @@ export default function Estimates() {
       <div className="flex items-center gap-2 flex-wrap shrink-0">
         <h1 className="text-foreground text-sm font-semibold mr-2">Estimates</h1>
         <button
-          onClick={() => setShowWizard(true)}
+          onClick={handleSetupClick}
           className={cn(btn, 'border-accent text-accent hover:bg-accent/10')}
         >
           Setup

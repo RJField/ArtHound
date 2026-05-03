@@ -163,19 +163,41 @@ async def _fetch_item_types_map(owner_type: str, owner_id: str) -> dict:
 @router.get("/products")
 async def get_products(user: CurrentUser = Depends(get_current_user)):
     owner_type, owner_id = _owner(user)
-    r = await db_client.get(
-        _url("/rest/v1/replicated_products"),
-        params={
-            "owner_type":  f"eq.{owner_type}",
-            "owner_id":    f"eq.{owner_id}",
-            "source_type": "eq.airtable",
-            "select":      "source_record_id,name",
-            "order":       "name.asc",
-        },
-        headers=_headers(),
+
+    # Derive the product list from the distinct values of the `product` slot
+    # across all synced assets. This works for both linked-record setups (where
+    # the slot holds a display name or source_id) and flat select-based setups
+    # (where the slot holds the select option text). Join with replicated_products
+    # to resolve source_ids back to display names where available.
+    asset_r, prod_rows = await asyncio.gather(
+        db_client.get(
+            _url("/rest/v1/replicated_assets"),
+            params={
+                "owner_type":  f"eq.{owner_type}",
+                "owner_id":    f"eq.{owner_id}",
+                "source_type": "eq.airtable",
+                "select":      "product",
+                "product":     "not.is.null",
+            },
+            headers=_headers(),
+        ),
+        _fetch_ref_table(owner_type, owner_id, "replicated_products"),
     )
-    r.raise_for_status()
-    return [{"id": p["source_record_id"], "name": p["name"]} for p in r.json()]
+    asset_r.raise_for_status()
+
+    prod_name_map = {r["source_record_id"]: r["name"] for r in prod_rows if r.get("name")}
+
+    seen: set[str] = set()
+    products = []
+    for row in asset_r.json():
+        val = row.get("product")
+        if not val or val in seen:
+            continue
+        seen.add(val)
+        name = prod_name_map.get(val) or val
+        products.append({"id": val, "name": name})
+
+    return sorted(products, key=lambda p: p["name"])
 
 
 # ── Asset list ────────────────────────────────────────────────────────────────
@@ -189,6 +211,12 @@ async def get_assets(
 ):
     owner_type, owner_id = _owner(current_user)
 
+    # Fetch reference maps first — needed to resolve the product filter value.
+    (prod_id_to_name, prod_name_to_id), it_id_to_name = await asyncio.gather(
+        _fetch_products_map(owner_type, owner_id),
+        _fetch_item_types_map(owner_type, owner_id),
+    )
+
     asset_params = {
         "owner_type":  f"eq.{owner_type}",
         "owner_id":    f"eq.{owner_id}",
@@ -196,32 +224,28 @@ async def get_assets(
         "order":       "name.asc",
     }
 
-    asset_r, (prod_id_to_name, prod_name_to_id), it_id_to_name = await asyncio.gather(
-        db_client.get(_url("/rest/v1/replicated_assets"), params=asset_params, headers=_headers()),
-        _fetch_products_map(owner_type, owner_id),
-        _fetch_item_types_map(owner_type, owner_id),
+    if unassigned:
+        # product column is NULL for assets with no product link.
+        asset_params["product"] = "is.null"
+    elif productId:
+        # The product column stores either the display name or the Airtable
+        # source_id (when the product has no display name). Check both.
+        target_name = prod_id_to_name.get(productId, "")
+        if target_name and target_name != productId:
+            # Named product: match by name OR source_id (handles data from
+            # before the normalizer fix stored source_id as fallback).
+            asset_params["or"] = f"(product.eq.{target_name},product.eq.{productId})"
+        else:
+            # Blank-named product: the column stores the source_id directly.
+            asset_params["product"] = f"eq.{productId}"
+
+    asset_r = await db_client.get(
+        _url("/rest/v1/replicated_assets"),
+        params=asset_params,
+        headers=_headers(),
     )
     asset_r.raise_for_status()
     rows = asset_r.json()
-
-    if unassigned:
-        def _has_no_product(row: dict) -> bool:
-            if row.get("product"):
-                return False
-            meta_product = (row.get("meta") or {}).get("Product") or []
-            return len(meta_product) == 0
-        rows = [row for row in rows if _has_no_product(row)]
-    elif productId:
-        target_name = prod_id_to_name.get(productId)
-        def _matches_product(row: dict) -> bool:
-            if target_name and row.get("product") == target_name:
-                return True
-            for entry in (row.get("meta") or {}).get("Product") or []:
-                pid = entry.get("source_id") if isinstance(entry, dict) else entry
-                if pid == productId:
-                    return True
-            return False
-        rows = [row for row in rows if _matches_product(row)]
 
     return [_build_asset_response(r, prod_id_to_name, prod_name_to_id, it_id_to_name) for r in rows]
 

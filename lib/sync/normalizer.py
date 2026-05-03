@@ -114,11 +114,15 @@ def normalize_asset(
 
 def normalize_reference(record: RawRecord, name_field: str) -> dict:
     """Normalize a product or item-type record (simple name + meta)."""
-    name = record.fields.get(name_field) or record.fields.get("Name") or ""
+    name = (
+        record.fields.get(name_field)
+        or record.fields.get("Name")
+        or next((v for v in record.fields.values() if isinstance(v, str) and v.strip()), "")
+    )
     meta = {k: v for k, v in record.fields.items() if k != name_field and v not in (None, "", [])}
     return {
         "source_record_id": record.source_record_id,
-        "name": str(name) if name else "",
+        "name": str(name).strip() if name else "",
         "meta": meta,
     }
 
@@ -130,6 +134,16 @@ def _coerce_slot(slot: str, canonical: Any) -> object:
     """
     if canonical is None:
         return None
+
+    if slot == "product":
+        # Prefer the display name; fall back to source_id so the slot is never
+        # null for a linked asset (critical for DB-level product filtering).
+        if isinstance(canonical, list) and canonical:
+            item = canonical[0]
+            if hasattr(item, "display_name") and hasattr(item, "source_id"):
+                return item.display_name or item.source_id
+        display = _adapter.display_string(canonical)
+        return display if display else None
 
     if slot == "priority":
         if isinstance(canonical, (int, float)):

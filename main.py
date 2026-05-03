@@ -11,11 +11,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
 from fastapi.responses import FileResponse, JSONResponse
 
-from lib.airtable import http_client, find_record
+from lib.airtable import http_client
+from lib.crypto import decrypt_credentials
 from lib.db import db_client, _url, _headers
 from lib.auth import CurrentUser, get_current_user
 from lib.sync.runner import run_sync
-import config
 from routes.assets import router as assets_router
 from routes.schedule import router as schedule_router
 from routes.schema import router as schema_router
@@ -110,13 +110,16 @@ app.include_router(sync_webhook_router,   prefix="/api/sync")
 app.include_router(auth_router,           prefix="/api/auth")
 
 
-# Maps config table keys to their owner-scoped Supabase replicated tables.
-# Only tables listed here can be fetched via this endpoint — others are blocked
-# because we have no way to verify ownership for them.
 _REPLICATED_TABLE: dict[str, str] = {
     "assets":    "replicated_assets",
     "products":  "replicated_products",
     "itemTypes": "replicated_item_types",
+}
+
+_ENTITY_TYPE_MAP: dict[str, str] = {
+    "assets":    "asset",
+    "products":  "product",
+    "itemTypes": "item_type",
 }
 
 
@@ -124,15 +127,15 @@ _REPLICATED_TABLE: dict[str, str] = {
 async def get_record_by_id(
     table_key: str, record_id: str, current_user: CurrentUser = Depends(get_current_user)
 ):
-    if table_key not in config.tables:
-        raise HTTPException(status_code=404, detail=f"Unknown table: {table_key}")
     replicated = _REPLICATED_TABLE.get(table_key)
     if not replicated:
-        raise HTTPException(status_code=403, detail="Record lookup not permitted for this table")
+        raise HTTPException(status_code=404, detail=f"Unknown table: {table_key}")
+    entity_type = _ENTITY_TYPE_MAP[table_key]
     owner_type = current_user.role
     owner_id   = current_user.studio_id if current_user.role == "studio" else current_user.vendor_id
     if not owner_id:
         raise HTTPException(status_code=403, detail="No studio/vendor linked to account")
+
     ownership = await db_client.get(
         _url(f"/rest/v1/{replicated}"),
         params={
@@ -146,11 +149,46 @@ async def get_record_by_id(
     ownership.raise_for_status()
     if not ownership.json():
         raise HTTPException(status_code=404, detail="Record not found")
-    try:
-        record = await find_record(config.tables[table_key], record_id)
-    except Exception:
+
+    creds_r = await db_client.get(
+        _url("/rest/v1/source_credentials"),
+        params={
+            "owner_type":  f"eq.{owner_type}",
+            "owner_id":    f"eq.{owner_id}",
+            "source_type": "eq.airtable",
+            "select":      "credentials",
+        },
+        headers=_headers(),
+    )
+    creds_rows = creds_r.json()
+    if not creds_rows:
+        raise HTTPException(status_code=403, detail="No source credentials found")
+    creds = decrypt_credentials(creds_rows[0]["credentials"])
+
+    entity_r = await db_client.get(
+        _url("/rest/v1/source_entity_definitions"),
+        params={
+            "owner_type":  f"eq.{owner_type}",
+            "owner_id":    f"eq.{owner_id}",
+            "source_type": "eq.airtable",
+            "entity_type": f"eq.{entity_type}",
+            "select":      "table_id",
+        },
+        headers=_headers(),
+    )
+    entity_rows = entity_r.json()
+    if not entity_rows or not entity_rows[0].get("table_id"):
+        raise HTTPException(status_code=404, detail="Entity definition not found")
+    table_id = entity_rows[0]["table_id"]
+
+    r = await http_client.get(
+        f"https://api.airtable.com/v0/{creds['base_id']}/{table_id}/{record_id}",
+        headers={"Authorization": f"Bearer {creds['api_token']}"},
+    )
+    if not r.is_success:
         raise HTTPException(status_code=404, detail="Record not found")
-    return {"id": record["id"], "fields": record.get("fields", {})}
+    rec = r.json()
+    return {"id": rec["id"], "fields": rec.get("fields", {})}
 
 
 # Public endpoint — supplies Supabase bootstrap config to the frontend.

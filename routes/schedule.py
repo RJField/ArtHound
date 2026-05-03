@@ -101,7 +101,7 @@ async def get_asset_tasks_local(
 
 
 @router.get("/tasks")
-async def get_asset_tasks(assetId: str = Query(...), assetName: Optional[str] = Query(None)):
+async def get_asset_tasks(assetId: str = Query(...), assetName: Optional[str] = Query(None), _user: CurrentUser = Depends(require_studio)):
     # Airtable formulas cannot reference linked record IDs directly — {Asset}
     # returns the primary field value (name). Filter by name when available;
     # fall back to a server-side lookup if the caller didn't supply it.
@@ -131,7 +131,7 @@ async def get_asset_tasks(assetId: str = Query(...), assetName: Optional[str] = 
 
 
 @router.get("/tasks/{task_id}")
-async def get_task_detail(task_id: str):
+async def get_task_detail(task_id: str, _user: CurrentUser = Depends(require_studio)):
     record, display_records = await asyncio.gather(
         find_record(config.tables["tasks"], task_id),
         select_all(

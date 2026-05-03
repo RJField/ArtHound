@@ -48,9 +48,9 @@ async def get_or_create_canonical_ids(airtable_ids: list[str], studio_id: str | 
         headers=_headers({"Prefer": "resolution=ignore-duplicates,return=minimal"}),
     )
 
-    # Fetch all (new + pre-existing) in one query.
+    # Fetch all (new + pre-existing) in one query, scoped to this studio.
     r = await db_client.get(
-        _url(f"/rest/v1/canonical_assets?select=id,airtable_record_id&airtable_record_id=in.({ids_csv})"),
+        _url(f"/rest/v1/canonical_assets?select=id,airtable_record_id&studio_id=eq.{studio_id}&airtable_record_id=in.({ids_csv})"),
         headers=_headers(),
     )
     return {row["airtable_record_id"]: row["id"] for row in r.json()}

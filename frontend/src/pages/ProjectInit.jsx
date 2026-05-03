@@ -18,9 +18,10 @@ const ALL_SLOTS = [
 ]
 
 const ENTITIES = [
-  { type: 'product', label: 'Product',     parent: null,      desc: 'Top-level grouping (e.g. Film, Game, Season)' },
-  { type: 'asset',   label: 'Asset',       parent: 'product', desc: 'Individual work item (e.g. Character, Prop, Shot)' },
-  { type: 'task',    label: 'Task / Work', parent: 'asset',   desc: 'Unit of work attached to an asset' },
+  { type: 'product',   label: 'Product',    parent: null,      desc: 'Top-level grouping (e.g. Film, Game, Season)' },
+  { type: 'asset',     label: 'Asset',      parent: 'product', desc: 'Individual work item (e.g. Character, Prop, Shot)' },
+  { type: 'task',      label: 'Task / Work',parent: 'asset',   desc: 'Unit of work attached to an asset' },
+  { type: 'item_type', label: 'Item Type',  parent: null,      optional: true, desc: 'Lookup table for asset categories (e.g. Character, Prop, Vehicle). Skip if you use a select field instead.' },
 ]
 
 const OPERATORS = [
@@ -85,21 +86,27 @@ function valueInputForField(field, value, onChange) {
 
 // ── Step indicator ────────────────────────────────────────────────────────────
 
-function StepDots({ current, total }) {
+function StepDots({ current, total, onNavigate }) {
   return (
     <div className="flex gap-2 items-center justify-center mb-8">
-      {Array.from({ length: total }, (_, i) => (
-        <div
-          key={i}
-          className={`rounded-full transition-all ${
-            i + 1 === current
-              ? 'w-6 h-2 bg-accent'
-              : i + 1 < current
-              ? 'w-2 h-2 bg-accent/50'
-              : 'w-2 h-2 bg-border'
-          }`}
-        />
-      ))}
+      {Array.from({ length: total }, (_, i) => {
+        const step = i + 1
+        const isPast = step < current
+        const isCurrent = step === current
+        return (
+          <div
+            key={i}
+            onClick={() => isPast && onNavigate?.(step)}
+            className={`rounded-full transition-all ${
+              isCurrent
+                ? 'w-6 h-2 bg-accent'
+                : isPast
+                ? 'w-2 h-2 bg-accent/50 cursor-pointer hover:bg-accent/80'
+                : 'w-2 h-2 bg-border'
+            }`}
+          />
+        )
+      })}
     </div>
   )
 }
@@ -324,6 +331,7 @@ function EntityPanel({ entity, tables, definitions, onChange }) {
         <div>
           <p className="text-foreground text-sm font-semibold flex items-center gap-2">
             {entity.label}
+            {entity.optional && !isComplete && <span className="text-muted text-xs font-normal">(optional)</span>}
             {isComplete && <span className="text-accent text-xs">✓</span>}
           </p>
           <p className="text-muted text-xs">{entity.desc}</p>
@@ -450,7 +458,7 @@ function EntityPanel({ entity, tables, definitions, onChange }) {
 
 
 function StepHierarchy({ tables, onSuccess, onBack }) {
-  const [definitions, setDefinitions] = useState({ product: {}, asset: {}, task: {} })
+  const [definitions, setDefinitions] = useState({ product: {}, asset: {}, task: {}, item_type: {} })
   const [saving, setSaving]           = useState(false)
   const [error, setError]             = useState(null)
 
@@ -467,11 +475,7 @@ function StepHierarchy({ tables, onSuccess, onBack }) {
     setDefinitions(prev => ({ ...prev, [type]: def }))
   }
 
-  const allComplete = ENTITIES.every(e => {
-    const def = definitions[e.type]
-    if (!def?.table_id) return false
-    return true
-  })
+  const allComplete = ENTITIES.every(e => e.optional || !!definitions[e.type]?.table_id)
 
   async function save() {
     setSaving(true)
@@ -479,6 +483,7 @@ function StepHierarchy({ tables, onSuccess, onBack }) {
     try {
       for (const entity of ENTITIES) {
         const def = definitions[entity.type]
+        if (!def?.table_id) continue  // skip optional entities left unconfigured
         await apiFetch('/api/init/entity-definitions', {
           method: 'PUT',
           body: JSON.stringify({
@@ -725,7 +730,7 @@ function StepReview({ definitions, isReset, onStart, onBack }) {
 
 // ── Step 6: Progress ──────────────────────────────────────────────────────────
 
-function StepProgress({ jobId, onComplete }) {
+function StepProgress({ jobId, onComplete, onBack }) {
   const [job, setJob]     = useState(null)
   const intervalRef       = useRef(null)
 
@@ -783,7 +788,13 @@ function StepProgress({ jobId, onComplete }) {
               {job.error_log.join('\n')}
             </pre>
           )}
-          <p className="text-muted text-xs">Check your credentials and field config, then try again from step 1.</p>
+          <p className="text-muted text-xs">Check your credentials and hierarchy config, then try again.</p>
+          <button
+            onClick={onBack}
+            className="self-start px-4 py-2 rounded-md bg-surface-2 text-foreground text-sm font-medium hover:bg-surface-3 transition-colors cursor-pointer"
+          >
+            Back to review
+          </button>
         </div>
       )}
     </div>
@@ -843,7 +854,7 @@ export default function ProjectInit() {
 
   const [step, setStep]               = useState(1)
   const [tables, setTables]           = useState([])
-  const [definitions, setDefinitions] = useState({ product: {}, asset: {}, task: {} })
+  const [definitions, setDefinitions] = useState({ product: {}, asset: {}, task: {}, item_type: {} })
   const [sourceFields, setSourceFields] = useState([])
   const [jobId, setJobId]             = useState(null)
   const [recordCount, setRecordCount] = useState(0)
@@ -866,7 +877,11 @@ export default function ProjectInit() {
           <p className="text-muted text-sm">{STEP_TITLES[step - 1]}</p>
         </div>
 
-        <StepDots current={step} total={TOTAL_STEPS} />
+        <StepDots
+          current={step}
+          total={TOTAL_STEPS}
+          onNavigate={step < 6 ? setStep : undefined}
+        />
 
         <div className="bg-surface border border-border rounded-xl p-6">
           {step === 1 && (
@@ -904,6 +919,7 @@ export default function ProjectInit() {
             <StepProgress
               jobId={jobId}
               onComplete={count => { setRecordCount(count); setStep(7) }}
+              onBack={() => setStep(5)}
             />
           )}
           {step === 7 && (

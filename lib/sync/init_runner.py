@@ -96,10 +96,11 @@ async def run_init_sync(
         if not creds:
             raise ValueError(f"No credentials found for {owner_type}/{owner_id}/{source_type}")
 
-        entity_defs = await _get_entity_definitions(owner_type, owner_id, source_type)
-        asset_def   = entity_defs.get("asset")
-        product_def = entity_defs.get("product")
-        task_def    = entity_defs.get("task")
+        entity_defs   = await _get_entity_definitions(owner_type, owner_id, source_type)
+        asset_def     = entity_defs.get("asset")
+        product_def   = entity_defs.get("product")
+        item_type_def = entity_defs.get("item_type")
+        task_def      = entity_defs.get("task")
 
         async with httpx.AsyncClient(timeout=120.0) as client:
             if source_type == "airtable":
@@ -140,14 +141,14 @@ async def run_init_sync(
             else:
                 raw_products = await connector.fetch_products()
 
-            if task_def:
-                formula = build_filter_formula(task_def.get("filters") or [])
+            if item_type_def:
+                formula = build_filter_formula(item_type_def.get("filters") or [])
                 raw_item_types = await connector.fetch_entity(
-                    table_id=task_def["table_id"],
+                    table_id=item_type_def["table_id"],
                     filter_formula=formula,
                 )
             else:
-                raw_item_types = await connector.fetch_item_types()
+                raw_item_types = []
 
         norm_products = [normalize_reference(r, "Product") for r in raw_products]
         norm_item_types = [normalize_reference(r, "Item") for r in raw_item_types]

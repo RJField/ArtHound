@@ -196,33 +196,6 @@ async def discover_schema(
         },
     )
 
-    # Seed default asset field mappings from the first/configured asset table
-    import config as _config
-    from lib.sync.connector import SchemaField as SF
-    asset_table_name = _config.tables.get("assets", "")
-    asset_table = next((t for t in tables if t["name"] == asset_table_name), None)
-    asset_fields = asset_table["fields"] if asset_table else (tables[0]["fields"] if tables else [])
-
-    existing_r = await db_client.get(
-        _url("/rest/v1/source_field_mappings"),
-        params={
-            "owner_type":  f"eq.{owner_type}",
-            "owner_id":    f"eq.{owner_id}",
-            "source_type": f"eq.{source_type}",
-            "select":      "id",
-        },
-        headers=_headers(),
-    )
-    if not existing_r.json():
-        schema_objs = [
-            SF(id=f["id"], name=f["name"], type=f["type"],
-               category=f["category"], options=f.get("options") or {})
-            for f in asset_fields
-        ]
-        from lib.sync.writer import save_default_mappings
-        await save_default_mappings(owner_type, owner_id, source_type,
-                                    default_mappings_from_schema(schema_objs))
-
     return {"tables": tables, "discovered_at": discovered_at}
 
 
@@ -254,13 +227,14 @@ async def get_schema_cache(
 
 # ── 4. Entity definitions ─────────────────────────────────────────────────────
 
-EntityType   = Literal["product", "asset", "task"]
+EntityType   = Literal["product", "asset", "task", "item_type"]
 RelDirection = Literal["child_holds_link", "parent_holds_link"]
 
 _PARENT_OF: dict[str, str | None] = {
-    "product": None,
-    "asset":   "product",
-    "task":    "asset",
+    "product":   None,
+    "asset":     "product",
+    "task":      "asset",
+    "item_type": None,
 }
 
 
@@ -334,6 +308,48 @@ async def save_entity_definition(
         },
     )
     r.raise_for_status()
+
+    # When the asset table is selected, seed default field mappings from that
+    # specific table's fields (only if no mappings have been saved yet).
+    if body.entity_type == "asset":
+        existing_r = await db_client.get(
+            _url("/rest/v1/source_field_mappings"),
+            params={
+                "owner_type":  f"eq.{owner_type}",
+                "owner_id":    f"eq.{owner_id}",
+                "source_type": f"eq.{body.source_type}",
+                "select":      "id",
+            },
+            headers=_headers(),
+        )
+        if not existing_r.json():
+            cache_r = await db_client.get(
+                _url("/rest/v1/source_schema_cache"),
+                params={
+                    "owner_type":  f"eq.{owner_type}",
+                    "owner_id":    f"eq.{owner_id}",
+                    "source_type": f"eq.{body.source_type}",
+                    "select":      "fields",
+                },
+                headers=_headers(),
+            )
+            cache_rows = cache_r.json()
+            if cache_rows:
+                all_tables = cache_rows[0]["fields"]
+                table = next((t for t in all_tables if t["id"] == body.table_id), None)
+                if table:
+                    from lib.sync.connector import SchemaField as SF
+                    from lib.sync.writer import save_default_mappings
+                    schema_objs = [
+                        SF(id=f["id"], name=f["name"], type=f["type"],
+                           category=f["category"], options=f.get("options") or {})
+                        for f in table["fields"]
+                    ]
+                    await save_default_mappings(
+                        owner_type, owner_id, body.source_type,
+                        default_mappings_from_schema(schema_objs),
+                    )
+
     return {"ok": True}
 
 

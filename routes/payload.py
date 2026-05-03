@@ -132,7 +132,7 @@ async def update_template(
 
     await db_client.patch(
         _url("/rest/v1/payload_templates"),
-        params={"id": f"eq.{template_id}"},
+        params={"id": f"eq.{template_id}", "studio_id": f"eq.{user.studio_id}"},
         headers=_headers({"Prefer": "return=minimal"}),
         json={"name": body.name.strip(), "field_schema": body.field_schema, "updated_at": _now_iso()},
     )
@@ -151,7 +151,7 @@ async def delete_template(template_id: str, user: CurrentUser = Depends(require_
 
     await db_client.delete(
         _url("/rest/v1/payload_templates"),
-        params={"id": f"eq.{template_id}"},
+        params={"id": f"eq.{template_id}", "studio_id": f"eq.{user.studio_id}"},
         headers=_headers(),
     )
     return {"ok": True}
