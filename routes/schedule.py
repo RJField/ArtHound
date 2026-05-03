@@ -10,6 +10,7 @@ from lib.airtable import select_all, create_records, find_record
 from lib.auth import CurrentUser, require_studio
 from lib.db import db_client, _url, _headers
 from lib.scheduler import build_schedule
+from lib.source_creds import get_studio_airtable_creds
 import config
 
 log = logging.getLogger(__name__)
@@ -101,37 +102,102 @@ async def get_asset_tasks_local(
 
 
 @router.get("/tasks")
-async def get_asset_tasks(assetId: str = Query(...), assetName: Optional[str] = Query(None)):
-    # Airtable formulas cannot reference linked record IDs directly — {Asset}
-    # returns the primary field value (name). Filter by name when available;
-    # fall back to a server-side lookup if the caller didn't supply it.
+async def get_asset_tasks(assetId: str = Query(...), assetName: Optional[str] = Query(None), _user: CurrentUser = Depends(require_studio)):
+    try:
+        token, base_id = await get_studio_airtable_creds(_user.studio_id)
+    except HTTPException:
+        return []
+
+    entity_r = await db_client.get(
+        _url("/rest/v1/source_entity_definitions"),
+        params={
+            "owner_type":  "eq.studio",
+            "owner_id":    f"eq.{_user.studio_id}",
+            "source_type": "eq.airtable",
+            "entity_type": "eq.task",
+            "select":      "table_id,rel_field_name,"
+                           "task_name_field_name,task_estimate_field_name,"
+                           "task_start_date_field_name,task_end_date_field_name",
+        },
+        headers=_headers(),
+    )
+    entity_rows = entity_r.json()
+
+    if entity_rows:
+        # New-system path: use studio's configured field names
+        ed = entity_rows[0]
+        task_table        = ed["table_id"]
+        link_field        = ed.get("rel_field_name")
+        name_field        = ed.get("task_name_field_name")
+        estimate_field    = ed.get("task_estimate_field_name")
+        start_date_field  = ed.get("task_start_date_field_name")
+        end_date_field    = ed.get("task_end_date_field_name")
+
+        if not name_field or not link_field:
+            # Entity def exists but task field mappings not yet configured
+            return []
+
+        if not assetName:
+            asset_table = config.tables.get("assets", "Assets")
+            rec = await find_record(asset_table, assetId, token=token, base_id=base_id)
+            assetName = rec["fields"].get("Name", "")
+
+        escaped = assetName.replace('"', '\\"')
+        fields_to_fetch = [f for f in [name_field, estimate_field, start_date_field, end_date_field] if f]
+        sort_field = start_date_field or name_field
+
+        records = await select_all(
+            task_table,
+            {
+                "filterByFormula": f'{{{link_field}}} = "{escaped}"',
+                "fields": fields_to_fetch,
+                "sort": [{"field": sort_field, "direction": "asc"}],
+            },
+            token=token,
+            base_id=base_id,
+        )
+        return [
+            {
+                "id":        r["id"],
+                "task":      r["fields"].get(name_field, ""),
+                "estimate":  r["fields"].get(estimate_field) if estimate_field else None,
+                "startDate": r["fields"].get(start_date_field, "") if start_date_field else "",
+                "endDate":   r["fields"].get(end_date_field, "") if end_date_field else "",
+            }
+            for r in records
+        ]
+
+    # Legacy path: fixed schema with hardcoded field names (pre-entity-def studios)
+    task_table = config.tables.get("tasks", "Tasks")
     if not assetName:
-        from lib.airtable import find_record
-        rec = await find_record(config.tables["assets"], assetId)
+        asset_table = config.tables.get("assets", "Assets")
+        rec = await find_record(asset_table, assetId, token=token, base_id=base_id)
         assetName = rec["fields"].get("Name", "")
     escaped = assetName.replace('"', '\\"')
     records = await select_all(
-        config.tables["tasks"],
+        task_table,
         {
             "filterByFormula": f'{{Asset}} = "{escaped}"',
             "fields": ["Task", "Estimate", "Start Date", "End Date"],
             "sort": [{"field": "Start Date", "direction": "asc"}],
         },
+        token=token,
+        base_id=base_id,
     )
     return [
         {
-            "id": r["id"],
-            "task": r["fields"].get("Task", ""),
-            "estimate": r["fields"].get("Estimate"),
+            "id":        r["id"],
+            "task":      r["fields"].get("Task", ""),
+            "estimate":  r["fields"].get("Estimate"),
             "startDate": r["fields"].get("Start Date", ""),
-            "endDate": r["fields"].get("End Date", ""),
+            "endDate":   r["fields"].get("End Date", ""),
         }
         for r in records
     ]
 
 
 @router.get("/tasks/{task_id}")
-async def get_task_detail(task_id: str):
+async def get_task_detail(task_id: str, _user: CurrentUser = Depends(require_studio)):
     record, display_records = await asyncio.gather(
         find_record(config.tables["tasks"], task_id),
         select_all(
@@ -204,18 +270,20 @@ async def reconcile_tasks(user: CurrentUser = Depends(require_studio)):
 
 
 @router.post("/preview")
-async def preview_schedule(body: AssetIdBody, _: CurrentUser = Depends(require_studio)):
+async def preview_schedule(body: AssetIdBody, user: CurrentUser = Depends(require_studio)):
     if not body.assetId:
         raise HTTPException(status_code=400, detail="assetId is required")
-    return await build_schedule(body.assetId)
+    token, base_id = await get_studio_airtable_creds(user.studio_id)
+    return await build_schedule(body.assetId, user.studio_id, token, base_id)
 
 
 @router.post("/generate")
-async def generate_schedule(body: AssetIdBody, _: CurrentUser = Depends(require_studio)):
+async def generate_schedule(body: AssetIdBody, user: CurrentUser = Depends(require_studio)):
     if not body.assetId:
         raise HTTPException(status_code=400, detail="assetId is required")
 
-    result = await build_schedule(body.assetId)
+    token, base_id = await get_studio_airtable_creds(user.studio_id)
+    result = await build_schedule(body.assetId, user.studio_id, token, base_id)
 
     records = [
         {
@@ -229,18 +297,20 @@ async def generate_schedule(body: AssetIdBody, _: CurrentUser = Depends(require_
         for task in result["tasks"]
     ]
 
-    created = await create_records(config.tables["tasks"], records)
+    created = await create_records(config.tables["tasks"], records, token=token, base_id=base_id)
     await _write_task_snapshots(result, created)
     return {**result, "created": len(created)}
 
 
 @router.post("/generate-bulk")
-async def generate_bulk(body: AssetIdsBody, _: CurrentUser = Depends(require_studio)):
+async def generate_bulk(body: AssetIdsBody, user: CurrentUser = Depends(require_studio)):
     if not body.assetIds:
         raise HTTPException(status_code=400, detail="assetIds array is required")
 
+    token, base_id = await get_studio_airtable_creds(user.studio_id)
     results = await asyncio.gather(
-        *[build_schedule(aid) for aid in body.assetIds], return_exceptions=True
+        *[build_schedule(aid, user.studio_id, token, base_id) for aid in body.assetIds],
+        return_exceptions=True,
     )
 
     all_records = []
@@ -267,7 +337,7 @@ async def generate_bulk(body: AssetIdsBody, _: CurrentUser = Depends(require_stu
         if not isinstance(result, Exception):
             all_warnings.extend(result.get("warnings", []))
 
-    created = await create_records(config.tables["tasks"], all_records) if all_records else []
+    created = await create_records(config.tables["tasks"], all_records, token=token, base_id=base_id) if all_records else []
 
     # Write snapshots: slice `created` back per result using task counts as boundaries.
     if created:

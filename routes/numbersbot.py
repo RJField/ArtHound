@@ -39,15 +39,25 @@ def _fmt_meta(v) -> str | None:
 
 async def _build_context(user: CurrentUser) -> str:
     owner_type = user.role
-    owner_id   = user.studio_id if user.role == "studio" else user.vendor_id
+    if owner_type not in ("studio", "vendor"):
+        return "Unrecognised account role — cannot load asset data."
+
+    owner_id = user.studio_id if owner_type == "studio" else user.vendor_id
     if not owner_id:
         return "No studio or vendor linked to this account — cannot load asset data."
 
-    asset_r, fm_r = await _parallel_fetch(owner_type, owner_id)
+    asset_r, fm_r, tasks_r = await _parallel_fetch(owner_type, owner_id)
 
-    assets   = asset_r.json() if asset_r.is_success else []
-    fm_rows  = fm_r.json() if fm_r.is_success else []
-    mappings = (fm_rows[0].get("mappings") or []) if fm_rows else []
+    raw_assets = asset_r.json() if asset_r.is_success else []
+    fm_rows    = fm_r.json() if fm_r.is_success else []
+    mappings   = (fm_rows[0].get("mappings") or []) if fm_rows else []
+    tasks      = tasks_r.json() if tasks_r and tasks_r.is_success else []
+
+    # Hard ownership assertion — discard any row that doesn't belong to this user.
+    assets = [
+        a for a in raw_assets
+        if a.get("owner_type") == owner_type and a.get("owner_id") == owner_id
+    ]
 
     if not assets:
         return "No assets have been synced yet. Run a sync from Settings first."
@@ -56,8 +66,9 @@ async def _build_context(user: CurrentUser) -> str:
     item_types = Counter(a.get("item_type") or "—" for a in assets)
     statuses   = Counter(a.get("status") or "—" for a in assets)
 
+    owner_label = "STUDIO" if owner_type == "studio" else "VENDOR"
     lines = [
-        f"STUDIO ASSET INVENTORY: {len(assets)} total assets",
+        f"{owner_label} ASSET INVENTORY: {len(assets)} total assets",
         "",
         "BREAKDOWN BY PRODUCT:",
         *[f"  {p}: {c}" for p, c in products.most_common()],
@@ -79,7 +90,6 @@ async def _build_context(user: CurrentUser) -> str:
             str(a.get(col) if a.get(col) is not None else "—")
             for col in ("name", "product", "item_type", "status", "priority", "project_date", "asset_number")
         )
-        # Append useful meta fields (milestone dates, team, etc.)
         meta = a.get("meta") or {}
         extras = []
         for k, v in meta.items():
@@ -90,6 +100,35 @@ async def _build_context(user: CurrentUser) -> str:
         if extras:
             row += " | " + "; ".join(extras)
         lines.append(row)
+
+    if tasks:
+        crafts      = Counter(t.get("craft") or "—" for t in tasks)
+        src_types   = Counter(t.get("source_type") or "—" for t in tasks)
+        lines += [
+            "",
+            f"GENERATED TASKS — {len(tasks)} active tasks",
+            "",
+            "BREAKDOWN BY CRAFT:",
+            *[f"  {c}: {n}" for c, n in crafts.most_common()],
+            "",
+            "BREAKDOWN BY SOURCE TYPE:",
+            *[f"  {s}: {n}" for s, n in src_types.most_common()],
+            "",
+            "TASK LIST — columns: task_name | craft | estimate_days | start_date | end_date | generated_at | variable_values",
+        ]
+        for t in tasks:
+            vars_display = str(t.get("variable_values") or "—")
+            lines.append(
+                " | ".join([
+                    str(t.get("task_name") or "—"),
+                    str(t.get("craft") or "—"),
+                    str(t.get("estimate_days") if t.get("estimate_days") is not None else "—"),
+                    str(t.get("start_date") or "—"),
+                    str(t.get("end_date") or "—"),
+                    str(t.get("generated_at") or "—"),
+                    vars_display,
+                ])
+            )
 
     return "\n".join(lines)
 
@@ -103,10 +142,10 @@ async def _parallel_fetch(owner_type: str, owner_id: str):
         "source_type": "eq.airtable",
     }
 
-    return await asyncio.gather(
+    coros = [
         db_client.get(
             _url("/rest/v1/replicated_assets"),
-            params={**params_base, "select": f"{_SLOTS},meta", "order": "product.asc,name.asc"},
+            params={**params_base, "select": f"owner_type,owner_id,{_SLOTS},meta", "order": "product.asc,name.asc"},
             headers=_headers({"Range": "0-999"}),
         ),
         db_client.get(
@@ -114,7 +153,24 @@ async def _parallel_fetch(owner_type: str, owner_id: str):
             params={**params_base, "select": "mappings"},
             headers=_headers(),
         ),
-    )
+    ]
+
+    if owner_type == "studio":
+        coros.append(
+            db_client.get(
+                _url("/rest/v1/generated_tasks"),
+                params={
+                    "studio_id":  f"eq.{owner_id}",
+                    "deleted_at": "is.null",
+                    "select":     "task_name,craft,estimate_days,start_date,end_date,generated_at,variable_values,source_type",
+                    "order":      "generated_at.desc",
+                },
+                headers=_headers({"Range": "0-999"}),
+            )
+        )
+
+    results = await asyncio.gather(*coros)
+    return results[0], results[1], results[2] if owner_type == "studio" else None
 
 
 @router.post("/chat")
@@ -123,6 +179,7 @@ async def chat(body: ChatRequest, user: CurrentUser = Depends(get_current_user))
 
     client = anthropic.AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
 
+    owner_description = "studio" if user.role == "studio" else "vendor"
     response = await client.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=1024,
@@ -132,7 +189,7 @@ async def chat(body: ChatRequest, user: CurrentUser = Depends(get_current_user))
                 "text": (
                     "You are NumberBot, a production intelligence assistant built into ArtHound — "
                     "an asset management platform for production studios.\n\n"
-                    "You have direct access to this studio's live asset data from the ArtHound database. "
+                    f"You have direct access to this {owner_description}'s live asset data from the ArtHound database. "
                     "Answer questions about assets, products, priorities, statuses, milestone dates, and schedules "
                     "concisely and accurately. You can count, filter, aggregate, and reason about the data. "
                     "If a question requires information not in the data (e.g. detailed task breakdowns), "

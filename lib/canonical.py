@@ -10,7 +10,9 @@ async def get_studio_id() -> str:
     if _studio_id:
         return _studio_id
 
-    base_id = os.environ["AIRTABLE_BASE_ID"]
+    base_id = os.environ.get("AIRTABLE_BASE_ID")
+    if not base_id:
+        raise RuntimeError("AIRTABLE_BASE_ID is not set and no studio_id was provided — cannot resolve studio")
     r = await db_client.get(
         _url("/rest/v1/studios"),
         params={"select": "id", "airtable_base_id": f"eq.{base_id}"},
@@ -48,9 +50,9 @@ async def get_or_create_canonical_ids(airtable_ids: list[str], studio_id: str | 
         headers=_headers({"Prefer": "resolution=ignore-duplicates,return=minimal"}),
     )
 
-    # Fetch all (new + pre-existing) in one query.
+    # Fetch all (new + pre-existing) in one query, scoped to this studio.
     r = await db_client.get(
-        _url(f"/rest/v1/canonical_assets?select=id,airtable_record_id&airtable_record_id=in.({ids_csv})"),
+        _url(f"/rest/v1/canonical_assets?select=id,airtable_record_id&studio_id=eq.{studio_id}&airtable_record_id=in.({ids_csv})"),
         headers=_headers(),
     )
     return {row["airtable_record_id"]: row["id"] for row in r.json()}

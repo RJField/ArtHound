@@ -8,14 +8,14 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, Request
 from fastapi.exceptions import HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
+from pathlib import Path
+from fastapi.responses import FileResponse, JSONResponse
 
-from lib.airtable import http_client, find_record
+from lib.airtable import http_client
+from lib.crypto import decrypt_credentials
 from lib.db import db_client, _url, _headers
 from lib.auth import CurrentUser, get_current_user
 from lib.sync.runner import run_sync
-import config
 from routes.assets import router as assets_router
 from routes.schedule import router as schedule_router
 from routes.schema import router as schema_router
@@ -26,6 +26,9 @@ from routes.payload import router as payload_router
 from routes.numbersbot import router as numbersbot_router
 from routes.sync import router as sync_router, webhook_router as sync_webhook_router
 from routes.user import router as user_router
+from routes.init import router as init_router
+from routes.auth import router as auth_router
+from routes.tasks import router as tasks_router
 
 log = logging.getLogger(__name__)
 
@@ -44,7 +47,7 @@ async def _poll_loop() -> None:
         try:
             r = await db_client.get(
                 _url("/rest/v1/source_credentials"),
-                params={"select": "owner_type,owner_id,source_type"},
+                params={"select": "owner_type,owner_id,source_type", "owner_type": "eq.studio"},
                 headers=_headers(),
             )
             if r.is_success:
@@ -77,8 +80,10 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",
+        "http://localhost:5173",
         "http://localhost:8000",
         "http://127.0.0.1:3000",
+        "http://127.0.0.1:5173",
         "http://127.0.0.1:8000",
     ],
     allow_credentials=True,
@@ -99,23 +104,93 @@ app.include_router(payload_router,        prefix="/api/payloads")
 app.include_router(numbersbot_router,     prefix="/api/numbersbot",  dependencies=_auth)
 app.include_router(sync_router,           prefix="/api/sync",        dependencies=_auth)
 app.include_router(user_router,           prefix="/api/user",        dependencies=_auth)
+app.include_router(init_router,           prefix="/api/init",        dependencies=_auth)
+app.include_router(tasks_router,          prefix="/api/tasks",        dependencies=_auth)
 # Webhook routes are public — protected by WEBHOOK_SECRET, not JWT
 app.include_router(sync_webhook_router,   prefix="/api/sync")
+# Auth routes are public — no JWT required
+app.include_router(auth_router,           prefix="/api/auth")
 
 
-# Generic record fetch — table_key is one of the keys in config.tables (e.g. "assets", "tasks").
-# DB-agnostic contract: fetch a single entity by ID from a named collection.
+_REPLICATED_TABLE: dict[str, str] = {
+    "assets":    "replicated_assets",
+    "products":  "replicated_products",
+    "itemTypes": "replicated_item_types",
+}
+
+_ENTITY_TYPE_MAP: dict[str, str] = {
+    "assets":    "asset",
+    "products":  "product",
+    "itemTypes": "item_type",
+}
+
+
 @app.get("/api/records/{table_key}/{record_id}")
 async def get_record_by_id(
-    table_key: str, record_id: str, _: CurrentUser = Depends(get_current_user)
+    table_key: str, record_id: str, current_user: CurrentUser = Depends(get_current_user)
 ):
-    if table_key not in config.tables:
+    replicated = _REPLICATED_TABLE.get(table_key)
+    if not replicated:
         raise HTTPException(status_code=404, detail=f"Unknown table: {table_key}")
-    try:
-        record = await find_record(config.tables[table_key], record_id)
-    except Exception:
+    entity_type = _ENTITY_TYPE_MAP[table_key]
+    owner_type = current_user.role
+    owner_id   = current_user.studio_id if current_user.role == "studio" else current_user.vendor_id
+    if not owner_id:
+        raise HTTPException(status_code=403, detail="No studio/vendor linked to account")
+
+    ownership = await db_client.get(
+        _url(f"/rest/v1/{replicated}"),
+        params={
+            "owner_type":       f"eq.{owner_type}",
+            "owner_id":         f"eq.{owner_id}",
+            "source_record_id": f"eq.{record_id}",
+            "select":           "source_record_id",
+        },
+        headers=_headers(),
+    )
+    ownership.raise_for_status()
+    if not ownership.json():
         raise HTTPException(status_code=404, detail="Record not found")
-    return {"id": record["id"], "fields": record.get("fields", {})}
+
+    creds_r = await db_client.get(
+        _url("/rest/v1/source_credentials"),
+        params={
+            "owner_type":  f"eq.{owner_type}",
+            "owner_id":    f"eq.{owner_id}",
+            "source_type": "eq.airtable",
+            "select":      "credentials",
+        },
+        headers=_headers(),
+    )
+    creds_rows = creds_r.json()
+    if not creds_rows:
+        raise HTTPException(status_code=403, detail="No source credentials found")
+    creds = decrypt_credentials(creds_rows[0]["credentials"])
+
+    entity_r = await db_client.get(
+        _url("/rest/v1/source_entity_definitions"),
+        params={
+            "owner_type":  f"eq.{owner_type}",
+            "owner_id":    f"eq.{owner_id}",
+            "source_type": "eq.airtable",
+            "entity_type": f"eq.{entity_type}",
+            "select":      "table_id",
+        },
+        headers=_headers(),
+    )
+    entity_rows = entity_r.json()
+    if not entity_rows or not entity_rows[0].get("table_id"):
+        raise HTTPException(status_code=404, detail="Entity definition not found")
+    table_id = entity_rows[0]["table_id"]
+
+    r = await http_client.get(
+        f"https://api.airtable.com/v0/{creds['base_id']}/{table_id}/{record_id}",
+        headers={"Authorization": f"Bearer {creds['api_token']}"},
+    )
+    if not r.is_success:
+        raise HTTPException(status_code=404, detail="Record not found")
+    rec = r.json()
+    return {"id": rec["id"], "fields": rec.get("fields", {})}
 
 
 # Public endpoint — supplies Supabase bootstrap config to the frontend.
@@ -140,8 +215,18 @@ async def global_exception_handler(request: Request, exc: Exception):
     return JSONResponse(status_code=500, content={"error": str(exc)})
 
 
-# Static files last so API routes take precedence
-app.mount("/", StaticFiles(directory="public", html=True), name="static")
+
+# SPA fallback — serve React build for all non-API paths.
+# File requests (JS/CSS/images) are served from dist; everything else gets index.html
+# so React Router handles client-side navigation.
+_DIST = Path("frontend/dist")
+
+@app.get("/{full_path:path}")
+async def spa_fallback(full_path: str):
+    file = _DIST / full_path
+    if file.is_file():
+        return FileResponse(file)
+    return FileResponse(_DIST / "index.html")
 
 
 if __name__ == "__main__":
