@@ -108,8 +108,6 @@ async def get_asset_tasks(assetId: str = Query(...), assetName: Optional[str] = 
     except HTTPException:
         return []
 
-    # If the studio has a task entity def, they're using the new system and we
-    # can't know their field names — return empty so they use the ArtHound tab.
     entity_r = await db_client.get(
         _url("/rest/v1/source_entity_definitions"),
         params={
@@ -117,14 +115,59 @@ async def get_asset_tasks(assetId: str = Query(...), assetName: Optional[str] = 
             "owner_id":    f"eq.{_user.studio_id}",
             "source_type": "eq.airtable",
             "entity_type": "eq.task",
-            "select":      "table_id",
+            "select":      "table_id,rel_field_name,"
+                           "task_name_field_name,task_estimate_field_name,"
+                           "task_start_date_field_name,task_end_date_field_name",
         },
         headers=_headers(),
     )
-    if entity_r.json():
-        return []
+    entity_rows = entity_r.json()
 
-    # Legacy path: fixed schema with hardcoded field names
+    if entity_rows:
+        # New-system path: use studio's configured field names
+        ed = entity_rows[0]
+        task_table        = ed["table_id"]
+        link_field        = ed.get("rel_field_name")
+        name_field        = ed.get("task_name_field_name")
+        estimate_field    = ed.get("task_estimate_field_name")
+        start_date_field  = ed.get("task_start_date_field_name")
+        end_date_field    = ed.get("task_end_date_field_name")
+
+        if not name_field or not link_field:
+            # Entity def exists but task field mappings not yet configured
+            return []
+
+        if not assetName:
+            asset_table = config.tables.get("assets", "Assets")
+            rec = await find_record(asset_table, assetId, token=token, base_id=base_id)
+            assetName = rec["fields"].get("Name", "")
+
+        escaped = assetName.replace('"', '\\"')
+        fields_to_fetch = [f for f in [name_field, estimate_field, start_date_field, end_date_field] if f]
+        sort_field = start_date_field or name_field
+
+        records = await select_all(
+            task_table,
+            {
+                "filterByFormula": f'{{{link_field}}} = "{escaped}"',
+                "fields": fields_to_fetch,
+                "sort": [{"field": sort_field, "direction": "asc"}],
+            },
+            token=token,
+            base_id=base_id,
+        )
+        return [
+            {
+                "id":        r["id"],
+                "task":      r["fields"].get(name_field, ""),
+                "estimate":  r["fields"].get(estimate_field) if estimate_field else None,
+                "startDate": r["fields"].get(start_date_field, "") if start_date_field else "",
+                "endDate":   r["fields"].get(end_date_field, "") if end_date_field else "",
+            }
+            for r in records
+        ]
+
+    # Legacy path: fixed schema with hardcoded field names (pre-entity-def studios)
     task_table = config.tables.get("tasks", "Tasks")
     if not assetName:
         asset_table = config.tables.get("assets", "Assets")
@@ -143,11 +186,11 @@ async def get_asset_tasks(assetId: str = Query(...), assetName: Optional[str] = 
     )
     return [
         {
-            "id": r["id"],
-            "task": r["fields"].get("Task", ""),
-            "estimate": r["fields"].get("Estimate"),
+            "id":        r["id"],
+            "task":      r["fields"].get("Task", ""),
+            "estimate":  r["fields"].get("Estimate"),
             "startDate": r["fields"].get("Start Date", ""),
-            "endDate": r["fields"].get("End Date", ""),
+            "endDate":   r["fields"].get("End Date", ""),
         }
         for r in records
     ]

@@ -254,6 +254,18 @@ class EntityDefinitionBody(BaseModel):
     rel_field_id:   str | None = None
     rel_field_name: str | None = None
     rel_direction:  RelDirection | None = None
+    # Task-specific field mappings (only populated when entity_type == 'task')
+    task_name_field_id:         str | None = None
+    task_name_field_name:       str | None = None
+    task_status_field_id:       str | None = None
+    task_status_field_name:     str | None = None
+    task_start_date_field_id:   str | None = None
+    task_start_date_field_name: str | None = None
+    task_end_date_field_id:     str | None = None
+    task_end_date_field_name:   str | None = None
+    task_estimate_field_id:     str | None = None
+    task_estimate_field_name:   str | None = None
+    field_mappings:             dict       = {}
 
 
 @router.get("/entity-definitions")
@@ -271,7 +283,13 @@ async def get_entity_definitions(
             "owner_id":    f"eq.{owner_id}",
             "source_type": f"eq.{source_type}",
             "select":      "entity_type,table_id,table_name,filters,"
-                           "parent_entity_type,rel_field_id,rel_field_name,rel_direction",
+                           "parent_entity_type,rel_field_id,rel_field_name,rel_direction,"
+                           "task_name_field_id,task_name_field_name,"
+                           "task_status_field_id,task_status_field_name,"
+                           "task_start_date_field_id,task_start_date_field_name,"
+                           "task_end_date_field_id,task_end_date_field_name,"
+                           "task_estimate_field_id,task_estimate_field_name,"
+                           "field_mappings",
         },
         headers=_headers(),
     )
@@ -294,17 +312,28 @@ async def save_entity_definition(
              "?on_conflict=owner_type,owner_id,source_type,entity_type"),
         headers=_headers({"Prefer": "resolution=merge-duplicates,return=minimal"}),
         json={
-            "owner_type":         owner_type,
-            "owner_id":           owner_id,
-            "source_type":        body.source_type,
-            "entity_type":        body.entity_type,
-            "table_id":           body.table_id,
-            "table_name":         body.table_name,
-            "filters":            [f.model_dump() for f in body.filters],
-            "parent_entity_type": parent_entity_type,
-            "rel_field_id":       body.rel_field_id,
-            "rel_field_name":     body.rel_field_name,
-            "rel_direction":      body.rel_direction,
+            "owner_type":                owner_type,
+            "owner_id":                  owner_id,
+            "source_type":               body.source_type,
+            "entity_type":               body.entity_type,
+            "table_id":                  body.table_id,
+            "table_name":                body.table_name,
+            "filters":                   [f.model_dump() for f in body.filters],
+            "parent_entity_type":        parent_entity_type,
+            "rel_field_id":              body.rel_field_id,
+            "rel_field_name":            body.rel_field_name,
+            "rel_direction":             body.rel_direction,
+            "task_name_field_id":        body.task_name_field_id,
+            "task_name_field_name":      body.task_name_field_name,
+            "task_status_field_id":      body.task_status_field_id,
+            "task_status_field_name":    body.task_status_field_name,
+            "task_start_date_field_id":  body.task_start_date_field_id,
+            "task_start_date_field_name": body.task_start_date_field_name,
+            "task_end_date_field_id":    body.task_end_date_field_id,
+            "task_end_date_field_name":  body.task_end_date_field_name,
+            "task_estimate_field_id":    body.task_estimate_field_id,
+            "task_estimate_field_name":  body.task_estimate_field_name,
+            "field_mappings":            body.field_mappings,
         },
     )
     r.raise_for_status()

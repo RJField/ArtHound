@@ -121,10 +121,11 @@ async def studio_summary(user: CurrentUser = Depends(get_current_user)):
                       params={"owner_type": "eq.studio", "owner_id": f"eq.{owner_id}",
                               "select": "id"},
                       headers=count_hdrs),
-        db_client.get(_url("/rest/v1/replicated_products"),
+        db_client.get(_url("/rest/v1/replicated_assets"),
                       params={"owner_type": "eq.studio", "owner_id": f"eq.{owner_id}",
-                              "select": "id"},
-                      headers=count_hdrs),
+                              "product": "not.is.null",
+                              "select": "product"},
+                      headers=_headers()),
         db_client.get(_url("/rest/v1/payload_dispatches"),
                       params={"sender_studio_id": f"eq.{owner_id}",
                               "revoked_at": "is.null", "expires_at": f"gt.{now}",
@@ -150,7 +151,7 @@ async def studio_summary(user: CurrentUser = Depends(get_current_user)):
 
     return {
         "asset_count":    _count(asset_r),
-        "product_count":  _count(product_r),
+        "product_count":  len({r["product"] for r in (product_r.json() if product_r.is_success else []) if r.get("product")}),
         "active_shares":  _count(share_r),
         "task_count":     _count(task_r),
         "last_synced_at": cursor_rows[0]["last_synced_at"] if isinstance(cursor_rows, list) and cursor_rows else None,

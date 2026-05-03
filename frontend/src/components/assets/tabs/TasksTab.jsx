@@ -1,10 +1,8 @@
 import { useState, useEffect } from 'react'
 import { toast } from 'sonner'
-import { apiFetch, makeRecordResolver } from '../../../lib/api'
-import { fmtDate, LINKED_TABLE_MAP, fieldDisplayString } from '../../../lib/fields'
+import { apiFetch } from '../../../lib/api'
+import { fmtDate } from '../../../lib/fields'
 import { cn } from '../../../lib/utils'
-import DetailModal from '../../DetailModal'
-
 // ── Timeline ──────────────────────────────────────────────────────────────────
 
 function TasksTimeline({ tasks }) {
@@ -69,49 +67,11 @@ function TasksTimeline({ tasks }) {
   )
 }
 
-// ── Task detail fetcher (Airtable source only) ────────────────────────────────
-
-async function fetchTaskDetail(taskId, taskName) {
-  const { fields, displayFields = {} } = await apiFetch(`/api/schedule/tasks/${encodeURIComponent(taskId)}`)
-  const SKIP = new Set(['Task'])
-  const entries = []
-
-  for (const [k, v] of Object.entries(fields)) {
-    if (SKIP.has(k) || v == null || v === '') continue
-
-    const isCanonical = Array.isArray(v) && v.length > 0 && typeof v[0] === 'object' && 'source_id' in v[0]
-    const isRawRec    = !isCanonical && Array.isArray(v) && v.length > 0 && v.every(x => typeof x === 'string' && x.startsWith('rec'))
-
-    if (isCanonical || isRawRec) {
-      const tableKey  = LINKED_TABLE_MAP[k]
-      const sourceId  = isCanonical ? v[0].source_id : v[0]
-      const resolved  = isCanonical ? v.map(x => x.display_name || '').filter(Boolean).join(', ') : null
-      if (tableKey && v.length === 1) {
-        const name = displayFields[k] || resolved || sourceId
-        entries.push({ label: k, value: name, type: 'linked-record', resolve: makeRecordResolver(tableKey, sourceId, name) })
-      } else {
-        const display = displayFields[k] || resolved || (tableKey ? `${v.length} linked record${v.length !== 1 ? 's' : ''}` : v.join(', '))
-        entries.push({ label: k, value: display })
-      }
-    } else {
-      const display = (displayFields[k] != null && displayFields[k] !== '')
-        ? displayFields[k]
-        : (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}/.test(v))
-          ? fmtDate(v.slice(0, 10))
-          : fieldDisplayString(v)
-      entries.push({ label: k, value: display })
-    }
-  }
-
-  return { title: taskName, fields: entries.length ? entries : [{ label: 'No fields', value: null }] }
-}
-
 // ── Tab ───────────────────────────────────────────────────────────────────────
 
 const SOURCES = [
   { id: 'source',   label: 'Source'   },
   { id: 'arthound', label: 'Generated' },
-  { id: 'airtable', label: 'Airtable' },
 ]
 
 export default function TasksTab({ asset, taskRefreshKey }) {
@@ -119,7 +79,6 @@ export default function TasksTab({ asset, taskRefreshKey }) {
   const [view,      setView]      = useState('list')
   const [tasks,     setTasks]     = useState(null)
   const [loading,   setLoading]   = useState(false)
-  const [taskModal, setTaskModal] = useState(null)
 
   useEffect(() => {
     if (!asset) { setTasks(null); return }
@@ -133,15 +92,11 @@ export default function TasksTab({ asset, taskRefreshKey }) {
             `/api/tasks?asset_source_id=${encodeURIComponent(asset.id)}`
           )
           setTasks(data)
-        } else if (source === 'arthound') {
+        } else {
           if (!asset.canonicalId) { setTasks([]); return }
           const data = await apiFetch(
             `/api/schedule/tasks-local?canonicalAssetId=${encodeURIComponent(asset.canonicalId)}`
           )
-          setTasks(data)
-        } else {
-          const nameQ = asset.name ? `&assetName=${encodeURIComponent(asset.name)}` : ''
-          const data  = await apiFetch(`/api/schedule/tasks?assetId=${encodeURIComponent(asset.id)}${nameQ}`)
           setTasks(data)
         }
       } catch (err) {
@@ -155,20 +110,9 @@ export default function TasksTab({ asset, taskRefreshKey }) {
     load()
   }, [asset?.id, source, taskRefreshKey])
 
-  async function openTaskDetail(taskId, taskName) {
-    if (source !== 'airtable') return
-    setTaskModal({ title: taskName, fields: [], loading: true })
-    try {
-      setTaskModal(await fetchTaskDetail(taskId, taskName))
-    } catch (err) {
-      setTaskModal(null)
-      toast.error(err.message)
-    }
-  }
-
   function emptyMessage() {
     if (source === 'source') return 'No source tasks synced for this asset.'
-    if (source === 'arthound' && !asset?.canonicalId) return 'Asset not yet synced to ArtHound.'
+    if (!asset?.canonicalId) return 'Asset not yet synced to ArtHound.'
     return 'No tasks yet — use Generate Work to create them.'
   }
 
@@ -223,17 +167,10 @@ export default function TasksTab({ asset, taskRefreshKey }) {
           </div>
         )}
 
-        {tasks?.length > 0 && view === 'list' && source !== 'source' && (
+        {tasks?.length > 0 && view === 'list' && source === 'arthound' && (
           <div className="flex flex-col gap-1">
             {tasks.map(t => (
-              <div
-                key={t.id}
-                onClick={() => openTaskDetail(t.id, t.task)}
-                className={cn(
-                  'flex items-center justify-between gap-4 px-3 py-2 rounded-md',
-                  source === 'airtable' && 'cursor-pointer hover:bg-surface-2 transition-colors'
-                )}
-              >
+              <div key={t.id} className="flex items-center justify-between gap-4 px-3 py-2 rounded-md">
                 <div className="min-w-0">
                   <p className="text-foreground text-xs truncate">{t.task}</p>
                   <p className="text-muted text-xs">
@@ -249,7 +186,6 @@ export default function TasksTab({ asset, taskRefreshKey }) {
         )}
       </div>
 
-      {taskModal && <DetailModal {...taskModal} onClose={() => setTaskModal(null)} />}
     </div>
   )
 }
