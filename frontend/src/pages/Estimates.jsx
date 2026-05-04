@@ -55,12 +55,12 @@ function MatrixTable({ reloadKey }) {
   if (error)   return <p className="text-error text-sm py-4">{error}</p>
   if (!data)   return null
 
-  const { variableFields = [], combinations = [], tasks = [], attributeFields = [] } = data
+  const { variableFields = [], combinations = [], work = [], attributeFields = [] } = data
 
   if (!combinations.length) {
     return <p className="text-muted text-sm py-4">No estimate combinations configured — run the Setup wizard first.</p>
   }
-  if (!tasks.length) {
+  if (!work.length) {
     return <p className="text-muted text-sm py-4">No workflow steps found — run the Setup wizard first.</p>
   }
 
@@ -123,7 +123,7 @@ function MatrixTable({ reloadKey }) {
           )}
         </thead>
         <tbody>
-          {tasks.map(t => (
+          {work.map(t => (
             <tr key={t.name} className="border-b border-border/30 hover:bg-surface-2/40">
               <td className={cn(fixedCls, 'py-1.5 px-2 text-muted text-center')}>{t.step}</td>
               <td className={cn(fixedCls, 'py-1.5 px-3 text-foreground font-medium')}>{t.name}</td>

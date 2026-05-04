@@ -18,10 +18,10 @@ const ALL_SLOTS = [
 ]
 
 const ENTITIES = [
-  { type: 'product',   label: 'Product',    parent: null,      desc: 'Top-level grouping (e.g. Film, Game, Season)' },
-  { type: 'asset',     label: 'Asset',      parent: 'product', desc: 'Individual piece of output.' },
-  { type: 'task',      label: 'Task / Work',parent: 'asset',   desc: 'Unit of work attached to an asset' },
-  { type: 'item_type', label: 'Item Type',  parent: null,      optional: true, desc: 'Asset categories (e.g. Character, Prop, Vehicle). Use a separate lookup table or a select field on your asset table.' },
+  { type: 'product',   label: 'Product',   parent: null,      desc: 'Top-level grouping (e.g. Film, Game, Season)' },
+  { type: 'asset',     label: 'Asset',     parent: 'product', desc: 'Individual piece of output.' },
+  { type: 'work',      label: 'Work',      parent: 'asset',   desc: 'Unit of work attached to an asset' },
+  { type: 'item_type', label: 'Item Type', parent: null,      optional: true, desc: 'Asset categories (e.g. Character, Prop, Vehicle). Use a separate lookup table or a select field on your asset table.' },
 ]
 
 const OPERATORS = [
@@ -543,59 +543,59 @@ function EntityPanel({ entity, tables, definitions, onChange }) {
 }
 
 
-// ── Task field mapping ────────────────────────────────────────────────────────
+// ── Work field mapping ────────────────────────────────────────────────────────
 
-const TASK_FIELD_SLOTS = [
-  { key: 'task_name',       label: 'Task name',   required: true  },
-  { key: 'task_status',     label: 'Status',      required: false },
-  { key: 'task_start_date', label: 'Start date',  required: false },
-  { key: 'task_end_date',   label: 'End date',    required: false },
-  { key: 'task_estimate',   label: 'Estimate',    required: false },
+const WORK_FIELD_SLOTS = [
+  { key: 'work_name',       label: 'Work name',   required: true  },
+  { key: 'work_status',     label: 'Status',      required: false },
+  { key: 'work_start_date', label: 'Start date',  required: false },
+  { key: 'work_end_date',   label: 'End date',    required: false },
+  { key: 'work_estimate',   label: 'Estimate',    required: false },
 ]
 
-const _TASK_NAME_HINTS    = /^(task|shot|work item|title|name)/i
-const _TASK_STATUS_HINTS  = /status|state/i
-const _TASK_START_HINTS   = /start/i
-const _TASK_END_HINTS     = /end|finish|due/i
-const _TASK_ESTIMATE_HINTS = /estimate|duration|days/i
+const _WORK_NAME_HINTS    = /^(task|shot|work item|title|name)/i
+const _WORK_STATUS_HINTS  = /status|state/i
+const _WORK_START_HINTS   = /start/i
+const _WORK_END_HINTS     = /end|finish|due/i
+const _WORK_ESTIMATE_HINTS = /estimate|duration|days/i
 
-function suggestTaskFields(fields) {
+function suggestWorkFields(fields) {
   const s = {}
   for (const f of fields) {
     const n = f.name
-    if (!s.task_name       && _TASK_NAME_HINTS.test(n))     s.task_name       = f
-    if (!s.task_status     && _TASK_STATUS_HINTS.test(n))   s.task_status     = f
-    if (!s.task_start_date && _TASK_START_HINTS.test(n))    s.task_start_date = f
-    if (!s.task_end_date   && _TASK_END_HINTS.test(n))      s.task_end_date   = f
-    if (!s.task_estimate   && _TASK_ESTIMATE_HINTS.test(n)) s.task_estimate   = f
+    if (!s.work_name       && _WORK_NAME_HINTS.test(n))     s.work_name       = f
+    if (!s.work_status     && _WORK_STATUS_HINTS.test(n))   s.work_status     = f
+    if (!s.work_start_date && _WORK_START_HINTS.test(n))    s.work_start_date = f
+    if (!s.work_end_date   && _WORK_END_HINTS.test(n))      s.work_end_date   = f
+    if (!s.work_estimate   && _WORK_ESTIMATE_HINTS.test(n)) s.work_estimate   = f
   }
   return s
 }
 
-function TaskFieldMappings({ tableFields, taskFieldMap, onChange }) {
+function WorkFieldMappings({ tableFields, workFieldMap, onChange }) {
   return (
     <div className="flex flex-col gap-3">
       <div className="flex items-center justify-between">
-        <span className="text-muted text-xs">Task field mappings</span>
+        <span className="text-muted text-xs">Work field mappings</span>
         <span className="text-muted text-xs opacity-60">* required</span>
       </div>
       <div className="border border-border rounded-lg overflow-hidden">
         <table className="w-full text-xs">
           <tbody>
-            {TASK_FIELD_SLOTS.map(slot => (
+            {WORK_FIELD_SLOTS.map(slot => (
               <tr key={slot.key} className="border-b border-border/50 last:border-0">
                 <td className="px-3 py-2 text-foreground w-1/3">
                   {slot.label}{slot.required && <span className="text-error ml-0.5">*</span>}
                 </td>
                 <td className="px-3 py-2">
                   <select
-                    value={taskFieldMap[slot.key]?.field_id || ''}
+                    value={workFieldMap[slot.key]?.field_id || ''}
                     onChange={e => {
                       const f = tableFields.find(f => f.id === e.target.value)
                       onChange(slot.key, f ? { field_id: f.id, field_name: f.name } : null)
                     }}
                     className={`w-full bg-surface-2 border rounded-md px-2 py-1 text-foreground outline-none focus:border-accent ${
-                      slot.required && !taskFieldMap[slot.key] ? 'border-error/60' : 'border-border'
+                      slot.required && !workFieldMap[slot.key] ? 'border-error/60' : 'border-border'
                     }`}
                   >
                     <option value="">— unmapped —</option>
@@ -615,7 +615,7 @@ function TaskFieldMappings({ tableFields, taskFieldMap, onChange }) {
 // ── Auto-suggest utilities ────────────────────────────────────────────────────
 
 const _PRODUCT_HINTS = /product|project|show|film|game|title|episode|series|season/
-const _TASK_HINTS    = /task|work|shot|subtask|step|ticket/
+const _WORK_HINTS    = /task|work|shot|subtask|step|ticket/
 const _TYPE_HINTS    = /type|category|kind|class/
 
 function suggestEntitiesFromAsset(assetTableId, tables) {
@@ -630,8 +630,8 @@ function suggestEntitiesFromAsset(assetTableId, tables) {
       const combined = (linkedTable.name + ' ' + field.name).toLowerCase()
       if (!s.product && _PRODUCT_HINTS.test(combined))
         s.product = { mode: 'table', table_id: linkedTableId, table_name: linkedTable.name, filters: [], rel_field_id: field.id, rel_field_name: field.name, rel_direction: 'child_holds_link' }
-      if (!s.task && _TASK_HINTS.test(combined))
-        s.task = { mode: 'table', table_id: linkedTableId, table_name: linkedTable.name, filters: [], rel_field_id: field.id, rel_field_name: field.name, rel_direction: 'child_holds_link' }
+      if (!s.work && _WORK_HINTS.test(combined))
+        s.work = { mode: 'table', table_id: linkedTableId, table_name: linkedTable.name, filters: [], rel_field_id: field.id, rel_field_name: field.name, rel_direction: 'child_holds_link' }
     }
     if (field.type === 'singleSelect') {
       const fl = field.name.toLowerCase()
@@ -652,7 +652,7 @@ const OTHER_ENTITIES = ENTITIES.filter(e => e.type !== 'asset')
 
 function StepDefineAsset({ tables, initialDefs, onSuccess, onBack }) {
   const [definitions, setDefinitions] = useState(
-    { product: {}, asset: {}, task: {}, item_type: {}, ...initialDefs }
+    { product: {}, asset: {}, work: {}, item_type: {}, ...initialDefs }
   )
   const [saving, setSaving] = useState(false)
   const [error, setError]   = useState(null)
@@ -664,6 +664,7 @@ function StepDefineAsset({ tables, initialDefs, onSuccess, onBack }) {
       })
       .catch(() => {})
   }, [])
+
 
   const assetDef   = definitions.asset || {}
   const isComplete = !!assetDef.table_id
@@ -725,15 +726,15 @@ function StepDefineAsset({ tables, initialDefs, onSuccess, onBack }) {
 
 // ── Step 4: Define other entities ─────────────────────────────────────────────
 
-const PARENT_ENTITIES = OTHER_ENTITIES.filter(e => e.type !== 'task')
-const CHILD_ENTITIES  = OTHER_ENTITIES.filter(e => e.type === 'task')
+const PARENT_ENTITIES = OTHER_ENTITIES.filter(e => e.type !== 'work')
+const CHILD_ENTITIES  = OTHER_ENTITIES.filter(e => e.type === 'work')
 
 function StepDefineEntities({ tables, initialDefs, onSuccess, onBack }) {
   const [definitions, setDefinitions] = useState(
-    { product: {}, asset: {}, task: {}, item_type: {}, ...initialDefs }
+    { product: {}, asset: {}, work: {}, item_type: {}, ...initialDefs }
   )
-  const [taskSkipped,  setTaskSkipped]  = useState(false)
-  const [taskFieldMap, setTaskFieldMap] = useState({})
+  const [workSkipped,  setWorkSkipped]  = useState(false)
+  const [workFieldMap, setWorkFieldMap] = useState({})
   const [saving, setSaving] = useState(false)
   const [error, setError]   = useState(null)
 
@@ -752,17 +753,17 @@ function StepDefineEntities({ tables, initialDefs, onSuccess, onBack }) {
           }
           return merged
         })
-        // Restore saved task field mappings if returning to this step
-        const t = data.task
-        if (t) {
-          setTaskFieldMap(prev => {
+        // Restore saved work field mappings if returning to this step
+        const w = data.work
+        if (w) {
+          setWorkFieldMap(prev => {
             const next = { ...prev }
             const pairs = [
-              ['task_name',       t.task_name_field_id,       t.task_name_field_name],
-              ['task_status',     t.task_status_field_id,     t.task_status_field_name],
-              ['task_start_date', t.task_start_date_field_id, t.task_start_date_field_name],
-              ['task_end_date',   t.task_end_date_field_id,   t.task_end_date_field_name],
-              ['task_estimate',   t.task_estimate_field_id,   t.task_estimate_field_name],
+              ['work_name',       w.work_name_field_id,       w.work_name_field_name],
+              ['work_status',     w.work_status_field_id,     w.work_status_field_name],
+              ['work_start_date', w.work_start_date_field_id, w.work_start_date_field_name],
+              ['work_end_date',   w.work_end_date_field_id,   w.work_end_date_field_name],
+              ['work_estimate',   w.work_estimate_field_id,   w.work_estimate_field_name],
             ]
             for (const [key, fid, fname] of pairs) {
               if (fid && !next[key]) next[key] = { field_id: fid, field_name: fname }
@@ -776,10 +777,10 @@ function StepDefineEntities({ tables, initialDefs, onSuccess, onBack }) {
 
   function updateDef(type, def) {
     setDefinitions(prev => ({ ...prev, [type]: def }))
-    if (type === 'task' && def.table_id) {
+    if (type === 'work' && def.table_id) {
       const tableFields = tables.find(t => t.id === def.table_id)?.fields || []
-      const suggestions = suggestTaskFields(tableFields)
-      setTaskFieldMap(prev => {
+      const suggestions = suggestWorkFields(tableFields)
+      setWorkFieldMap(prev => {
         const next = { ...prev }
         for (const [key, f] of Object.entries(suggestions)) {
           if (!next[key]) next[key] = { field_id: f.id, field_name: f.name }
@@ -794,10 +795,10 @@ function StepDefineEntities({ tables, initialDefs, onSuccess, onBack }) {
     const def = definitions[e.type] || {}
     return def.mode === 'select_field' ? !!def.select_field_id : !!def.table_id
   })
-  const taskComplete = taskSkipped || (
-    !!(definitions.task?.table_id) && !!(taskFieldMap.task_name?.field_id)
+  const workComplete = workSkipped || (
+    !!(definitions.work?.table_id) && !!(workFieldMap.work_name?.field_id)
   )
-  const allComplete  = parentComplete && taskComplete
+  const allComplete  = parentComplete && workComplete
 
   async function save() {
     setSaving(true)
@@ -821,31 +822,31 @@ function StepDefineEntities({ tables, initialDefs, onSuccess, onBack }) {
           }),
         })
       }
-      if (!taskSkipped) {
-        const def = definitions.task
+      if (!workSkipped) {
+        const def = definitions.work
         if (def?.table_id) {
-          const fm = taskFieldMap
+          const fm = workFieldMap
           await apiFetch('/api/init/entity-definitions', {
             method: 'PUT',
             body: JSON.stringify({
               source_type:                SOURCE_TYPE,
-              entity_type:                'task',
+              entity_type:                'work',
               table_id:                   def.table_id,
               table_name:                 def.table_name,
               filters:                    (def.filters || []).filter(f => f.field_id && f.value),
               rel_field_id:               def.rel_field_id || null,
               rel_field_name:             def.rel_field_name || null,
               rel_direction:              def.rel_direction || null,
-              task_name_field_id:         fm.task_name?.field_id        || null,
-              task_name_field_name:       fm.task_name?.field_name      || null,
-              task_status_field_id:       fm.task_status?.field_id      || null,
-              task_status_field_name:     fm.task_status?.field_name    || null,
-              task_start_date_field_id:   fm.task_start_date?.field_id  || null,
-              task_start_date_field_name: fm.task_start_date?.field_name || null,
-              task_end_date_field_id:     fm.task_end_date?.field_id    || null,
-              task_end_date_field_name:   fm.task_end_date?.field_name  || null,
-              task_estimate_field_id:     fm.task_estimate?.field_id    || null,
-              task_estimate_field_name:   fm.task_estimate?.field_name  || null,
+              work_name_field_id:         fm.work_name?.field_id        || null,
+              work_name_field_name:       fm.work_name?.field_name      || null,
+              work_status_field_id:       fm.work_status?.field_id      || null,
+              work_status_field_name:     fm.work_status?.field_name    || null,
+              work_start_date_field_id:   fm.work_start_date?.field_id  || null,
+              work_start_date_field_name: fm.work_start_date?.field_name || null,
+              work_end_date_field_id:     fm.work_end_date?.field_id    || null,
+              work_end_date_field_name:   fm.work_end_date?.field_name  || null,
+              work_estimate_field_id:     fm.work_estimate?.field_id    || null,
+              work_estimate_field_name:   fm.work_estimate?.field_name  || null,
               field_mappings:             {},
             }),
           })
@@ -899,16 +900,16 @@ function StepDefineEntities({ tables, initialDefs, onSuccess, onBack }) {
           <label className="flex items-center gap-1.5 cursor-pointer">
             <input
               type="checkbox"
-              checked={taskSkipped}
-              onChange={e => setTaskSkipped(e.target.checked)}
+              checked={workSkipped}
+              onChange={e => setWorkSkipped(e.target.checked)}
               className="accent-accent"
             />
-            <span className="text-xs text-muted">No tasks in source</span>
+            <span className="text-xs text-muted">No work in source</span>
           </label>
         </div>
-        {taskSkipped ? (
+        {workSkipped ? (
           <p className="text-muted text-xs px-1">
-            Tasks skipped — ArtHound-generated tasks will still work.
+            Work skipped — ArtHound-generated work will still work.
           </p>
         ) : (
           <>
@@ -921,13 +922,13 @@ function StepDefineEntities({ tables, initialDefs, onSuccess, onBack }) {
                 onChange={updateDef}
               />
             ))}
-            {definitions.task?.table_id && (() => {
-              const taskTableFields = tables.find(t => t.id === definitions.task.table_id)?.fields || []
+            {definitions.work?.table_id && (() => {
+              const workTableFields = tables.find(t => t.id === definitions.work.table_id)?.fields || []
               return (
-                <TaskFieldMappings
-                  tableFields={taskTableFields}
-                  taskFieldMap={taskFieldMap}
-                  onChange={(key, val) => setTaskFieldMap(prev => ({ ...prev, [key]: val }))}
+                <WorkFieldMappings
+                  tableFields={workTableFields}
+                  workFieldMap={workFieldMap}
+                  onChange={(key, val) => setWorkFieldMap(prev => ({ ...prev, [key]: val }))}
                 />
               )
             })()}
@@ -1128,7 +1129,7 @@ function StepReview({ definitions, isReset, onStart, onBack }) {
 
       {isReset && (
         <p className="text-warning text-sm bg-warning/10 border border-warning/30 rounded-md px-3 py-2">
-          This will delete all replicated assets, products, and tasks and re-import from scratch.
+          This will delete all replicated assets, products, and work items and re-import from scratch.
         </p>
       )}
 
@@ -1277,7 +1278,7 @@ export default function ProjectInit() {
 
   const [step, setStep]               = useState(isReset ? 2 : 1)
   const [tables, setTables]           = useState([])
-  const [definitions, setDefinitions] = useState({ product: {}, asset: {}, task: {}, item_type: {} })
+  const [definitions, setDefinitions] = useState({ product: {}, asset: {}, work: {}, item_type: {} })
   const [sourceFields, setSourceFields] = useState([])
   const [jobId, setJobId]             = useState(null)
   const [recordCount, setRecordCount] = useState(0)

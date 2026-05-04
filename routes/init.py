@@ -227,13 +227,13 @@ async def get_schema_cache(
 
 # ── 4. Entity definitions ─────────────────────────────────────────────────────
 
-EntityType   = Literal["product", "asset", "task", "item_type"]
+EntityType   = Literal["product", "asset", "work", "item_type"]
 RelDirection = Literal["child_holds_link", "parent_holds_link"]
 
 _PARENT_OF: dict[str, str | None] = {
     "product":   None,
     "asset":     "product",
-    "task":      "asset",
+    "work":      "asset",
     "item_type": None,
 }
 
@@ -254,17 +254,17 @@ class EntityDefinitionBody(BaseModel):
     rel_field_id:   str | None = None
     rel_field_name: str | None = None
     rel_direction:  RelDirection | None = None
-    # Task-specific field mappings (only populated when entity_type == 'task')
-    task_name_field_id:         str | None = None
-    task_name_field_name:       str | None = None
-    task_status_field_id:       str | None = None
-    task_status_field_name:     str | None = None
-    task_start_date_field_id:   str | None = None
-    task_start_date_field_name: str | None = None
-    task_end_date_field_id:     str | None = None
-    task_end_date_field_name:   str | None = None
-    task_estimate_field_id:     str | None = None
-    task_estimate_field_name:   str | None = None
+    # Work-specific field mappings (only populated when entity_type == 'work')
+    work_name_field_id:         str | None = None
+    work_name_field_name:       str | None = None
+    work_status_field_id:       str | None = None
+    work_status_field_name:     str | None = None
+    work_start_date_field_id:   str | None = None
+    work_start_date_field_name: str | None = None
+    work_end_date_field_id:     str | None = None
+    work_end_date_field_name:   str | None = None
+    work_estimate_field_id:     str | None = None
+    work_estimate_field_name:   str | None = None
     field_mappings:             dict       = {}
 
 
@@ -284,11 +284,11 @@ async def get_entity_definitions(
             "source_type": f"eq.{source_type}",
             "select":      "entity_type,table_id,table_name,filters,"
                            "parent_entity_type,rel_field_id,rel_field_name,rel_direction,"
-                           "task_name_field_id,task_name_field_name,"
-                           "task_status_field_id,task_status_field_name,"
-                           "task_start_date_field_id,task_start_date_field_name,"
-                           "task_end_date_field_id,task_end_date_field_name,"
-                           "task_estimate_field_id,task_estimate_field_name,"
+                           "work_name_field_id,work_name_field_name,"
+                           "work_status_field_id,work_status_field_name,"
+                           "work_start_date_field_id,work_start_date_field_name,"
+                           "work_end_date_field_id,work_end_date_field_name,"
+                           "work_estimate_field_id,work_estimate_field_name,"
                            "field_mappings",
         },
         headers=_user_headers(user.token),
@@ -323,16 +323,16 @@ async def save_entity_definition(
             "rel_field_id":              body.rel_field_id,
             "rel_field_name":            body.rel_field_name,
             "rel_direction":             body.rel_direction,
-            "task_name_field_id":        body.task_name_field_id,
-            "task_name_field_name":      body.task_name_field_name,
-            "task_status_field_id":      body.task_status_field_id,
-            "task_status_field_name":    body.task_status_field_name,
-            "task_start_date_field_id":  body.task_start_date_field_id,
-            "task_start_date_field_name": body.task_start_date_field_name,
-            "task_end_date_field_id":    body.task_end_date_field_id,
-            "task_end_date_field_name":  body.task_end_date_field_name,
-            "task_estimate_field_id":    body.task_estimate_field_id,
-            "task_estimate_field_name":  body.task_estimate_field_name,
+            "work_name_field_id":        body.work_name_field_id,
+            "work_name_field_name":      body.work_name_field_name,
+            "work_status_field_id":      body.work_status_field_id,
+            "work_status_field_name":    body.work_status_field_name,
+            "work_start_date_field_id":  body.work_start_date_field_id,
+            "work_start_date_field_name": body.work_start_date_field_name,
+            "work_end_date_field_id":    body.work_end_date_field_id,
+            "work_end_date_field_name":  body.work_end_date_field_name,
+            "work_estimate_field_id":    body.work_estimate_field_id,
+            "work_estimate_field_name":  body.work_estimate_field_name,
             "field_mappings":            body.field_mappings,
         },
     )
@@ -610,7 +610,7 @@ async def reset_project(
 
     if owner_type == "studio":
         await db_client.patch(
-            _url("/rest/v1/generated_tasks"),
+            _url("/rest/v1/generated_work"),
             params={"studio_id": f"eq.{owner_id}", "deleted_at": "is.null"},
             json={"deleted_at": datetime.now(timezone.utc).isoformat()},
             headers=_headers({"Prefer": "return=minimal"}),

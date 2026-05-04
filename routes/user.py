@@ -116,7 +116,7 @@ async def studio_summary(user: CurrentUser = Depends(get_current_user)):
     now = datetime.now(timezone.utc).isoformat()
     count_hdrs = _user_headers(user.token, {"Prefer": "count=exact"})
 
-    asset_r, product_r, share_r, task_r, cursor_r = await asyncio.gather(
+    asset_r, product_r, share_r, work_r, cursor_r = await asyncio.gather(
         db_client.get(_url("/rest/v1/replicated_assets"),
                       params={"owner_type": "eq.studio", "owner_id": f"eq.{owner_id}",
                               "select": "id"},
@@ -131,7 +131,7 @@ async def studio_summary(user: CurrentUser = Depends(get_current_user)):
                               "revoked_at": "is.null", "expires_at": f"gt.{now}",
                               "select": "id"},
                       headers=count_hdrs),
-        db_client.get(_url("/rest/v1/generated_tasks"),
+        db_client.get(_url("/rest/v1/generated_work"),
                       params={"studio_id": f"eq.{owner_id}", "deleted_at": "is.null",
                               "select": "id"},
                       headers=count_hdrs),
@@ -153,7 +153,7 @@ async def studio_summary(user: CurrentUser = Depends(get_current_user)):
         "asset_count":    _count(asset_r),
         "product_count":  len({r["product"] for r in (product_r.json() if product_r.is_success else []) if r.get("product")}),
         "active_shares":  _count(share_r),
-        "task_count":     _count(task_r),
+        "work_count":     _count(work_r),
         "last_synced_at": cursor_rows[0]["last_synced_at"] if isinstance(cursor_rows, list) and cursor_rows else None,
     }
 
@@ -201,7 +201,7 @@ async def delete_account(user: CurrentUser = Depends(get_current_user)):
             headers=_headers(),
         )
         await db_client.delete(
-            _url("/rest/v1/generated_tasks"),
+            _url("/rest/v1/generated_work"),
             params={"studio_id": f"eq.{studio_id}"},
             headers=_headers(),
         )

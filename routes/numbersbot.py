@@ -106,7 +106,7 @@ async def _build_context(user: CurrentUser) -> str:
         src_types   = Counter(t.get("source_type") or "—" for t in tasks)
         lines += [
             "",
-            f"GENERATED TASKS — {len(tasks)} active tasks",
+            f"GENERATED WORK — {len(tasks)} active work items",
             "",
             "BREAKDOWN BY CRAFT:",
             *[f"  {c}: {n}" for c, n in crafts.most_common()],
@@ -114,13 +114,13 @@ async def _build_context(user: CurrentUser) -> str:
             "BREAKDOWN BY SOURCE TYPE:",
             *[f"  {s}: {n}" for s, n in src_types.most_common()],
             "",
-            "TASK LIST — columns: task_name | craft | estimate_days | start_date | end_date | generated_at | variable_values",
+            "WORK LIST — columns: work_name | craft | estimate_days | start_date | end_date | generated_at | variable_values",
         ]
         for t in tasks:
             vars_display = str(t.get("variable_values") or "—")
             lines.append(
                 " | ".join([
-                    str(t.get("task_name") or "—"),
+                    str(t.get("work_name") or "—"),
                     str(t.get("craft") or "—"),
                     str(t.get("estimate_days") if t.get("estimate_days") is not None else "—"),
                     str(t.get("start_date") or "—"),
@@ -158,11 +158,11 @@ async def _parallel_fetch(owner_type: str, owner_id: str, jwt: str):
     if owner_type == "studio":
         coros.append(
             db_client.get(
-                _url("/rest/v1/generated_tasks"),
+                _url("/rest/v1/generated_work"),
                 params={
                     "studio_id":  f"eq.{owner_id}",
                     "deleted_at": "is.null",
-                    "select":     "task_name,craft,estimate_days,start_date,end_date,generated_at,variable_values,source_type",
+                    "select":     "work_name,craft,estimate_days,start_date,end_date,generated_at,variable_values,source_type",
                     "order":      "generated_at.desc",
                 },
                 headers=_user_headers(jwt, {"Range": "0-999"}),

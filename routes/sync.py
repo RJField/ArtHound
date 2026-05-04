@@ -247,8 +247,8 @@ async def _handle_webhook_deletions(
       }
 
     Tables touched: replicated_assets, replicated_products, replicated_item_types.
-    generated_tasks is intentionally excluded — those are historical snapshots and
-    should not be deleted when a source task is removed. Use generation versioning
+    generated_work is intentionally excluded — those are historical snapshots and
+    should not be deleted when a source work item is removed. Use generation versioning
     to manage current vs. historical views instead.
     """
     if os.environ.get("ENABLE_WEBHOOK_DELETIONS", "").lower() != "true":
@@ -278,11 +278,11 @@ async def _handle_webhook_deletions(
         if not r.is_success:
             log.warning("Deletion sync failed for %s: %s %s", table, r.status_code, r.text)
 
-    # Soft-delete matching generated_tasks rows — studios only, vendors have no snapshots.
+    # Soft-delete matching generated_work rows — studios only, vendors have no snapshots.
     # Sets deleted_at rather than hard-deleting so history is preserved for bots and audit.
     if owner_type == "studio":
         r = await db_client.patch(
-            _url("/rest/v1/generated_tasks"),
+            _url("/rest/v1/generated_work"),
             params={
                 "studio_id":        f"eq.{owner_id}",
                 "source_record_id": f"in.({ids_csv})",
@@ -292,7 +292,7 @@ async def _handle_webhook_deletions(
             headers=_headers({"Prefer": "return=minimal"}),
         )
         if not r.is_success:
-            log.warning("Soft-delete of generated_tasks failed: %s %s", r.status_code, r.text)
+            log.warning("Soft-delete of generated_work failed: %s %s", r.status_code, r.text)
 
     log.info(
         "Webhook deletion sync: %d record IDs processed for %s/%s",

@@ -51,14 +51,15 @@ export default function CsvImportModal({ onClose }) {
 
   const headers = csv?.headers ?? []
   const rows    = csv?.rows ?? []
-  const taskIdx = headers.indexOf('Task')
-  const estCols = headers.filter((h, i) => i !== taskIdx && h.trim())
+  const workIdx = headers.indexOf('Work') !== -1 ? headers.indexOf('Work') : headers.indexOf('Task')
+  const estCols = headers.filter((h, i) => i !== workIdx && h.trim())
   const nonEmpty = rows.filter(r =>
     estCols.some(h => {
       const v = (r[headers.indexOf(h)] ?? '').trim()
       return v !== '' && !isNaN(parseFloat(v))
     })
   )
+
 
   async function applyImport() {
     setLoading(true)
@@ -123,9 +124,9 @@ export default function CsvImportModal({ onClose }) {
                 <span className="text-muted text-xs">{rows.length} row{rows.length !== 1 ? 's' : ''}</span>
               </div>
 
-              {taskIdx === -1 && (
+              {workIdx === -1 && (
                 <div className="text-xs text-error bg-error/10 border border-error/20 rounded-md px-3 py-2">
-                  ⚠ No "Task" column found — check the file format
+                  ⚠ No "Work" or "Task" column found — check the file format
                 </div>
               )}
 
@@ -142,10 +143,10 @@ export default function CsvImportModal({ onClose }) {
                   }
                 </div>
                 <div>
-                  <p className="text-muted text-xs font-medium uppercase tracking-wide mb-2">First tasks in file</p>
+                  <p className="text-muted text-xs font-medium uppercase tracking-wide mb-2">First work items in file</p>
                   <div className="flex flex-col gap-1">
                     {rows.slice(0, 5).map((r, i) => (
-                      <div key={i} className="text-foreground text-xs">{r[taskIdx] ?? '—'}</div>
+                      <div key={i} className="text-foreground text-xs">{r[workIdx] ?? '—'}</div>
                     ))}
                     {rows.length > 5 && <div className="text-muted text-xs">+ {rows.length - 5} more</div>}
                   </div>
@@ -186,7 +187,7 @@ export default function CsvImportModal({ onClose }) {
             {phase === 'preview' && (
               <button
                 onClick={applyImport}
-                disabled={taskIdx === -1 || !estCols.length || loading}
+                disabled={workIdx === -1 || !estCols.length || loading}
                 className="text-xs bg-accent text-white px-3 py-1.5 rounded-md font-medium hover:bg-accent-hover disabled:opacity-50 cursor-pointer"
               >
                 {loading ? 'Importing…' : `Import ${nonEmpty.length} row${nonEmpty.length !== 1 ? 's' : ''}`}

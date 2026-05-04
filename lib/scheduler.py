@@ -251,9 +251,9 @@ async def build_schedule(
 
     asset_team = resolve_field_value(f("Team (from Product)"))
 
-    task_graph: dict = {}
-    task_estimates: dict = {}
-    task_info: dict = {}
+    work_graph: dict = {}
+    work_estimates: dict = {}
+    work_info: dict = {}
 
     # ── Try Airtable task-templates table first; fall back to Supabase ──────────
     airtable_templates_ok = False
@@ -298,7 +298,7 @@ async def build_schedule(
                 estimate = specific if specific is not None else matrix_lookup.get((step_id, DEFAULT_MATRIX_KEY), 0)
             else:
                 estimate = 0
-            task_estimates[template_id] = estimate if estimate is not None else 0
+            work_estimates[template_id] = estimate if estimate is not None else 0
 
             craft_links = tf("Crafts") or []
             cap_craft_ids = (
@@ -306,14 +306,14 @@ async def build_schedule(
                 if isinstance(craft_links, list)
                 else []
             )
-            task_info[template_id] = {
-                "taskName": tf("Task") or "Untitled",
+            work_info[template_id] = {
+                "workName": tf("Task") or "Untitled",
                 "craft": craft_name_by_template.get(template_id, ""),
                 "capCraftIds": cap_craft_ids,
             }
 
             followed_by = [lid for l in (tf("Depended upon") or []) if (lid := link_id(l))]
-            task_graph[template_id] = followed_by
+            work_graph[template_id] = followed_by
 
     else:
         # ── Supabase-native path ─────────────────────────────────────────────
@@ -342,64 +342,64 @@ async def build_schedule(
             sid = row["id"]
             specific = matrix_lookup.get((sid, variable_values_key))
             estimate = specific if specific is not None else matrix_lookup.get((sid, DEFAULT_MATRIX_KEY), 0)
-            task_estimates[sid] = estimate or 0
-            task_info[sid] = {
-                "taskName":   row["name"],
+            work_estimates[sid] = estimate or 0
+            work_info[sid] = {
+                "workName":   row["name"],
                 "craft":      row.get("craft") or "",
                 "capCraftIds": [],
             }
-            task_graph[sid] = []  # followers added below
+            work_graph[sid] = []  # followers added below
 
         # Build graph: predecessor → [followers]
         for dep in deps:
             predecessor = dep["depends_on"]
             follower    = dep["step_id"]
-            if predecessor in task_graph:
-                task_graph[predecessor].append(follower)
+            if predecessor in work_graph:
+                work_graph[predecessor].append(follower)
 
-    sorted_ids = reverse_topological_sort(task_graph)
-    task_dates: dict = {}
+    sorted_ids = reverse_topological_sort(work_graph)
+    work_dates: dict = {}
 
     for node_id in sorted_ids:
-        followers = task_graph.get(node_id, [])
-        estimate = task_estimates.get(node_id, 0)
+        followers = work_graph.get(node_id, [])
+        estimate = work_estimates.get(node_id, 0)
         end_date = project_date
 
         if followers:
             follower_starts = [
-                task_dates[fid]["startDate"] for fid in followers if fid in task_dates
+                work_dates[fid]["startDate"] for fid in followers if fid in work_dates
             ]
             if follower_starts:
                 end_date = min(follower_starts)
 
         start_date = subtract_working_days(end_date, estimate)
-        task_dates[node_id] = {"startDate": start_date, "endDate": end_date}
+        work_dates[node_id] = {"startDate": start_date, "endDate": end_date}
 
     asset_name = resolve_name(f(fn_name)) or asset_id
-    tasks = []
+    work = []
     warnings = []
 
     for node_id in sorted_ids:
-        info = task_info.get(node_id)
+        info = work_info.get(node_id)
         if not info:
             continue
-        estimate = task_estimates.get(node_id, 0)
+        estimate = work_estimates.get(node_id, 0)
         if not estimate or estimate <= 0:
             warnings.append(
-                f"'{info['taskName']}' skipped — no estimate found for [{estimate_col}] "
+                f"'{info['workName']}' skipped — no estimate found for [{estimate_col}] "
                 f"and no Default set"
             )
             continue
 
-        dates = task_dates[node_id]
+        dates = work_dates[node_id]
         # In Airtable path, node_id is an Airtable recId; workflowStepId is the UUID.
         # In Supabase path, node_id IS the UUID; templateId is None.
         is_airtable_path = airtable_templates_ok
-        tasks.append(
+        work.append(
             {
                 "templateId":     node_id if is_airtable_path else None,
                 "workflowStepId": step_lookup.get(node_id) if is_airtable_path else node_id,
-                "taskName":       f"{info['taskName']} - {asset_name} - {info['craft']}",
+                "workName":       f"{info['workName']} - {asset_name} - {info['craft']}",
                 "craft":          info["craft"],
                 "capCraftIds":    info["capCraftIds"],
                 "estimate":       estimate,
@@ -419,10 +419,10 @@ async def build_schedule(
             "projectDate":      project_date.isoformat(),
             "estimateCol":      estimate_col,
         },
-        # Internal fields used by the route to write generated_tasks snapshots.
+        # Internal fields used by the route to write generated_work snapshots.
         # Not intended for the frontend response.
         "_studioId":       studio_id,
         "_variableValues": asset_var_values,
-        "tasks":           tasks,
+        "work":            work,
         "warnings":        warnings,
     }

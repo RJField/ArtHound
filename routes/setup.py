@@ -239,7 +239,7 @@ async def get_matrix_table_pg(current_user: CurrentUser = Depends(require_studio
 
     cfg_rows = r_cfg.json()
     if not cfg_rows:
-        return {"variableFields": [], "combinations": [], "tasks": [], "attributeFields": []}
+        return {"variableFields": [], "combinations": [], "work": [], "attributeFields": []}
     variable_fields = cfg_rows[0]["variable_fields"]
 
     steps = r_steps.json()
@@ -303,7 +303,7 @@ async def get_matrix_table_pg(current_user: CurrentUser = Depends(require_studio
     if _DEFAULT_COL in all_combo_keys:
         combinations.append({"key": "Default", "colName": _DEFAULT_COL, "label": "Default"})
 
-    tasks = []
+    work_steps = []
     for idx, step_id in enumerate(sorted_ids):
         s = step_by_id.get(step_id)
         if not s:
@@ -311,7 +311,7 @@ async def get_matrix_table_pg(current_user: CurrentUser = Depends(require_studio
         linked_values = {}
         if s.get("craft"):
             linked_values["Craft"] = [s["craft"]]
-        tasks.append({
+        work_steps.append({
             "id": step_id,
             "step": idx + 1,
             "name": s["name"],
@@ -324,7 +324,7 @@ async def get_matrix_table_pg(current_user: CurrentUser = Depends(require_studio
     return {
         "variableFields": variable_fields,
         "combinations": combinations,
-        "tasks": tasks,
+        "work": work_steps,
         "attributeFields": attribute_fields,
     }
 

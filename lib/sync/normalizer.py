@@ -6,9 +6,9 @@ from lib.connectors.adapters.airtable import AirtableFieldAdapter
 from lib.connectors.field_types import LinkedRecord, SelectValue, to_json
 from lib.sync.connector import RawRecord, SchemaField
 
-_TASK_NAME_PRIORITY = ["task", "name", "title", "ticket", "item"]
-_TASK_STATUS_ALIASES = ["status", "state", "phase"]
-_TASK_ESTIMATE_ALIASES = ["estimate", "duration", "hours", "days", "frames", "time"]
+_WORK_NAME_PRIORITY = ["task", "name", "title", "ticket", "item"]
+_WORK_STATUS_ALIASES = ["status", "state", "phase"]
+_WORK_ESTIMATE_ALIASES = ["estimate", "duration", "hours", "days", "frames", "time"]
 
 ARTHOUND_SLOTS = {
     "name", "dev_name", "item_type", "priority",
@@ -131,19 +131,19 @@ def normalize_reference(record: RawRecord, name_field: str) -> dict:
     }
 
 
-def normalize_task(
+def normalize_work(
     record: RawRecord,
     rel_field_name: str | None = None,
     asset_canonical_map: dict[str, str] | None = None,
 ) -> dict:
     """
-    Normalize a raw task record into a replicated_tasks row.
+    Normalize a raw work record into a replicated_work row.
 
-    rel_field_name: name of the linked-record field on the task pointing to the
-        parent asset (from source_entity_definitions.rel_field_name).
+    rel_field_name: name of the linked-record field on the work item pointing to
+        the parent asset (from source_entity_definitions.rel_field_name).
     asset_canonical_map: {source_asset_record_id: canonical_asset_id} — built
-        from canonical_map after asset upsert so tasks resolve to ArtHound IDs.
-    Only child_holds_link direction is supported (task has the link to asset).
+        from canonical_map after asset upsert so work items resolve to ArtHound IDs.
+    Only child_holds_link direction is supported (work item has the link to asset).
     """
     # Resolve parent asset
     source_asset_record_id: str | None = None
@@ -165,7 +165,7 @@ def normalize_task(
     }
 
     name: str | None = None
-    for alias in _TASK_NAME_PRIORITY:
+    for alias in _WORK_NAME_PRIORITY:
         if alias in fields_by_lower:
             _, val = fields_by_lower[alias]
             if isinstance(val, str) and val.strip():
@@ -178,7 +178,7 @@ def normalize_task(
                 break
 
     status: str | None = None
-    for alias in _TASK_STATUS_ALIASES:
+    for alias in _WORK_STATUS_ALIASES:
         if alias in fields_by_lower:
             _, val = fields_by_lower[alias]
             if isinstance(val, str) and val.strip():
@@ -186,7 +186,7 @@ def normalize_task(
                 break
 
     estimate: float | None = None
-    for alias in _TASK_ESTIMATE_ALIASES:
+    for alias in _WORK_ESTIMATE_ALIASES:
         if alias in fields_by_lower:
             _, val = fields_by_lower[alias]
             if val is not None:

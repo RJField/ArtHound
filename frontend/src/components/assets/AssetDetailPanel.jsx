@@ -1,19 +1,19 @@
 import { useState } from 'react'
 import { cn } from '../../lib/utils'
 import DetailsTab from './tabs/DetailsTab'
-import TasksTab   from './tabs/TasksTab'
+import WorkTab    from './tabs/WorkTab'
 import ReviewsTab from './tabs/ReviewsTab'
 import BugsTab    from './tabs/BugsTab'
 
 // Tab registry — add, remove, or reorder here without touching panel logic.
 const TABS = [
   { id: 'details', label: 'Details', Component: DetailsTab },
-  { id: 'tasks',   label: 'Tasks',   Component: TasksTab },
+  { id: 'work',    label: 'Work',    Component: WorkTab },
   { id: 'reviews', label: 'Reviews', Component: ReviewsTab },
   { id: 'bugs',    label: 'Bugs',    Component: BugsTab },
 ]
 
-export default function AssetDetailPanel({ asset, schema, taskRefreshKey }) {
+export default function AssetDetailPanel({ asset, schema, workRefreshKey }) {
   const [activeTab, setActiveTab] = useState('details')
 
   const { Component: ActiveComponent } = TABS.find(t => t.id === activeTab) ?? {}
@@ -70,7 +70,7 @@ export default function AssetDetailPanel({ asset, schema, taskRefreshKey }) {
           {/* Active tab content */}
           <div className="flex-1 overflow-hidden">
             {ActiveComponent && (
-              <ActiveComponent asset={asset} schema={schema} taskRefreshKey={taskRefreshKey} />
+              <ActiveComponent asset={asset} schema={schema} workRefreshKey={workRefreshKey} />
             )}
           </div>
         </>

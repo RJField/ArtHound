@@ -89,8 +89,8 @@ export default function StudioHome() {
           onClick={() => navigate('/shares')}
         />
         <StatCard
-          label="Generated tasks"
-          value={summary?.task_count}
+          label="Generated work"
+          value={summary?.work_count}
           loading={loading}
         />
       </div>

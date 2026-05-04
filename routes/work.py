@@ -15,23 +15,23 @@ def _owner(user: CurrentUser) -> tuple[str, str]:
     return owner_type, owner_id
 
 
-def _fmt_task(row: dict) -> dict:
+def _fmt_work(row: dict) -> dict:
     return {
-        "id":                    row["id"],
-        "source_record_id":      row["source_record_id"],
+        "id":                     row["id"],
+        "source_record_id":       row["source_record_id"],
         "source_asset_record_id": row.get("source_asset_record_id"),
-        "canonical_asset_id":    row.get("canonical_asset_id"),
-        "name":                  row.get("name"),
-        "status":                row.get("status"),
-        "estimate":              row.get("estimate"),
-        "meta":                  row.get("meta") or {},
-        "synced_at":             row.get("synced_at"),
+        "canonical_asset_id":     row.get("canonical_asset_id"),
+        "name":                   row.get("name"),
+        "status":                 row.get("status"),
+        "estimate":               row.get("estimate"),
+        "meta":                   row.get("meta") or {},
+        "synced_at":              row.get("synced_at"),
     }
 
 
 @router.get("/")
-async def list_tasks(
-    asset_source_id:   Optional[str] = Query(None),
+async def list_work(
+    asset_source_id:    Optional[str] = Query(None),
     canonical_asset_id: Optional[str] = Query(None),
     current_user: CurrentUser = Depends(get_current_user),
 ):
@@ -51,27 +51,27 @@ async def list_tasks(
         params["canonical_asset_id"] = f"eq.{canonical_asset_id}"
 
     r = await db_client.get(
-        _url("/rest/v1/replicated_tasks"),
+        _url("/rest/v1/replicated_work"),
         params=params,
         headers=_user_headers(current_user.token),
     )
     r.raise_for_status()
-    return [_fmt_task(row) for row in r.json()]
+    return [_fmt_work(row) for row in r.json()]
 
 
-@router.get("/{task_id}")
-async def get_task(
-    task_id: str,
+@router.get("/{work_id}")
+async def get_work(
+    work_id: str,
     current_user: CurrentUser = Depends(get_current_user),
 ):
     owner_type, owner_id = _owner(current_user)
 
     r = await db_client.get(
-        _url("/rest/v1/replicated_tasks"),
+        _url("/rest/v1/replicated_work"),
         params={
             "owner_type":       f"eq.{owner_type}",
             "owner_id":         f"eq.{owner_id}",
-            "source_record_id": f"eq.{task_id}",
+            "source_record_id": f"eq.{work_id}",
             "select":           "id,source_record_id,source_asset_record_id,canonical_asset_id,name,status,estimate,meta,synced_at",
         },
         headers=_user_headers(current_user.token),
@@ -79,5 +79,5 @@ async def get_task(
     r.raise_for_status()
     rows = r.json()
     if not rows:
-        raise HTTPException(status_code=404, detail="Task not found")
-    return _fmt_task(rows[0])
+        raise HTTPException(status_code=404, detail="Work item not found")
+    return _fmt_work(rows[0])

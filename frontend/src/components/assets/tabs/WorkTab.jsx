@@ -5,12 +5,12 @@ import { fmtDate } from '../../../lib/fields'
 import { cn } from '../../../lib/utils'
 // ── Timeline ──────────────────────────────────────────────────────────────────
 
-function TasksTimeline({ tasks }) {
-  const dated = tasks
+function WorkTimeline({ work }) {
+  const dated = work
     .filter(t => t.startDate && t.endDate)
     .map(t => ({ ...t, start: new Date(t.startDate), end: new Date(t.endDate) }))
 
-  if (!dated.length) return <p className="text-muted text-xs p-3">No dated tasks to display.</p>
+  if (!dated.length) return <p className="text-muted text-xs p-3">No dated work items to display.</p>
 
   const minMs  = Math.min(...dated.map(t => t.start.getTime()))
   const maxMs  = Math.max(...dated.map(t => t.end.getTime()))
@@ -47,7 +47,7 @@ function TasksTimeline({ tasks }) {
       </div>
       {dated.map(t => (
         <div key={t.id} className="flex items-center mb-1 min-h-7">
-          <div className="w-32 shrink-0 pr-2 text-muted text-xs truncate">{t.task}</div>
+          <div className="w-32 shrink-0 pr-2 text-muted text-xs truncate">{t.work}</div>
           <div className="flex-1 relative h-5">
             {showNow && (
               <div className="absolute top-0 bottom-0 w-px bg-error opacity-60" style={{ left: `${pct(now)}%` }} />
@@ -67,6 +67,50 @@ function TasksTimeline({ tasks }) {
   )
 }
 
+// ── Craft rollup ─────────────────────────────────────────────────────────────
+
+function CraftRollup({ work }) {
+  const rows = Object.entries(
+    work.reduce((acc, t) => {
+      if (t.estimate == null) return acc
+      const craft = t.craft || 'Unassigned'
+      acc[craft] = (acc[craft] || 0) + t.estimate
+      return acc
+    }, {})
+  ).sort(([a], [b]) => a.localeCompare(b))
+
+  if (!rows.length) return null
+
+  const total = rows.reduce((s, [, d]) => s + d, 0)
+
+  return (
+    <div className="border border-border rounded-md overflow-hidden mb-3">
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="border-b border-border bg-surface-2">
+            <th className="text-left font-normal text-muted px-3 py-1.5">Craft</th>
+            <th className="text-right font-normal text-muted px-3 py-1.5">Days</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(([craft, days]) => (
+            <tr key={craft} className="border-b border-border/40 last:border-0">
+              <td className="px-3 py-1.5 text-foreground">{craft}</td>
+              <td className="px-3 py-1.5 text-right text-foreground tabular-nums">{days}d</td>
+            </tr>
+          ))}
+        </tbody>
+        <tfoot>
+          <tr className="border-t border-border bg-surface-2">
+            <td className="px-3 py-1.5 text-muted font-medium">Total</td>
+            <td className="px-3 py-1.5 text-right text-foreground font-medium tabular-nums">{total}d</td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  )
+}
+
 // ── Tab ───────────────────────────────────────────────────────────────────────
 
 const SOURCES = [
@@ -74,46 +118,46 @@ const SOURCES = [
   { id: 'arthound', label: 'ArtHound' },
 ]
 
-export default function TasksTab({ asset, taskRefreshKey }) {
-  const [source,    setSource]    = useState('arthound')
-  const [view,      setView]      = useState('list')
-  const [tasks,     setTasks]     = useState(null)
-  const [loading,   setLoading]   = useState(false)
+export default function WorkTab({ asset, workRefreshKey }) {
+  const [source,  setSource]  = useState('arthound')
+  const [view,    setView]    = useState('list')
+  const [work,    setWork]    = useState(null)
+  const [loading, setLoading] = useState(false)
 
   useEffect(() => {
-    if (!asset) { setTasks(null); return }
-    setTasks(null)
+    if (!asset) { setWork(null); return }
+    setWork(null)
     setLoading(true)
 
     async function load() {
       try {
         if (source === 'source') {
           const data = await apiFetch(
-            `/api/tasks?asset_source_id=${encodeURIComponent(asset.id)}`
+            `/api/work?asset_source_id=${encodeURIComponent(asset.id)}`
           )
-          setTasks(data)
+          setWork(data)
         } else {
-          if (!asset.canonicalId) { setTasks([]); return }
+          if (!asset.canonicalId) { setWork([]); return }
           const data = await apiFetch(
-            `/api/schedule/tasks-local?canonicalAssetId=${encodeURIComponent(asset.canonicalId)}`
+            `/api/schedule/work-local?canonicalAssetId=${encodeURIComponent(asset.canonicalId)}`
           )
-          setTasks(data)
+          setWork(data)
         }
       } catch (err) {
         toast.error(err.message)
-        setTasks([])
+        setWork([])
       } finally {
         setLoading(false)
       }
     }
 
     load()
-  }, [asset?.id, source, taskRefreshKey])
+  }, [asset?.id, source, workRefreshKey])
 
   function emptyMessage() {
-    if (source === 'source') return 'No source tasks synced for this asset.'
+    if (source === 'source') return 'No source work synced for this asset.'
     if (!asset?.canonicalId) return 'Asset not yet synced to ArtHound.'
-    return 'No tasks yet — use Generate Work to create them.'
+    return 'No work yet — use Generate Work to create it.'
   }
 
   return (
@@ -139,21 +183,25 @@ export default function TasksTab({ asset, taskRefreshKey }) {
         </div>
       </div>
 
-      {/* Task list / timeline */}
+      {/* Work list / timeline */}
       <div className="flex-1 overflow-y-auto p-3">
         {loading && <p className="text-muted text-xs">Loading…</p>}
 
-        {!loading && tasks !== null && tasks.length === 0 && (
+        {!loading && work !== null && work.length === 0 && (
           <p className="text-muted text-xs">{emptyMessage()}</p>
         )}
 
-        {tasks?.length > 0 && view === 'timeline' && source !== 'source' && (
-          <TasksTimeline tasks={tasks} />
+        {work?.length > 0 && source === 'arthound' && (
+          <CraftRollup work={work} />
         )}
 
-        {tasks?.length > 0 && view === 'list' && source === 'source' && (
+        {work?.length > 0 && view === 'timeline' && source !== 'source' && (
+          <WorkTimeline work={work} />
+        )}
+
+        {work?.length > 0 && view === 'list' && source === 'source' && (
           <div className="flex flex-col gap-1">
-            {tasks.map(t => (
+            {work.map(t => (
               <div key={t.id} className="flex items-start justify-between gap-4 px-3 py-2 rounded-md">
                 <div className="min-w-0 flex-1">
                   <p className="text-foreground text-xs truncate">{t.name || '—'}</p>
@@ -167,12 +215,12 @@ export default function TasksTab({ asset, taskRefreshKey }) {
           </div>
         )}
 
-        {tasks?.length > 0 && view === 'list' && source === 'arthound' && (
+        {work?.length > 0 && view === 'list' && source === 'arthound' && (
           <div className="flex flex-col gap-1">
-            {tasks.map(t => (
+            {work.map(t => (
               <div key={t.id} className="flex items-center justify-between gap-4 px-3 py-2 rounded-md">
                 <div className="min-w-0">
-                  <p className="text-foreground text-xs truncate">{t.task}</p>
+                  <p className="text-foreground text-xs truncate">{t.work}</p>
                   <p className="text-muted text-xs">
                     {t.startDate ? fmtDate(t.startDate) : '—'} → {t.endDate ? fmtDate(t.endDate) : '—'}
                   </p>
