@@ -4,15 +4,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from lib.auth import CurrentUser, require_studio
-from lib.db import db_client, _url, _headers
+from lib.db import db_client, _url, _headers, _user_headers
 
 router = APIRouter()
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
-async def _fetch_asset_meta(studio_id: str, canonical_asset_ids: list[str]) -> dict:
-    """Return dict of canonical_asset_id -> replicated_assets row for the given IDs."""
+async def _fetch_asset_meta(studio_id: str, canonical_asset_ids: list[str], jwt: str) -> dict:
     if not canonical_asset_ids:
         return {}
     ids_csv = ",".join(canonical_asset_ids)
@@ -24,19 +23,18 @@ async def _fetch_asset_meta(studio_id: str, canonical_asset_ids: list[str]) -> d
             "owner_id": f"eq.{studio_id}",
             "canonical_asset_id": f"in.({ids_csv})",
         },
-        headers=_headers(),
+        headers=_user_headers(jwt),
     )
     if not r.is_success:
         return {}
     return {row["canonical_asset_id"]: row for row in r.json()}
 
 
-async def _enrich(reviews: list[dict], studio_id: str) -> list[dict]:
-    """Attach asset metadata to each review."""
+async def _enrich(reviews: list[dict], studio_id: str, jwt: str) -> list[dict]:
     if not reviews:
         return []
     asset_ids = list({rv["canonical_asset_id"] for rv in reviews})
-    meta = await _fetch_asset_meta(studio_id, asset_ids)
+    meta = await _fetch_asset_meta(studio_id, asset_ids, jwt)
     return [{**rv, "asset": meta.get(rv["canonical_asset_id"])} for rv in reviews]
 
 
@@ -73,7 +71,7 @@ async def list_assets_for_picker(user: CurrentUser = Depends(require_studio)):
             "studio_id": f"eq.{studio_id}",
             "order": "created_at.asc",
         },
-        headers=_headers(),
+        headers=_user_headers(user.token),
     )
     if not r.is_success:
         raise HTTPException(status_code=502, detail="Failed to fetch assets")
@@ -91,7 +89,7 @@ async def list_assets_for_picker(user: CurrentUser = Depends(require_studio)):
             "owner_id": f"eq.{studio_id}",
             "canonical_asset_id": f"in.({ids_csv})",
         },
-        headers=_headers(),
+        headers=_user_headers(user.token),
     )
 
     name_map: dict = {}
@@ -130,12 +128,12 @@ async def list_reviews(
     r = await db_client.get(
         _url("/rest/v1/asset_reviews"),
         params=params,
-        headers=_headers(),
+        headers=_user_headers(user.token),
     )
     if not r.is_success:
         raise HTTPException(status_code=502, detail="Failed to fetch reviews")
 
-    return await _enrich(r.json(), studio_id)
+    return await _enrich(r.json(), studio_id, user.token)
 
 
 @router.post("")
@@ -150,7 +148,7 @@ async def create_review(body: ReviewCreate, user: CurrentUser = Depends(require_
             "id": f"eq.{body.canonical_asset_id}",
             "studio_id": f"eq.{studio_id}",
         },
-        headers=_headers(),
+        headers=_user_headers(user.token),
     )
     if not check.is_success or not check.json():
         raise HTTPException(status_code=404, detail="Asset not found in this studio")
@@ -174,7 +172,7 @@ async def create_review(body: ReviewCreate, user: CurrentUser = Depends(require_
     if not rows:
         raise HTTPException(status_code=502, detail="Review created but not returned")
 
-    enriched = await _enrich([rows[0]], studio_id)
+    enriched = await _enrich([rows[0]], studio_id, user.token)
     return enriched[0]
 
 
@@ -189,12 +187,12 @@ async def get_review(review_id: str, user: CurrentUser = Depends(require_studio)
             "id": f"eq.{review_id}",
             "studio_id": f"eq.{studio_id}",
         },
-        headers=_headers(),
+        headers=_user_headers(user.token),
     )
     if not r.is_success or not r.json():
         raise HTTPException(status_code=404, detail="Review not found")
 
-    enriched = await _enrich([r.json()[0]], studio_id)
+    enriched = await _enrich([r.json()[0]], studio_id, user.token)
     return enriched[0]
 
 

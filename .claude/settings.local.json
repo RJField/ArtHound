@@ -23,7 +23,10 @@
       "PowerShell(Get-ChildItem -Path \"c:\\\\Users\\\\field\\\\Documents\\\\ArtHound\\\\ArtHound\\\\frontend\\\\src\" -Recurse -Directory | ForEach-Object { $_.FullName.Replace\\(\"c:\\\\Users\\\\field\\\\Documents\\\\ArtHound\\\\ArtHound\\\\frontend\\\\src\\\\\", \"\"\\) } | Sort-Object)",
       "Bash(grep -E \"\\\\.\\(py|js|ts|jsx|tsx\\)$\")",
       "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\field\\\\Documents\\\\ArtHound\\\\ArtHound\" -Recurse -File)",
-      "Bash(Select-Object -ExpandProperty FullName)"
+      "Bash(Select-Object -ExpandProperty FullName)",
+      "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\field\\\\Documents\\\\ArtHound\\\\ArtHound\" -Recurse -Directory)",
+      "Bash(Select-Object FullName)",
+      "Bash(xargs -I {} sh -c 'echo \"=== {} ===\" && grep -o \"task\\\\|Task\" \"{}\" | wc -l')"
     ]
   }
 }

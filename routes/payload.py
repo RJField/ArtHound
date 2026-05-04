@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
 
 from lib.auth import CurrentUser, get_current_user, require_studio, require_vendor
-from lib.db import db_client, _url, _headers
+from lib.db import db_client, _url, _headers, _user_headers
 
 router = APIRouter()
 
@@ -40,11 +40,11 @@ async def _log(
         pass  # audit failure must never block the primary operation
 
 
-async def _get_dispatch(dispatch_id: str, select: str = "*") -> dict | None:
+async def _get_dispatch(dispatch_id: str, jwt: str, select: str = "*") -> dict | None:
     r = await db_client.get(
         _url("/rest/v1/payload_dispatches"),
         params={"id": f"eq.{dispatch_id}", "select": select},
-        headers=_headers(),
+        headers=_user_headers(jwt),
     )
     rows = r.json()
     return rows[0] if rows else None
@@ -87,7 +87,7 @@ async def list_templates(user: CurrentUser = Depends(require_studio)):
             "select": "*",
             "order": "created_at.asc",
         },
-        headers=_headers(),
+        headers=_user_headers(user.token),
     )
     return r.json()
 
@@ -113,7 +113,7 @@ async def update_template(
     r = await db_client.get(
         _url("/rest/v1/payload_templates"),
         params={"id": f"eq.{template_id}", "studio_id": f"eq.{user.studio_id}", "select": "id"},
-        headers=_headers(),
+        headers=_user_headers(user.token),
     )
     if not r.json():
         raise HTTPException(status_code=404, detail="Template not found")
@@ -132,7 +132,7 @@ async def delete_template(template_id: str, user: CurrentUser = Depends(require_
     r = await db_client.get(
         _url("/rest/v1/payload_templates"),
         params={"id": f"eq.{template_id}", "studio_id": f"eq.{user.studio_id}", "select": "id"},
-        headers=_headers(),
+        headers=_user_headers(user.token),
     )
     if not r.json():
         raise HTTPException(status_code=404, detail="Template not found")
@@ -192,7 +192,7 @@ async def dispatch_bulk(body: BulkDispatchBody, user: CurrentUser = Depends(requ
         r_asset = await db_client.get(
             _url("/rest/v1/canonical_assets"),
             params={"id": f"eq.{asset.asset_id}", "studio_id": f"eq.{studio_id}", "select": "id"},
-            headers=_headers(),
+            headers=_user_headers(user.token),
         )
         if not r_asset.json():
             continue
@@ -241,7 +241,7 @@ async def dispatch_payload(body: DispatchBody, user: CurrentUser = Depends(requi
     r_asset = await db_client.get(
         _url("/rest/v1/canonical_assets"),
         params={"id": f"eq.{body.asset_id}", "studio_id": f"eq.{studio_id}", "select": "id"},
-        headers=_headers(),
+        headers=_user_headers(user.token),
     )
     if not r_asset.json():
         raise HTTPException(status_code=404, detail="Asset not found")
@@ -249,7 +249,7 @@ async def dispatch_payload(body: DispatchBody, user: CurrentUser = Depends(requi
     r_tmpl = await db_client.get(
         _url("/rest/v1/payload_templates"),
         params={"id": f"eq.{body.template_id}", "studio_id": f"eq.{studio_id}", "select": "*"},
-        headers=_headers(),
+        headers=_user_headers(user.token),
     )
     templates = r_tmpl.json()
     if not templates:
@@ -297,7 +297,7 @@ async def get_outbox(user: CurrentUser = Depends(require_studio)):
             "select": "id,asset_id,recipient_vendor_id,template_id,expires_at,revoked_at,created_at,payload_data",
             "order": "created_at.desc",
         },
-        headers=_headers(),
+        headers=_user_headers(user.token),
     )
     dispatches = r.json()
     if not dispatches:
@@ -311,7 +311,7 @@ async def get_outbox(user: CurrentUser = Depends(require_studio)):
             "event": "eq.viewed",
             "select": "dispatch_id",
         },
-        headers=_headers(),
+        headers=_user_headers(user.token),
     )
     view_counts: dict[str, int] = {}
     for row in r_log.json():
@@ -335,7 +335,7 @@ async def get_vendor_inbox(user: CurrentUser = Depends(require_vendor)):
             "select": "id,asset_id,sender_studio_id,expires_at,revoked_at,created_at,payload_data",
             "order": "created_at.desc",
         },
-        headers=_headers(),
+        headers=_user_headers(user.token),
     )
     now = datetime.now(timezone.utc)
     return [
@@ -349,7 +349,7 @@ async def get_vendor_inbox(user: CurrentUser = Depends(require_vendor)):
 
 @router.post("/{dispatch_id}/viewed", status_code=204)
 async def record_view(dispatch_id: str, user: CurrentUser = Depends(require_vendor)):
-    dispatch = await _get_dispatch(dispatch_id, select="id,recipient_vendor_id,revoked_at,expires_at")
+    dispatch = await _get_dispatch(dispatch_id, user.token, select="id,recipient_vendor_id,revoked_at,expires_at")
     if not dispatch or dispatch.get("recipient_vendor_id") != user.vendor_id:
         raise HTTPException(status_code=404, detail="Dispatch not found")
     _assert_valid(dispatch)
@@ -368,7 +368,7 @@ async def revoke_dispatch(dispatch_id: str, user: CurrentUser = Depends(require_
             "sender_studio_id": f"eq.{user.studio_id}",
             "select": "id,revoked_at",
         },
-        headers=_headers(),
+        headers=_user_headers(user.token),
     )
     rows = r.json()
     if not rows:
@@ -403,7 +403,7 @@ async def save_mapping(
             "recipient_vendor_id": f"eq.{user.vendor_id}",
             "select": "id,revoked_at,expires_at",
         },
-        headers=_headers(),
+        headers=_user_headers(user.token),
     )
     if not r.json():
         raise HTTPException(status_code=404, detail="Dispatch not found")
@@ -433,7 +433,7 @@ async def apply_mapping(dispatch_id: str, user: CurrentUser = Depends(require_ve
             "recipient_vendor_id": f"eq.{user.vendor_id}",
             "select": "*",
         },
-        headers=_headers(),
+        headers=_user_headers(user.token),
     )
     rows = r.json()
     if not rows:
@@ -441,7 +441,7 @@ async def apply_mapping(dispatch_id: str, user: CurrentUser = Depends(require_ve
     if rows[0]["applied_at"]:
         raise HTTPException(status_code=409, detail="Already applied")
 
-    dispatch = await _get_dispatch(dispatch_id, select="id,revoked_at,expires_at,recipient_vendor_id")
+    dispatch = await _get_dispatch(dispatch_id, user.token, select="id,revoked_at,expires_at,recipient_vendor_id")
     if not dispatch or dispatch.get("recipient_vendor_id") != user.vendor_id:
         raise HTTPException(status_code=404, detail="Dispatch not found")
     _assert_valid(dispatch)
@@ -463,14 +463,14 @@ async def get_audit_log(dispatch_id: str, user: CurrentUser = Depends(get_curren
     r = await db_client.get(
         _url("/rest/v1/payload_dispatches"),
         params={"id": f"eq.{dispatch_id}", "select": "sender_studio_id,recipient_vendor_id"},
-        headers=_headers(),
+        headers=_user_headers(user.token),
     )
     rows = r.json()
     if not rows:
         raise HTTPException(status_code=404, detail="Dispatch not found")
 
     d = rows[0]
-    is_sender   = user.role == "studio" and d["sender_studio_id"] == user.studio_id
+    is_sender    = user.role == "studio" and d["sender_studio_id"] == user.studio_id
     is_recipient = user.role == "vendor" and d["recipient_vendor_id"] == user.vendor_id
     if not is_sender and not is_recipient:
         raise HTTPException(status_code=403, detail="Access denied")
@@ -482,6 +482,6 @@ async def get_audit_log(dispatch_id: str, user: CurrentUser = Depends(get_curren
             "select": "event,actor_studio_id,detail,created_at",
             "order": "created_at.asc",
         },
-        headers=_headers(),
+        headers=_user_headers(user.token),
     )
     return r_log.json()

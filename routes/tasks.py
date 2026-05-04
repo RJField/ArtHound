@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import Optional
 
 from lib.auth import CurrentUser, get_current_user
-from lib.db import db_client, _url, _headers
+from lib.db import db_client, _url, _headers, _user_headers
 
 router = APIRouter()
 
@@ -53,7 +53,7 @@ async def list_tasks(
     r = await db_client.get(
         _url("/rest/v1/replicated_tasks"),
         params=params,
-        headers=_headers(),
+        headers=_user_headers(current_user.token),
     )
     r.raise_for_status()
     return [_fmt_task(row) for row in r.json()]
@@ -74,7 +74,7 @@ async def get_task(
             "source_record_id": f"eq.{task_id}",
             "select":           "id,source_record_id,source_asset_record_id,canonical_asset_id,name,status,estimate,meta,synced_at",
         },
-        headers=_headers(),
+        headers=_user_headers(current_user.token),
     )
     r.raise_for_status()
     rows = r.json()

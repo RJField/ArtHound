@@ -19,3 +19,13 @@ def _headers(extra: dict = {}) -> dict:
         "Content-Type": "application/json",
         **extra,
     }
+
+
+def _user_headers(jwt: str, extra: dict = {}) -> dict:
+    anon_key = os.environ["SUPABASE_ANON_KEY"]
+    return {
+        "Authorization": f"Bearer {jwt}",
+        "apikey": anon_key,
+        "Content-Type": "application/json",
+        **extra,
+    }

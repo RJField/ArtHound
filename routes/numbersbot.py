@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from lib.auth import CurrentUser, get_current_user
-from lib.db import db_client, _url, _headers
+from lib.db import db_client, _url, _headers, _user_headers
 
 router = APIRouter()
 
@@ -46,7 +46,7 @@ async def _build_context(user: CurrentUser) -> str:
     if not owner_id:
         return "No studio or vendor linked to this account — cannot load asset data."
 
-    asset_r, fm_r, tasks_r = await _parallel_fetch(owner_type, owner_id)
+    asset_r, fm_r, tasks_r = await _parallel_fetch(owner_type, owner_id, user.token)
 
     raw_assets = asset_r.json() if asset_r.is_success else []
     fm_rows    = fm_r.json() if fm_r.is_success else []
@@ -133,7 +133,7 @@ async def _build_context(user: CurrentUser) -> str:
     return "\n".join(lines)
 
 
-async def _parallel_fetch(owner_type: str, owner_id: str):
+async def _parallel_fetch(owner_type: str, owner_id: str, jwt: str):
     import asyncio
 
     params_base = {
@@ -146,12 +146,12 @@ async def _parallel_fetch(owner_type: str, owner_id: str):
         db_client.get(
             _url("/rest/v1/replicated_assets"),
             params={**params_base, "select": f"owner_type,owner_id,{_SLOTS},meta", "order": "product.asc,name.asc"},
-            headers=_headers({"Range": "0-999"}),
+            headers=_user_headers(jwt, {"Range": "0-999"}),
         ),
         db_client.get(
             _url("/rest/v1/source_field_mappings"),
             params={**params_base, "select": "mappings"},
-            headers=_headers(),
+            headers=_user_headers(jwt),
         ),
     ]
 
@@ -165,7 +165,7 @@ async def _parallel_fetch(owner_type: str, owner_id: str):
                     "select":     "task_name,craft,estimate_days,start_date,end_date,generated_at,variable_values,source_type",
                     "order":      "generated_at.desc",
                 },
-                headers=_headers({"Range": "0-999"}),
+                headers=_user_headers(jwt, {"Range": "0-999"}),
             )
         )
 

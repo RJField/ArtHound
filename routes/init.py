@@ -23,7 +23,7 @@ from pydantic import BaseModel
 
 from lib.auth import CurrentUser, get_current_user, require_studio
 from lib.crypto import decrypt_credentials, encrypt_credentials
-from lib.db import db_client, _url, _headers
+from lib.db import db_client, _url, _headers, _user_headers
 from lib.sync.connectors.airtable import AirtableConnector, build_filter_formula
 from lib.sync.init_runner import REQUIRED_SLOTS, run_init_sync
 from lib.sync.normalizer import default_mappings_from_schema
@@ -217,7 +217,7 @@ async def get_schema_cache(
             "source_type": f"eq.{source_type}",
             "select":      "fields,discovered_at",
         },
-        headers=_headers(),
+        headers=_user_headers(user.token),
     )
     rows = r.json()
     if not rows:
@@ -291,7 +291,7 @@ async def get_entity_definitions(
                            "task_estimate_field_id,task_estimate_field_name,"
                            "field_mappings",
         },
-        headers=_headers(),
+        headers=_user_headers(user.token),
     )
     r.raise_for_status()
     return {row["entity_type"]: row for row in r.json()}
@@ -498,7 +498,7 @@ async def get_field_mappings(
             "source_type": f"eq.{source_type}",
             "select":      "mappings,updated_at",
         },
-        headers=_headers(),
+        headers=_user_headers(user.token),
     )
     rows = r.json()
     mappings = rows[0]["mappings"] if rows else []
