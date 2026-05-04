@@ -4,6 +4,7 @@ import { useAuth } from '../contexts/AuthContext'
 import UserModal from './UserModal'
 import FieldMappingModal from './FieldMappingModal'
 import NumbersBotModal from './NumbersBotModal'
+import SyntheticDataModal from './SyntheticDataModal'
 import { cn } from '../lib/utils'
 
 const STUDIO_NAV = [
@@ -19,10 +20,11 @@ const VENDOR_NAV = [
 ]
 
 export default function Topbar() {
-  const { role, signOut } = useAuth()
-  const [userOpen, setUserOpen]         = useState(false)
-  const [settingsOpen, setSettingsOpen] = useState(false)
-  const [botOpen, setBotOpen]           = useState(false)
+  const { role, isAdmin, signOut } = useAuth()
+  const [userOpen, setUserOpen]           = useState(false)
+  const [settingsOpen, setSettingsOpen]   = useState(false)
+  const [botOpen, setBotOpen]             = useState(false)
+  const [syntheticOpen, setSyntheticOpen] = useState(false)
 
   const nav = role === 'vendor' ? VENDOR_NAV : STUDIO_NAV
 
@@ -55,6 +57,14 @@ export default function Topbar() {
 
         {/* Right controls */}
         <div className="flex items-center gap-2">
+          {isAdmin && (
+            <button
+              onClick={() => setSyntheticOpen(true)}
+              className="px-3 py-1.5 rounded-md text-xs text-muted hover:text-foreground hover:bg-surface-2 transition-colors cursor-pointer"
+            >
+              Synthetic Data
+            </button>
+          )}
           <button
             onClick={() => setBotOpen(true)}
             className="px-3 py-1.5 rounded-md text-xs text-muted hover:text-foreground hover:bg-surface-2 transition-colors cursor-pointer"
@@ -82,9 +92,10 @@ export default function Topbar() {
         </div>
       </header>
 
-      {userOpen     && <UserModal          onClose={() => setUserOpen(false)} />}
-      {settingsOpen && <FieldMappingModal  onClose={() => setSettingsOpen(false)} />}
-      {botOpen      && <NumbersBotModal    onClose={() => setBotOpen(false)} />}
+      {userOpen      && <UserModal          onClose={() => setUserOpen(false)} />}
+      {settingsOpen  && <FieldMappingModal  onClose={() => setSettingsOpen(false)} />}
+      {botOpen       && <NumbersBotModal    onClose={() => setBotOpen(false)} />}
+      {syntheticOpen && <SyntheticDataModal onClose={() => setSyntheticOpen(false)} />}
     </>
   )
 }

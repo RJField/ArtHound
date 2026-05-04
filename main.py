@@ -29,6 +29,7 @@ from routes.user import router as user_router
 from routes.init import router as init_router
 from routes.auth import router as auth_router
 from routes.tasks import router as tasks_router
+from routes.synthetic import router as synthetic_router
 
 log = logging.getLogger(__name__)
 
@@ -106,6 +107,7 @@ app.include_router(sync_router,           prefix="/api/sync",        dependencie
 app.include_router(user_router,           prefix="/api/user",        dependencies=_auth)
 app.include_router(init_router,           prefix="/api/init",        dependencies=_auth)
 app.include_router(tasks_router,          prefix="/api/tasks",        dependencies=_auth)
+app.include_router(synthetic_router,      prefix="/api/synthetic",    dependencies=_auth)
 # Webhook routes are public — protected by WEBHOOK_SECRET, not JWT
 app.include_router(sync_webhook_router,   prefix="/api/sync")
 # Auth routes are public — no JWT required

@@ -1,5 +1,3 @@
-import hashlib
-import secrets
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
@@ -16,16 +14,6 @@ _DEFAULT_EXPIRY_DAYS = 7
 
 
 # ── internal helpers ──────────────────────────────────────────────────────────
-
-def _make_token() -> tuple[str, str]:
-    """Return (plaintext_token, sha256_hex). Plaintext returned to caller once only."""
-    token = secrets.token_urlsafe(32)
-    return token, hashlib.sha256(token.encode()).hexdigest()
-
-
-def _hash_token(token: str) -> str:
-    return hashlib.sha256(token.encode()).hexdigest()
-
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -218,8 +206,6 @@ async def dispatch_bulk(body: BulkDispatchBody, user: CurrentUser = Depends(requ
             "dispatched_at": now.isoformat(),
         }
 
-        token, token_hash = _make_token()
-
         r_dispatch = await db_client.post(
             _url("/rest/v1/payload_dispatches"),
             headers=_headers({"Prefer": "return=representation"}),
@@ -228,7 +214,6 @@ async def dispatch_bulk(body: BulkDispatchBody, user: CurrentUser = Depends(requ
                 "sender_studio_id": studio_id,
                 "recipient_vendor_id": body.vendor_id,
                 "payload_data": payload_data,
-                "token_hash": token_hash,
                 "expires_at": expires_at,
             },
         )
@@ -281,7 +266,6 @@ async def dispatch_payload(body: DispatchBody, user: CurrentUser = Depends(requi
         "dispatched_at": now.isoformat(),
     }
 
-    token, token_hash = _make_token()
     expires_at = (now + timedelta(days=max(1, min(body.expires_in_days, _MAX_EXPIRY_DAYS)))).isoformat()
 
     r_dispatch = await db_client.post(
@@ -293,14 +277,13 @@ async def dispatch_payload(body: DispatchBody, user: CurrentUser = Depends(requi
             "recipient_vendor_id": body.recipient_vendor_id,
             "template_id": body.template_id,
             "payload_data": payload_data,
-            "token_hash": token_hash,
             "expires_at": expires_at,
         },
     )
     dispatch_id = r_dispatch.json()[0]["id"]
     await _log(dispatch_id, "dispatched", actor_studio_id=studio_id)
 
-    return {"dispatch_id": dispatch_id, "token": token, "expires_at": expires_at}
+    return {"dispatch_id": dispatch_id, "expires_at": expires_at}
 
 
 # ── outbox ────────────────────────────────────────────────────────────────────
@@ -311,7 +294,7 @@ async def get_outbox(user: CurrentUser = Depends(require_studio)):
         _url("/rest/v1/payload_dispatches"),
         params={
             "sender_studio_id": f"eq.{user.studio_id}",
-            "select": "id,asset_id,recipient_vendor_id,template_id,expires_at,received_at,revoked_at,created_at,payload_data",
+            "select": "id,asset_id,recipient_vendor_id,template_id,expires_at,revoked_at,created_at,payload_data",
             "order": "created_at.desc",
         },
         headers=_headers(),
@@ -349,7 +332,7 @@ async def get_vendor_inbox(user: CurrentUser = Depends(require_vendor)):
         _url("/rest/v1/payload_dispatches"),
         params={
             "recipient_vendor_id": f"eq.{user.vendor_id}",
-            "select": "id,asset_id,sender_studio_id,expires_at,received_at,revoked_at,created_at,payload_data",
+            "select": "id,asset_id,sender_studio_id,expires_at,revoked_at,created_at,payload_data",
             "order": "created_at.desc",
         },
         headers=_headers(),
@@ -360,46 +343,6 @@ async def get_vendor_inbox(user: CurrentUser = Depends(require_vendor)):
         if not d["revoked_at"]
         and datetime.fromisoformat(d["expires_at"]) > now
     ]
-
-
-# ── receive by token (public — token IS the credential) ───────────────────────
-
-@router.get("/receive/{token}")
-async def receive_payload(token: str):
-    r = await db_client.get(
-        _url("/rest/v1/payload_dispatches"),
-        params={"token_hash": f"eq.{_hash_token(token)}", "select": "*"},
-        headers=_headers(),
-    )
-    rows = r.json()
-    if not rows:
-        raise HTTPException(status_code=404, detail="Not found")
-
-    dispatch = rows[0]
-
-    if dispatch.get("revoked_at"):
-        await _log(dispatch["id"], "denied", detail={"reason": "revoked"})
-        raise HTTPException(status_code=410, detail="Payload has been revoked")
-
-    if datetime.now(timezone.utc) > datetime.fromisoformat(dispatch["expires_at"]):
-        await _log(dispatch["id"], "denied", detail={"reason": "expired"})
-        raise HTTPException(status_code=410, detail="Payload has expired")
-
-    if not dispatch["received_at"]:
-        await db_client.patch(
-            _url("/rest/v1/payload_dispatches"),
-            params={"id": f"eq.{dispatch['id']}"},
-            headers=_headers({"Prefer": "return=minimal"}),
-            json={"received_at": _now_iso()},
-        )
-        await _log(dispatch["id"], "received")
-
-    return {
-        "dispatch_id": dispatch["id"],
-        "sender_studio_id": dispatch["sender_studio_id"],
-        "expires_at": dispatch["expires_at"],
-        "payload": dispatch["payload_data"],
-    }
 
 
 # ── vendor viewed (vendor records that they opened the asset detail) ──────────
