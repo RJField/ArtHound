@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 from lib.airtable import select_all, http_client
 from lib.auth import CurrentUser, require_studio
-from lib.db import db_client, _url, _headers
+from lib.db import db_client, _url, _headers, _user_headers
 from lib.source_creds import get_studio_airtable_creds
 from lib.utils import link_id
 import config
@@ -23,7 +23,7 @@ router = APIRouter()
 # Helpers
 # ---------------------------------------------------------------------------
 
-async def _get_entity_table_name(studio_id: str, entity_type: str, fallback: str) -> str:
+async def _get_entity_table_name(studio_id: str, entity_type: str, fallback: str, jwt: str) -> str:
     """Return the studio-configured table name for entity_type, falling back to fallback."""
     r = await db_client.get(
         _url("/rest/v1/source_entity_definitions"),
@@ -34,7 +34,7 @@ async def _get_entity_table_name(studio_id: str, entity_type: str, fallback: str
             "entity_type": f"eq.{entity_type}",
             "select":      "table_name",
         },
-        headers=_headers(),
+        headers=_user_headers(jwt),
     )
     rows = r.json()
     if rows and rows[0].get("table_name"):
@@ -42,12 +42,12 @@ async def _get_entity_table_name(studio_id: str, entity_type: str, fallback: str
     return fallback
 
 
-async def _get_asset_table_name(studio_id: str) -> str:
-    return await _get_entity_table_name(studio_id, "asset", config.tables["assets"])
+async def _get_asset_table_name(studio_id: str, jwt: str) -> str:
+    return await _get_entity_table_name(studio_id, "asset", config.tables["assets"], jwt)
 
 
-async def _get_template_table_name(studio_id: str) -> str:
-    return await _get_entity_table_name(studio_id, "template", config.tables["templates"])
+async def _get_template_table_name(studio_id: str, jwt: str) -> str:
+    return await _get_entity_table_name(studio_id, "template", config.tables["templates"], jwt)
 
 
 
@@ -72,7 +72,7 @@ async def fetch_base_schema(token: str, base_id: str) -> list:
 @router.get("/fields")
 async def get_fields(current_user: CurrentUser = Depends(require_studio)):
     token, base_id = await get_studio_airtable_creds(current_user.studio_id)
-    asset_table_name = await _get_asset_table_name(current_user.studio_id)
+    asset_table_name = await _get_asset_table_name(current_user.studio_id, current_user.token)
     tables = await fetch_base_schema(token, base_id)
     assets_table = next((t for t in tables if t["name"] == asset_table_name), None)
     if not assets_table:
@@ -93,7 +93,7 @@ async def get_fields(current_user: CurrentUser = Depends(require_studio)):
 @router.get("/field-values")
 async def get_field_values(field: str = Query(...), current_user: CurrentUser = Depends(require_studio)):
     token, base_id = await get_studio_airtable_creds(current_user.studio_id)
-    asset_table_name = await _get_asset_table_name(current_user.studio_id)
+    asset_table_name = await _get_asset_table_name(current_user.studio_id, current_user.token)
     tables = await fetch_base_schema(token, base_id)
     assets_table = next((t for t in tables if t["name"] == asset_table_name), None)
     if not assets_table:
@@ -142,7 +142,7 @@ async def get_asset_combinations(field: List[str] = Query(default=[]), current_u
         raise HTTPException(status_code=400, detail="at least one field param required")
 
     token, base_id = await get_studio_airtable_creds(current_user.studio_id)
-    asset_table_name = await _get_asset_table_name(current_user.studio_id)
+    asset_table_name = await _get_asset_table_name(current_user.studio_id, current_user.token)
     tables = await fetch_base_schema(token, base_id)
     assets_table = next((t for t in tables if t["name"] == asset_table_name), None)
     if not assets_table:
@@ -219,12 +219,12 @@ async def get_matrix_table_pg(current_user: CurrentUser = Depends(require_studio
         db_client.get(
             _url("/rest/v1/estimate_config"),
             params={"studio_id": f"eq.{studio_id}", "select": "variable_fields"},
-            headers=_headers(),
+            headers=_user_headers(current_user.token),
         ),
         db_client.get(
             _url("/rest/v1/workflow_steps"),
             params={"studio_id": f"eq.{studio_id}", "select": "id,name,craft"},
-            headers=_headers(),
+            headers=_user_headers(current_user.token),
         ),
         db_client.get(
             _url("/rest/v1/estimate_matrix"),
@@ -233,7 +233,7 @@ async def get_matrix_table_pg(current_user: CurrentUser = Depends(require_studio
                 "select": "workflow_step_id,variable_values,estimate_days",
                 "limit": "10000",
             },
-            headers=_headers(),
+            headers=_user_headers(current_user.token),
         ),
     )
 
@@ -252,7 +252,7 @@ async def get_matrix_table_pg(current_user: CurrentUser = Depends(require_studio
         r_deps = await db_client.get(
             _url("/rest/v1/workflow_step_dependencies"),
             params={"step_id": f"in.({ids_csv})", "select": "step_id,depends_on_step_id"},
-            headers=_headers(),
+            headers=_user_headers(current_user.token),
         )
         dep_graph = {s["id"]: [] for s in steps}
         for d in r_deps.json():
@@ -383,7 +383,7 @@ async def create_matrix_pg(
     # If the studio's base has no templates table (or access is denied), skip
     # silently — the user can manage steps manually via the Workflows UI.
     at_token, at_base_id = await get_studio_airtable_creds(studio_id)
-    template_table = await _get_template_table_name(studio_id)
+    template_table = await _get_template_table_name(studio_id, current_user.token)
     try:
         templates, templates_str = await asyncio.gather(
             select_all(template_table, token=at_token, base_id=at_base_id),

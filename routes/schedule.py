@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from lib.airtable import select_all, create_records, find_record
 from lib.auth import CurrentUser, require_studio
-from lib.db import db_client, _url, _headers
+from lib.db import db_client, _url, _headers, _user_headers
 from lib.scheduler import build_schedule
 from lib.source_creds import get_studio_airtable_creds
 import config
@@ -86,7 +86,7 @@ async def get_asset_tasks_local(
             "select":             "id,task_name,estimate_days,start_date,end_date",
             "order":              "start_date.asc",
         },
-        headers=_headers(),
+        headers=_user_headers(user.token),
     )
     r.raise_for_status()
     return [
@@ -119,7 +119,7 @@ async def get_asset_tasks(assetId: str = Query(...), assetName: Optional[str] = 
                            "task_name_field_name,task_estimate_field_name,"
                            "task_start_date_field_name,task_end_date_field_name",
         },
-        headers=_headers(),
+        headers=_user_headers(_user.token),
     )
     entity_rows = entity_r.json()
 

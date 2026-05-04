@@ -8,7 +8,7 @@ from jwt import PyJWKClient
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
-from lib.db import db_client, _url, _headers
+from lib.db import db_client, _url, _headers, _user_headers
 
 bearer_scheme = HTTPBearer()
 
@@ -50,6 +50,7 @@ class CurrentUser:
     id: str
     email: str
     role: str
+    token: str = field(default="")
     studio_id: str | None = field(default=None)
     vendor_id: str | None = field(default=None)
 
@@ -137,6 +138,7 @@ async def get_current_user(
         id=user_id,
         email=payload.get("email", ""),
         role=role,
+        token=token,
         studio_id=studio_id,
         vendor_id=vendor_id,
     )

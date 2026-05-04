@@ -20,3 +20,4 @@ alter table source_entity_definitions
   add column task_estimate_field_id     text,
   add column task_estimate_field_name   text,
   add column field_mappings             jsonb not null default '{}';
+ 

@@ -6,7 +6,7 @@ from pydantic import BaseModel
 
 from lib.airtable import update_records
 from lib.auth import CurrentUser, get_current_user, require_studio
-from lib.db import db_client, _url, _headers
+from lib.db import db_client, _url, _headers, _user_headers
 import config
 
 router = APIRouter()
@@ -129,7 +129,7 @@ def _build_asset_response(
     }
 
 
-async def _fetch_ref_table(owner_type: str, owner_id: str, table: str) -> list[dict]:
+async def _fetch_ref_table(owner_type: str, owner_id: str, table: str, jwt: str) -> list[dict]:
     r = await db_client.get(
         _url(f"/rest/v1/{table}"),
         params={
@@ -138,23 +138,21 @@ async def _fetch_ref_table(owner_type: str, owner_id: str, table: str) -> list[d
             "source_type": "eq.airtable",
             "select":      "source_record_id,name",
         },
-        headers=_headers(),
+        headers=_user_headers(jwt),
     )
     r.raise_for_status()
     return r.json()
 
 
-async def _fetch_products_map(owner_type: str, owner_id: str) -> tuple[dict, dict]:
-    """Returns (source_record_id → name, name → source_record_id) for replicated_products."""
-    rows = await _fetch_ref_table(owner_type, owner_id, "replicated_products")
+async def _fetch_products_map(owner_type: str, owner_id: str, jwt: str) -> tuple[dict, dict]:
+    rows = await _fetch_ref_table(owner_type, owner_id, "replicated_products", jwt)
     id_to_name = {p["source_record_id"]: p["name"] for p in rows}
     name_to_id = {p["name"]: p["source_record_id"] for p in rows}
     return id_to_name, name_to_id
 
 
-async def _fetch_item_types_map(owner_type: str, owner_id: str) -> dict:
-    """Returns source_record_id → name for replicated_item_types."""
-    rows = await _fetch_ref_table(owner_type, owner_id, "replicated_item_types")
+async def _fetch_item_types_map(owner_type: str, owner_id: str, jwt: str) -> dict:
+    rows = await _fetch_ref_table(owner_type, owner_id, "replicated_item_types", jwt)
     return {r["source_record_id"]: r["name"] for r in rows}
 
 
@@ -179,9 +177,9 @@ async def get_products(user: CurrentUser = Depends(get_current_user)):
                 "select":      "product",
                 "product":     "not.is.null",
             },
-            headers=_headers(),
+            headers=_user_headers(user.token),
         ),
-        _fetch_ref_table(owner_type, owner_id, "replicated_products"),
+        _fetch_ref_table(owner_type, owner_id, "replicated_products", user.token),
     )
     asset_r.raise_for_status()
 
@@ -213,8 +211,8 @@ async def get_assets(
 
     # Fetch reference maps first — needed to resolve the product filter value.
     (prod_id_to_name, prod_name_to_id), it_id_to_name = await asyncio.gather(
-        _fetch_products_map(owner_type, owner_id),
-        _fetch_item_types_map(owner_type, owner_id),
+        _fetch_products_map(owner_type, owner_id, current_user.token),
+        _fetch_item_types_map(owner_type, owner_id, current_user.token),
     )
 
     asset_params = {
@@ -242,7 +240,7 @@ async def get_assets(
     asset_r = await db_client.get(
         _url("/rest/v1/replicated_assets"),
         params=asset_params,
-        headers=_headers(),
+        headers=_user_headers(current_user.token),
     )
     asset_r.raise_for_status()
     rows = asset_r.json()
@@ -278,7 +276,7 @@ async def get_view_schema(user: CurrentUser = Depends(get_current_user)):
             "source_type": "eq.airtable",
             "select":      "mappings",
         },
-        headers=_headers(),
+        headers=_user_headers(user.token),
     )
     r.raise_for_status()
     rows     = r.json()
@@ -339,7 +337,7 @@ async def get_asset_fields(user: CurrentUser = Depends(get_current_user)):
             "source_type": "eq.airtable",
             "select":      "mappings",
         },
-        headers=_headers(),
+        headers=_user_headers(user.token),
     )
     r.raise_for_status()
     rows = r.json()
@@ -364,10 +362,10 @@ async def get_asset(asset_id: str, current_user: CurrentUser = Depends(get_curre
                 "source_type":      "eq.airtable",
                 "source_record_id": f"eq.{asset_id}",
             },
-            headers=_headers(),
+            headers=_user_headers(current_user.token),
         ),
-        _fetch_products_map(owner_type, owner_id),
-        _fetch_item_types_map(owner_type, owner_id),
+        _fetch_products_map(owner_type, owner_id, current_user.token),
+        _fetch_item_types_map(owner_type, owner_id, current_user.token),
     )
     asset_r.raise_for_status()
     rows = asset_r.json()
@@ -397,7 +395,7 @@ async def update_asset_name(
             "source_record_id": f"eq.{asset_id}",
             "select":           "source_record_id",
         },
-        headers=_headers(),
+        headers=_user_headers(current_user.token),
     )
     r.raise_for_status()
     if not r.json():
