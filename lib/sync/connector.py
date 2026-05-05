@@ -30,3 +30,7 @@ class BaseConnector(ABC):
 
     @abstractmethod
     async def fetch_asset_schema(self) -> list[SchemaField]: ...
+
+    def build_entity_filter(self, entity_def: dict) -> str | None:
+        """Return a connector-specific filter expression from an entity definition."""
+        return None

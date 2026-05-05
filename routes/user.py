@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from lib.auth import CurrentUser, get_current_user
-from lib.db import db_client, _url, _headers, _user_headers
+from lib.db import db_client, _url, _headers
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -114,7 +114,7 @@ async def studio_summary(user: CurrentUser = Depends(get_current_user)):
         raise HTTPException(status_code=403, detail="Studio access required")
 
     now = datetime.now(timezone.utc).isoformat()
-    count_hdrs = _user_headers(user.token, {"Prefer": "count=exact"})
+    count_hdrs = _headers({"Prefer": "count=exact"})
 
     asset_r, product_r, share_r, work_r, cursor_r = await asyncio.gather(
         db_client.get(_url("/rest/v1/replicated_assets"),
@@ -125,7 +125,7 @@ async def studio_summary(user: CurrentUser = Depends(get_current_user)):
                       params={"owner_type": "eq.studio", "owner_id": f"eq.{owner_id}",
                               "product": "not.is.null",
                               "select": "product"},
-                      headers=_user_headers(user.token)),
+                      headers=_headers()),
         db_client.get(_url("/rest/v1/payload_dispatches"),
                       params={"sender_studio_id": f"eq.{owner_id}",
                               "revoked_at": "is.null", "expires_at": f"gt.{now}",
@@ -137,8 +137,8 @@ async def studio_summary(user: CurrentUser = Depends(get_current_user)):
                       headers=count_hdrs),
         db_client.get(_url("/rest/v1/sync_cursors"),
                       params={"owner_type": "eq.studio", "owner_id": f"eq.{owner_id}",
-                              "select": "last_synced_at"},
-                      headers=_user_headers(user.token)),
+                              "select": "last_synced_at,last_full_sync_at"},
+                      headers=_headers()),
     )
 
     def _count(r) -> int:
@@ -154,7 +154,8 @@ async def studio_summary(user: CurrentUser = Depends(get_current_user)):
         "product_count":  len({r["product"] for r in (product_r.json() if product_r.is_success else []) if r.get("product")}),
         "active_shares":  _count(share_r),
         "work_count":     _count(work_r),
-        "last_synced_at": cursor_rows[0]["last_synced_at"] if isinstance(cursor_rows, list) and cursor_rows else None,
+        "last_synced_at":      cursor_rows[0]["last_synced_at"]      if isinstance(cursor_rows, list) and cursor_rows else None,
+        "last_full_sync_at":   cursor_rows[0]["last_full_sync_at"]   if isinstance(cursor_rows, list) and cursor_rows else None,
     }
 
 

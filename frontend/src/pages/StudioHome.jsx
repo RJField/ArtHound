@@ -66,6 +66,19 @@ export default function StudioHome() {
         {!summary?.last_synced_at && !loading && (
           <p className="text-muted text-sm">Not yet synced</p>
         )}
+        {summary?.last_full_sync_at && (() => {
+          const hoursAgo = (Date.now() - new Date(summary.last_full_sync_at)) / 3600000
+          const stale = hoursAgo > 25
+          return (
+            <p className={`text-xs ${stale ? 'text-warning' : 'text-muted/60'}`}>
+              Full reconciliation {timeAgo(summary.last_full_sync_at)}
+              {stale && ' — deletion check overdue'}
+            </p>
+          )
+        })()}
+        {summary?.last_synced_at && !summary.last_full_sync_at && (
+          <p className="text-xs text-muted/60">No full reconciliation yet</p>
+        )}
         {error && <p className="text-error text-xs mt-1">{error}</p>}
         </div>
       </div>

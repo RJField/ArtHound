@@ -12,7 +12,8 @@ import httpx
 from lib.canonical import get_or_create_canonical_ids
 from lib.crypto import decrypt_credentials
 from lib.db import db_client, _url, _headers
-from lib.sync.connectors.airtable import AirtableConnector, build_filter_formula
+from lib.sync.connector import BaseConnector
+from lib.sync.connectors.airtable import AirtableConnector
 from lib.sync.differ import find_changes
 from lib.sync.normalizer import (
     default_mappings_from_schema,
@@ -31,6 +32,27 @@ from lib.sync.writer import (
 )
 
 log = logging.getLogger(__name__)
+
+
+# ── connector factory ─────────────────────────────────────────────────────────
+
+def _build_connector(source_type: str, creds: dict, client: httpx.AsyncClient) -> BaseConnector:
+    if source_type == "airtable":
+        return AirtableConnector(
+            api_token=creds["api_token"],
+            base_id=creds["base_id"],
+            client=client,
+        )
+    if source_type == "jira":
+        from lib.sync.connectors.jira import JiraConnector
+        return JiraConnector(
+            access_token=creds["access_token"],
+            client=client,
+            cloud_id=creds.get("cloud_id"),
+            deployment=creds.get("deployment", "cloud"),
+            instance_url=creds.get("instance_url"),
+        )
+    raise ValueError(f"Unsupported source_type: {source_type}")
 
 
 # ── credential helpers ────────────────────────────────────────────────────────
@@ -84,12 +106,14 @@ async def _get_entity_definitions(owner_type: str, owner_id: str, source_type: s
             "owner_type":  f"eq.{owner_type}",
             "owner_id":    f"eq.{owner_id}",
             "source_type": f"eq.{source_type}",
-            "select":      "entity_type,table_id,table_name,filters,parent_entity_type,rel_field_id,rel_field_name,rel_direction",
+            "select":      "entity_type,table_id,table_name,filters,jql_filter,parent_entity_type,rel_field_id,rel_field_name,rel_direction,item_type_source,item_type_field_id,item_type_field_name",
         },
         headers=_headers(),
     )
+    r.raise_for_status()
     data = r.json()
     if not isinstance(data, list):
+        log.error("_get_entity_definitions unexpected response: %s", data)
         return {}
     return {row["entity_type"]: row for row in data}
 
@@ -109,12 +133,15 @@ async def _get_cursor(owner_type: str, owner_id: str, source_type: str) -> str |
     return rows[0]["last_synced_at"] if rows else None
 
 
-async def _save_cursor(owner_type: str, owner_id: str, source_type: str, ts: str) -> None:
+async def _save_cursor(owner_type: str, owner_id: str, source_type: str, ts: str, full: bool = False) -> None:
+    row: dict = {"owner_type": owner_type, "owner_id": owner_id,
+                 "source_type": source_type, "last_synced_at": ts}
+    if full:
+        row["last_full_sync_at"] = ts
     await db_client.post(
         _url("/rest/v1/sync_cursors?on_conflict=owner_type,owner_id,source_type"),
         headers=_headers({"Prefer": "resolution=merge-duplicates,return=minimal"}),
-        json={"owner_type": owner_type, "owner_id": owner_id,
-              "source_type": source_type, "last_synced_at": ts},
+        json=row,
     )
 
 
@@ -139,6 +166,41 @@ async def _finish_log(log_id: str, status: str, records_synced: int, error: str 
             "error_detail":   error,
         },
     )
+
+
+# ── field-derived item types ──────────────────────────────────────────────────
+
+from lib.sync.connector import RawRecord as _RawRecord
+
+def _extract_field_item_types(raw_assets: list, field_id: str) -> list:
+    """
+    Derive item types from the distinct values of a single field across all asset records.
+    Handles string values, {id,name} objects, and arrays of either.
+    source_record_id is the field value's own ID (or the string itself).
+    """
+    seen: dict[str, str] = {}  # source_record_id → name
+
+    for asset in raw_assets:
+        val = asset.fields.get(field_id)
+        if val is None:
+            continue
+        items = val if isinstance(val, list) else [val]
+        for item in items:
+            if isinstance(item, dict):
+                iid  = str(item.get("id") or item.get("key") or item.get("value") or "").strip()
+                name = (item.get("name") or item.get("value") or iid).strip()
+            elif isinstance(item, str):
+                iid  = item.strip()
+                name = item.strip()
+            else:
+                continue
+            if iid and iid not in seen:
+                seen[iid] = name
+
+    return [
+        _RawRecord(source_record_id=iid, fields={"name": name})
+        for iid, name in seen.items()
+    ]
 
 
 # ── public entry point ────────────────────────────────────────────────────────
@@ -174,20 +236,22 @@ async def run_sync(
         work_def      = entity_defs.get("work")
 
         async with httpx.AsyncClient(timeout=60.0) as client:
-            if source_type == "airtable":
-                connector = AirtableConnector(
-                    api_token=creds["api_token"],
-                    base_id=creds["base_id"],
-                    client=client,
-                )
-            else:
-                raise ValueError(f"Unsupported source_type: {source_type}")
+            # Refresh OAuth tokens before building connector (Jira only for now)
+            if source_type == "jira":
+                from lib.token_refresh import get_jira_token
+                creds = await get_jira_token(owner_type, owner_id, client)
+
+            connector = _build_connector(source_type, creds, client)
 
             # ── Field schema + mappings ───────────────────────────────────────
             schema_fields = await connector.fetch_asset_schema(
                 table_id=asset_def["table_id"] if asset_def else None
             )
-            field_type_map = {f.name: f.type for f in schema_fields}
+            field_type_map: dict[str, str] = {}
+            for _f in schema_fields:
+                field_type_map[_f.name] = _f.type  # display name (Airtable)
+                if _f.id != _f.name:
+                    field_type_map[_f.id] = _f.type  # API field ID (Jira)
 
             mappings = await _get_mappings(owner_type, owner_id, source_type)
             if mappings is None:
@@ -197,29 +261,32 @@ async def run_sync(
 
             # ── Fetch — use entity definitions when available, else config.tables
             if asset_def:
-                formula = build_filter_formula(asset_def.get("filters") or [])
                 raw_assets = await connector.fetch_entity(
                     table_id=asset_def["table_id"],
-                    filter_formula=formula,
+                    filter_formula=connector.build_entity_filter(asset_def),
                     since=cursor if is_delta else None,
                 )
             else:
                 raw_assets = await connector.fetch_assets(since=cursor if is_delta else None)
 
             if product_def:
-                formula = build_filter_formula(product_def.get("filters") or [])
                 raw_products = await connector.fetch_entity(
                     table_id=product_def["table_id"],
-                    filter_formula=formula,
+                    filter_formula=connector.build_entity_filter(product_def),
                 )
             else:
                 raw_products = await connector.fetch_products()
 
-            if item_type_def:
-                formula = build_filter_formula(item_type_def.get("filters") or [])
+            if item_type_def and item_type_def.get("item_type_source") == "field_values":
+                # Derive item types from a field on asset records — no separate API call.
+                # Must run after raw_assets is populated.
+                raw_item_types = _extract_field_item_types(
+                    raw_assets, item_type_def["item_type_field_id"]
+                )
+            elif item_type_def:
                 raw_item_types = await connector.fetch_entity(
                     table_id=item_type_def["table_id"],
-                    filter_formula=formula,
+                    filter_formula=connector.build_entity_filter(item_type_def),
                 )
             else:
                 raw_item_types = []
@@ -227,10 +294,9 @@ async def run_sync(
             # Work: always fetch in full — no delta support yet; work counts are
             # typically small and full resolution is simpler than partial resolvers.
             if work_def:
-                formula = build_filter_formula(work_def.get("filters") or [])
                 raw_work = await connector.fetch_entity(
                     table_id=work_def["table_id"],
-                    filter_formula=formula,
+                    filter_formula=connector.build_entity_filter(work_def),
                 )
             else:
                 raw_work = []
@@ -249,8 +315,33 @@ async def run_sync(
             }
 
             # ── Normalize assets ──────────────────────────────────────────────
+            # Resolve the field adapter for this connector so the normalizer
+            # can deserialize source-specific field value shapes correctly.
+            if source_type == "jira":
+                from lib.connectors.adapters.jira import JiraFieldAdapter
+                field_adapter = JiraFieldAdapter()
+            else:
+                field_adapter = None  # normalizer defaults to AirtableFieldAdapter
+
+            # If the asset entity definition specifies a rel_field that links each
+            # asset to its parent product (child_holds_link direction), use that field
+            # to drive the product slot instead of alias-based detection.
+            product_rel_field_id: str | None = None
+            if asset_def and asset_def.get("rel_direction") == "child_holds_link":
+                product_rel_field_id = asset_def.get("rel_field_id") or None
+            elif source_type == "jira" and product_def:
+                # Jira: asset issues always reference their Epic/parent via the "parent"
+                # field. Fall back to it when no explicit rel is stored in the entity def.
+                product_rel_field_id = asset_def.get("rel_field_id") or "parent"
+
             norm_assets = [
-                normalize_asset(r, mappings, field_type_map=field_type_map, reference_resolver=reference_resolver)
+                normalize_asset(
+                    r, mappings,
+                    field_type_map=field_type_map,
+                    reference_resolver=reference_resolver,
+                    adapter=field_adapter,
+                    product_rel_field_id=product_rel_field_id,
+                )
                 for r in raw_assets
             ]
 
@@ -263,9 +354,9 @@ async def run_sync(
                 assets_to_write = norm_assets
                 log.info("Full sync: writing all %d records", len(assets_to_write))
 
-            # ── Canonical ID linking (studio Airtable only) ───────────────────
+            # ── Canonical ID linking (all studio source types) ───────────────
             canonical_map: dict[str, str] = {}
-            if owner_type == "studio" and source_type == "airtable":
+            if owner_type == "studio" and source_type in ("airtable", "jira"):
                 source_ids = [r["source_record_id"] for r in assets_to_write]
                 if source_ids:
                     canonical_map = await get_or_create_canonical_ids(source_ids, owner_id)
@@ -297,7 +388,7 @@ async def run_sync(
                 log.info("Orphan cleanup: %d rows deleted for %s/%s", orphaned, owner_type, owner_id)
 
         # ── Update cursor ─────────────────────────────────────────────────────
-        await _save_cursor(owner_type, owner_id, source_type, sync_started)
+        await _save_cursor(owner_type, owner_id, source_type, sync_started, full=not is_delta)
 
         records_synced = len(assets_to_write)
         await _finish_log(log_id, "success", records_synced)

@@ -30,6 +30,7 @@ from routes.init import router as init_router
 from routes.auth import router as auth_router
 from routes.work import router as work_router
 from routes.synthetic import router as synthetic_router
+from routes.connectors.jira_oauth import router as jira_oauth_router
 
 log = logging.getLogger(__name__)
 
@@ -66,11 +67,76 @@ async def _poll_loop() -> None:
             log.warning("Poll cycle error: %s", exc)
 
 
+async def _nightly_full_sync_loop() -> None:
+    """
+    Nightly full-reconciliation loop. Runs once per FULL_SYNC_INTERVAL_HOURS (default 24).
+    Forces full=True so orphaned records are detected and removed even when webhooks miss events.
+    Jira deletions are the primary beneficiary — Airtable also benefits from the extra safety net.
+    Disabled when FULL_SYNC_INTERVAL_HOURS is set to 0.
+    """
+    interval_hours = float(os.environ.get("FULL_SYNC_INTERVAL_HOURS", "24"))
+    if not interval_hours:
+        return
+    interval_secs = interval_hours * 3600
+    log.info("Nightly full sync enabled — interval: %.1fh", interval_hours)
+    # Stagger first run by half the interval so it doesn't coincide with startup
+    await asyncio.sleep(interval_secs / 2)
+    while True:
+        log.info("Nightly full sync: starting reconciliation pass")
+        try:
+            r = await db_client.get(
+                _url("/rest/v1/source_credentials"),
+                params={"select": "owner_type,owner_id,source_type", "owner_type": "eq.studio"},
+                headers=_headers(),
+            )
+            if r.is_success:
+                for row in r.json():
+                    asyncio.create_task(
+                        run_sync(
+                            owner_type=row["owner_type"],
+                            owner_id=row["owner_id"],
+                            source_type=row["source_type"],
+                            trigger="scheduled_full",
+                            full=True,
+                        )
+                    )
+        except Exception as exc:
+            log.warning("Nightly full sync error: %s", exc)
+        await asyncio.sleep(interval_secs)
+
+
+_REQUIRED_VARS = [
+    "SUPABASE_URL",
+    "SUPABASE_SERVICE_ROLE_KEY",
+    "SUPABASE_JWT_SECRET",
+    "SUPABASE_ANON_KEY",
+    "CREDENTIALS_ENCRYPTION_KEY",
+]
+
+_JIRA_VARS = [
+    "JIRA_CLOUD_CLIENT_ID",
+    "JIRA_CLOUD_CLIENT_SECRET",
+    "JIRA_REDIRECT_URI",
+]
+
+
+def _validate_env() -> None:
+    missing = [v for v in _REQUIRED_VARS if not os.environ.get(v)]
+    if missing:
+        raise RuntimeError(f"Missing required environment variables: {', '.join(missing)}")
+    missing_jira = [v for v in _JIRA_VARS if not os.environ.get(v)]
+    if missing_jira:
+        log.warning("Jira OAuth not configured — missing: %s. Jira connector will be unavailable.", ", ".join(missing_jira))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    poll_task = asyncio.create_task(_poll_loop())
+    _validate_env()
+    poll_task        = asyncio.create_task(_poll_loop())
+    nightly_task     = asyncio.create_task(_nightly_full_sync_loop())
     yield
     poll_task.cancel()
+    nightly_task.cancel()
     await http_client.aclose()
     await db_client.aclose()
 
@@ -112,6 +178,8 @@ app.include_router(synthetic_router,      prefix="/api/synthetic",    dependenci
 app.include_router(sync_webhook_router,   prefix="/api/sync")
 # Auth routes are public — no JWT required
 app.include_router(auth_router,           prefix="/api/auth")
+# Jira OAuth: /initiate requires JWT; /callback is public (state-validated)
+app.include_router(jira_oauth_router,     prefix="/api/connectors/jira/oauth")
 
 
 _REPLICATED_TABLE: dict[str, str] = {
