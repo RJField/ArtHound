@@ -53,6 +53,7 @@ class CurrentUser:
     token: str = field(default="")
     studio_id: str | None = field(default=None)
     vendor_id: str | None = field(default=None)
+    is_admin: bool = field(default=False)
 
 
 async def get_current_user(
@@ -98,6 +99,7 @@ async def get_current_user(
 
     app_metadata = payload.get("app_metadata") or {}
     role = app_metadata.get("role", "")
+    is_admin = bool(app_metadata.get("is_admin", False))
     if role not in ("studio", "vendor"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -141,7 +143,13 @@ async def get_current_user(
         token=token,
         studio_id=studio_id,
         vendor_id=vendor_id,
+        is_admin=is_admin,
     )
+
+
+def require_admin(user: CurrentUser) -> None:
+    if not user.is_admin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin only")
 
 
 def require_studio(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:

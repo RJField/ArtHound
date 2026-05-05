@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from lib.auth import CurrentUser, get_current_user
+from lib.auth import CurrentUser, get_current_user, require_admin
 from lib.db import db_client, _url, _headers
 
 log = logging.getLogger(__name__)
@@ -80,6 +80,7 @@ async def assign_org(body: AssignBody, user: CurrentUser = Depends(get_current_u
     invite flows, not self-selection. Gate behind an admin role or remove entirely
     once that flow is built.
     """
+    require_admin(user)
     if user.role == "studio":
         table  = "studio_members"
         payload = {"studio_id": body.org_id, "user_id": user.id}

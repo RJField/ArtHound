@@ -57,7 +57,7 @@ export function AuthProvider({ children }) {
   }
 
   const role        = session?.user?.app_metadata?.role ?? null
-  const isAdmin     = session?.user?.email === 'rjfield@pm.me'
+  const isAdmin     = session?.user?.app_metadata?.is_admin === true
   const loading     = session === undefined
   const initialized = profile?.org?.initialized_at != null
 
