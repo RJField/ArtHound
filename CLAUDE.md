@@ -47,7 +47,7 @@ Sync is triggered on login (via `AuthContext.jsx`) and by a background polling l
 
 **Supabase queries:** Use the helper in `lib/db.py` which builds the PostgREST URL and injects service-role headers. All DB writes use the service role key, not the anon key.
 
-**Airtable calls:** `lib/airtable.py` wraps the Airtable REST API. This is being phased out of most routes — new features should read from Supabase replicated tables, not call Airtable directly. `routes/reconcile-tasks` is a known exception that still uses this pattern and needs migration.
+**Airtable calls:** `lib/airtable.py` wraps the Airtable REST API. This is being phased out of most routes — new features should read from Supabase replicated tables, not call Airtable directly. `routes/schedule.py` (`reconcile_work`, `generate_schedule`) is a known exception that still uses this pattern and needs migration.
 
 **Credentials:** Source credentials (Airtable PAT, etc.) are encrypted at rest in `source_credentials`. Use `lib/source_creds.py` to retrieve and decrypt them; never query that table directly in route handlers.
 
@@ -69,10 +69,10 @@ Migrations live in `supabase/migrations/` and are applied in filename order. All
 
 **Key tables:**
 - `canonical_assets` — global stable IDs (studio_id + source_record_id)
-- `replicated_assets` / `replicated_products` / `replicated_item_types` — synced source data
-- `replicated_tasks` — workflow-generated work items (always filter `deleted_at IS NULL` unless querying history)
+- `replicated_assets` / `replicated_products` / `replicated_item_types` / `replicated_work` — synced source data
+- `generated_work` — ArtHound-generated work snapshots (always filter `deleted_at IS NULL` unless querying history)
 - `source_field_mappings` — per-studio field → slot mapping
-- `source_entity_definitions` — defines the P→A→W hierarchy for each studio (which source table is Products, which is Assets, which is Tasks, and the linking fields between them)
+- `source_entity_definitions` — defines the P→A→W hierarchy for each studio (which source table is Products, which is Assets, which is Work, and the linking fields between them)
 - `asset_reviews` — ArtHound-native reviews (not synced to/from any source tool)
 - `source_credentials` — encrypted tokens (service role only)
 - `payload_dispatch` — vendor payload tokens
@@ -83,7 +83,6 @@ Studios and vendors are separate roles with separate home pages (`StudioHome.jsx
 
 ## Known Debt
 
-- **task → work rename:** All UI, API, and DB references to "task/tasks" should become "work" (hierarchy is P→A→W). Not yet done — scope is wide.
-- **`routes/schedule.py` `reconcile_tasks`:** Still calls Airtable directly via `lib/airtable.py` instead of reading from Supabase. Crashes when `AIRTABLE_BASE_ID` is not set.
+- **`routes/schedule.py` (`reconcile_work`, `generate_schedule`, `generate_bulk`):** Still calls Airtable directly via `lib/airtable.py` instead of reading from Supabase. Breaks for Jira studios. Needs multi-source redesign to read from `replicated_work` and write back via source connectors.
 - **`maya/arthound_review.py`:** Posts to a defunct `/api/reviews/submit` endpoint. Needs redesign around `canonical_asset_id`.
 - **Asset reviews write in `routes/reviews.py`:** Legacy Airtable write path still present; to be removed once Supabase-only path is validated.
