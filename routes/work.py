@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import Optional
 
 from lib.auth import CurrentUser, get_current_user
-from lib.db import db_client, _url, _headers, _user_headers
+from lib.db import db_client, _url, _headers
 
 router = APIRouter()
 
@@ -53,7 +53,7 @@ async def list_work(
     r = await db_client.get(
         _url("/rest/v1/replicated_work"),
         params=params,
-        headers=_user_headers(current_user.token),
+        headers=_headers(),
     )
     r.raise_for_status()
     return [_fmt_work(row) for row in r.json()]
@@ -74,7 +74,7 @@ async def get_work(
             "source_record_id": f"eq.{work_id}",
             "select":           "id,source_record_id,source_asset_record_id,canonical_asset_id,name,status,estimate,meta,synced_at",
         },
-        headers=_user_headers(current_user.token),
+        headers=_headers(),
     )
     r.raise_for_status()
     rows = r.json()

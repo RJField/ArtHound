@@ -19,7 +19,8 @@ from lib.sync.runner import run_sync
 from routes.assets import router as assets_router
 from routes.schedule import router as schedule_router
 from routes.schema import router as schema_router
-from routes.setup import router as setup_router
+from routes.fields import router as fields_router
+from routes.matrix import router as matrix_router
 from routes.reviews import router as reviews_router
 from routes.workflow_steps import router as workflow_steps_router
 from routes.payload import router as payload_router
@@ -166,7 +167,8 @@ _auth = [Depends(get_current_user)]
 app.include_router(assets_router,   prefix="/api/assets",   dependencies=_auth)
 app.include_router(schedule_router, prefix="/api/schedule", dependencies=_auth)
 app.include_router(schema_router,   prefix="/api/schema",   dependencies=_auth)
-app.include_router(setup_router,    prefix="/api/setup",    dependencies=_auth)
+app.include_router(fields_router,   prefix="/api/setup",    dependencies=_auth)
+app.include_router(matrix_router,   prefix="/api/setup",    dependencies=_auth)
 app.include_router(reviews_router,        prefix="/api/reviews",         dependencies=_auth)
 app.include_router(workflow_steps_router, prefix="/api/workflow-steps",   dependencies=_auth)
 # payload router manages its own auth per-route: /receive/{token} is public,

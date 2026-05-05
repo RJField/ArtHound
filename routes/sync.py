@@ -7,7 +7,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from lib.auth import CurrentUser, get_current_user, require_studio, require_vendor
-from lib.db import db_client, _url, _headers, _user_headers
+from lib.db import db_client, _url, _headers
 from lib.sync.runner import run_sync
 
 log = logging.getLogger(__name__)
@@ -122,7 +122,7 @@ async def sync_status(
             "limit":      "5",
             "select":     "trigger,started_at,completed_at,records_synced,status,error_detail",
         },
-        headers=_user_headers(user.token),
+        headers=_headers(),
     )
 
     cursor_r = await db_client.get(
@@ -132,7 +132,7 @@ async def sync_status(
             "owner_id":   f"eq.{owner_id}",
             "select":     "source_type,last_synced_at,last_full_sync_at",
         },
-        headers=_user_headers(user.token),
+        headers=_headers(),
     )
 
     return {
