@@ -1,25 +1,24 @@
 import csv
 import io
 from datetime import datetime, timezone
-from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from lib.auth import CurrentUser, require_studio
-from lib.db import db_client, _url, _headers, _user_headers
+from lib.db import db_client, _url, _headers
 
 router = APIRouter()
 
 
 class StepBody(BaseModel):
     name: str
-    craft: Optional[str] = None
-    depends_on: List[str] = []
+    craft: str | None = None
+    depends_on: list[str] = []
 
 
-async def _fetch_steps_with_deps(studio_id: str, jwt: str):
+async def _fetch_steps_with_deps(studio_id: str):
     r = await db_client.get(
         _url("/rest/v1/workflow_steps"),
         params={
@@ -27,7 +26,7 @@ async def _fetch_steps_with_deps(studio_id: str, jwt: str):
             "select": "id,name,craft,step_deps:workflow_step_dependencies!step_id(depends_on_step_id)",
             "order": "created_at.asc",
         },
-        headers=_user_headers(jwt),
+        headers=_headers(),
     )
     rows = r.json()
 
@@ -48,7 +47,7 @@ async def download_csv(user: CurrentUser = Depends(require_studio)):
     if not studio_id:
         raise HTTPException(status_code=403, detail="No studio linked")
 
-    steps, deps = await _fetch_steps_with_deps(studio_id, user.token)
+    steps, deps = await _fetch_steps_with_deps(studio_id)
     step_name = {s["id"]: s["name"] for s in steps}
 
     output = io.StringIO()
@@ -89,7 +88,7 @@ async def list_steps(user: CurrentUser = Depends(require_studio)):
     if not studio_id:
         raise HTTPException(status_code=403, detail="No studio linked")
 
-    steps, deps = await _fetch_steps_with_deps(studio_id, user.token)
+    steps, deps = await _fetch_steps_with_deps(studio_id)
     step_by_id = {s["id"]: s for s in steps}
     depends_on: dict = {s["id"]: [] for s in steps}
     depended_by: dict = {s["id"]: [] for s in steps}
@@ -159,7 +158,7 @@ async def update_step(step_id: str, body: StepBody, user: CurrentUser = Depends(
     r = await db_client.get(
         _url("/rest/v1/workflow_steps"),
         params={"id": f"eq.{step_id}", "studio_id": f"eq.{studio_id}", "select": "id"},
-        headers=_user_headers(user.token),
+        headers=_headers(),
     )
     if not r.json():
         raise HTTPException(status_code=404, detail="Step not found")
@@ -201,7 +200,7 @@ async def delete_step(step_id: str, user: CurrentUser = Depends(require_studio))
     r = await db_client.get(
         _url("/rest/v1/workflow_steps"),
         params={"id": f"eq.{step_id}", "studio_id": f"eq.{studio_id}", "select": "id"},
-        headers=_user_headers(user.token),
+        headers=_headers(),
     )
     if not r.json():
         raise HTTPException(status_code=404, detail="Step not found")

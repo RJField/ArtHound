@@ -17,8 +17,7 @@ export function fieldDisplayString(v) {
     const first = v[0]
     if (typeof first === 'object' && first !== null) {
       if ('source_id' in first) {
-        const names = v.map(x => x.display_name || '').filter(Boolean)
-        return names.length ? names.join(', ') : `${v.length} linked record${v.length !== 1 ? 's' : ''}`
+        return v.map(x => x.display_name || x.source_id || '').filter(Boolean).join(', ')
       }
       if ('url' in first) return v.map(x => x.filename || x.url).join(', ')
     }
@@ -48,13 +47,9 @@ export function formatRawFields(rawFields) {
             }))
           }
           if ('source_id' in first) {
-            const names = v.map(x => x.display_name || '').filter(Boolean)
-            const display = names.length ? names.join(', ') : `${v.length} linked record${v.length !== 1 ? 's' : ''}`
-            return [{ label: k, value: display }]
+            const display = v.map(x => x.display_name || x.source_id || '').filter(Boolean).join(', ')
+            return display ? [{ label: k, value: display }] : []
           }
-        }
-        if (v.every(x => typeof x === 'string' && x.startsWith('rec'))) {
-          return [{ label: k, value: `${v.length} linked record${v.length !== 1 ? 's' : ''}` }]
         }
         return [{ label: k, value: v.join(', ') }]
       }

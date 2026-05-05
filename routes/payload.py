@@ -1,5 +1,8 @@
+import logging
 from datetime import datetime, timezone, timedelta
 from typing import Optional
+
+log = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
@@ -36,8 +39,8 @@ async def _log(
                 "detail": detail,
             },
         )
-    except Exception:
-        pass  # audit failure must never block the primary operation
+    except Exception as exc:
+        log.warning("payload audit log failed (dispatch=%s event=%s): %s", dispatch_id, event, exc)
 
 
 async def _get_dispatch(dispatch_id: str, select: str = "*") -> dict | None:

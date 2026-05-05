@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import os
-from typing import Any, List, Optional
+from typing import List
 
 logger = logging.getLogger(__name__)
 
@@ -9,9 +9,9 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from fastapi.responses import Response
 from pydantic import BaseModel
 
-from lib.airtable import select_all, http_client
+from lib.airtable import select_all
 from lib.auth import CurrentUser, require_studio
-from lib.db import db_client, _url, _headers, _user_headers
+from lib.db import db_client, _url, _headers
 from lib.source_creds import get_studio_airtable_creds
 from lib.utils import link_id
 import config
@@ -23,7 +23,55 @@ router = APIRouter()
 # Helpers
 # ---------------------------------------------------------------------------
 
-async def _get_entity_table_name(studio_id: str, entity_type: str, fallback: str, jwt: str) -> str:
+_STANDARD_SLOTS = frozenset({
+    "name", "dev_name", "item_type", "priority", "product",
+    "project_date", "status", "asset_number",
+})
+
+# Keys tried in order when extracting a display string from a source field dict.
+_DISPLAY_KEYS = ("name", "label", "displayName", "value", "title")
+
+
+def _extract_str(v) -> str | None:
+    """Return a display string from any field value shape (str, dict, list of dicts)."""
+    if v is None:
+        return None
+    if isinstance(v, dict):
+        for key in _DISPLAY_KEYS:
+            if v.get(key):
+                return str(v[key])
+        return None
+    if isinstance(v, list):
+        if not v:
+            return None
+        first = v[0]
+        if isinstance(first, dict):
+            for key in _DISPLAY_KEYS:
+                if first.get(key):
+                    return str(first[key])
+            return None
+        return str(first) if first is not None else None
+    return str(v)
+
+
+async def _get_slot_field_names(studio_id: str) -> dict[str, str]:
+    """Return {arthound_slot: source_field_name} from the studio's field mappings."""
+    r = await db_client.get(
+        _url("/rest/v1/source_field_mappings"),
+        params={"owner_type": "eq.studio", "owner_id": f"eq.{studio_id}", "select": "mappings"},
+        headers=_headers(),
+    )
+    if not r.is_success or not r.json():
+        return {}
+    mappings = r.json()[0].get("mappings") or []
+    return {
+        m["arthound_slot"]: m["source_field_name"]
+        for m in mappings
+        if m.get("arthound_slot") and m.get("source_field_name")
+    }
+
+
+async def _get_entity_table_name(studio_id: str, entity_type: str, fallback: str) -> str:
     """Return the studio-configured table name for entity_type, falling back to fallback."""
     r = await db_client.get(
         _url("/rest/v1/source_entity_definitions"),
@@ -34,7 +82,7 @@ async def _get_entity_table_name(studio_id: str, entity_type: str, fallback: str
             "entity_type": f"eq.{entity_type}",
             "select":      "table_name",
         },
-        headers=_user_headers(jwt),
+        headers=_headers(),
     )
     rows = r.json()
     if rows and rows[0].get("table_name"):
@@ -42,26 +90,12 @@ async def _get_entity_table_name(studio_id: str, entity_type: str, fallback: str
     return fallback
 
 
-async def _get_asset_table_name(studio_id: str, jwt: str) -> str:
-    return await _get_entity_table_name(studio_id, "asset", config.tables["assets"], jwt)
+async def _get_asset_table_name(studio_id: str) -> str:
+    return await _get_entity_table_name(studio_id, "asset", config.tables["assets"])
 
 
-async def _get_template_table_name(studio_id: str, jwt: str) -> str:
-    return await _get_entity_table_name(studio_id, "template", config.tables["templates"], jwt)
-
-
-
-async def fetch_base_schema(token: str, base_id: str) -> list:
-    r = await http_client.get(
-        f"https://api.airtable.com/v0/meta/bases/{base_id}/tables",
-        headers={"Authorization": f"Bearer {token}"},
-    )
-    if not r.is_success:
-        body = r.json()
-        raise ValueError(
-            body.get("error", {}).get("message") or f"Schema API returned {r.status_code}"
-        )
-    return r.json().get("tables", [])
+async def _get_template_table_name(studio_id: str) -> str:
+    return await _get_entity_table_name(studio_id, "template", config.tables["templates"])
 
 
 
@@ -71,128 +105,119 @@ async def fetch_base_schema(token: str, base_id: str) -> list:
 
 @router.get("/fields")
 async def get_fields(current_user: CurrentUser = Depends(require_studio)):
-    token, base_id = await get_studio_airtable_creds(current_user.studio_id)
-    asset_table_name = await _get_asset_table_name(current_user.studio_id, current_user.token)
-    tables = await fetch_base_schema(token, base_id)
-    assets_table = next((t for t in tables if t["name"] == asset_table_name), None)
-    if not assets_table:
-        raise ValueError(f'Assets table "{asset_table_name}" not found')
+    """Return source field names available on replicated_assets for this studio.
+    Combines slot-mapped field names with keys found in the meta JSONB column."""
+    studio_id = current_user.studio_id
+    slot_fields = await _get_slot_field_names(studio_id)
 
-    eligible_types = {
-        "singleSelect", "multipleSelects", "multipleRecordLinks",
-        "number", "rating", "lookup", "multipleLookupValues", "rollup",
-    }
-    fields = [
-        {"id": f["id"], "name": f["name"], "type": f["type"]}
-        for f in assets_table["fields"]
-        if f["type"] in eligible_types
-    ]
+    r_assets = await db_client.get(
+        _url("/rest/v1/replicated_assets"),
+        params={"owner_type": "eq.studio", "owner_id": f"eq.{studio_id}", "select": "meta", "limit": "500"},
+        headers=_headers(),
+    )
+    meta_keys: set = set()
+    for row in (r_assets.json() if r_assets.is_success else []):
+        meta_keys.update((row.get("meta") or {}).keys())
+
+    all_names = set(slot_fields.values()) | meta_keys
+    fields = [{"id": name, "name": name, "type": "text"} for name in sorted(all_names)]
     return {"fields": fields}
 
 
 @router.get("/field-values")
 async def get_field_values(field: str = Query(...), current_user: CurrentUser = Depends(require_studio)):
-    token, base_id = await get_studio_airtable_creds(current_user.studio_id)
-    asset_table_name = await _get_asset_table_name(current_user.studio_id, current_user.token)
-    tables = await fetch_base_schema(token, base_id)
-    assets_table = next((t for t in tables if t["name"] == asset_table_name), None)
-    if not assets_table:
-        raise ValueError(f'Assets table "{asset_table_name}" not found')
+    """Return distinct values for a source field name from replicated_assets."""
+    studio_id = current_user.studio_id
+    slot_fields = await _get_slot_field_names(studio_id)
+    fn_to_slot = {v: k for k, v in slot_fields.items()}
+    slot = fn_to_slot.get(field)
 
-    field_def = next((f for f in assets_table["fields"] if f["name"] == field), None)
-    if not field_def:
-        raise ValueError(f'Field "{field}" not found')
+    seen: dict = {}
 
-    values = []
-    ftype = field_def["type"]
-
-    if ftype in ("singleSelect", "multipleSelects"):
-        values = [
-            {"id": c["name"], "name": c["name"]}
-            for c in field_def.get("options", {}).get("choices", [])
-        ]
-    elif ftype == "multipleRecordLinks":
-        linked_table_id = field_def.get("options", {}).get("linkedTableId")
-        linked_table = next((t for t in tables if t["id"] == linked_table_id), None)
-        if not linked_table:
-            raise ValueError(f'Linked table not found for field "{field}"')
-        primary = linked_table["fields"][0]["name"] if linked_table["fields"] else "Name"
-        records = await select_all(linked_table["name"], {"fields": [primary]}, token=token, base_id=base_id)
-        values = [{"id": r["id"], "name": r["fields"].get(primary, r["id"])} for r in records]
-    else:
-        records = await select_all(asset_table_name, {"fields": [field]}, token=token, base_id=base_id)
-        seen: dict = {}
-        for r in records:
-            raw = r["fields"].get(field)
-            v = raw[0] if isinstance(raw, list) else raw
+    if slot in _STANDARD_SLOTS:
+        r = await db_client.get(
+            _url("/rest/v1/replicated_assets"),
+            params={
+                "owner_type": "eq.studio",
+                "owner_id":   f"eq.{studio_id}",
+                "select":     slot,
+                slot:         "not.is.null",
+                "limit":      "10000",
+            },
+            headers=_headers(),
+        )
+        for row in (r.json() if r.is_success else []):
+            v = row.get(slot)
             if v is not None:
-                seen[str(v)] = v
-        values = [
-            {"id": k, "name": str(v)}
-            for k, v in sorted(seen.items(), key=lambda x: x[1])
-        ]
+                seen[str(v)] = str(v)
+    else:
+        r = await db_client.get(
+            _url("/rest/v1/replicated_assets"),
+            params={
+                "owner_type": "eq.studio",
+                "owner_id":   f"eq.{studio_id}",
+                "select":     "meta",
+                "limit":      "10000",
+            },
+            headers=_headers(),
+        )
+        for row in (r.json() if r.is_success else []):
+            raw = (row.get("meta") or {}).get(field)
+            if raw is None:
+                continue
+            # A field may hold a list of objects (e.g. Jira multi-value fields);
+            # extract a display string from each item.
+            items = raw if isinstance(raw, list) else [raw]
+            for item in items:
+                s = _extract_str(item)
+                if s:
+                    seen[s] = s
 
-    return {"field": field, "type": ftype, "values": values}
+    values = [{"id": k, "name": k} for k in sorted(seen.keys())]
+    return {"field": field, "type": "text", "values": values}
 
 
 @router.get("/asset-combinations")
 async def get_asset_combinations(field: List[str] = Query(default=[]), current_user: CurrentUser = Depends(require_studio)):
+    """Return combination counts across assets for the given source field names."""
     field_names = [f.strip() for f in field if f.strip()]
     if not field_names:
         raise HTTPException(status_code=400, detail="at least one field param required")
 
-    token, base_id = await get_studio_airtable_creds(current_user.studio_id)
-    asset_table_name = await _get_asset_table_name(current_user.studio_id, current_user.token)
-    tables = await fetch_base_schema(token, base_id)
-    assets_table = next((t for t in tables if t["name"] == asset_table_name), None)
-    if not assets_table:
-        raise ValueError(f'Assets table "{asset_table_name}" not found')
+    studio_id = current_user.studio_id
+    slot_fields = await _get_slot_field_names(studio_id)
+    fn_to_slot = {v: k for k, v in slot_fields.items()}
 
-    field_defs = {f["name"]: f for f in assets_table["fields"] if f["name"] in field_names}
+    # Always select meta; also pull any standard slot columns that are needed.
+    std_cols = {fn_to_slot[f] for f in field_names if fn_to_slot.get(f) in _STANDARD_SLOTS}
+    select_cols = ",".join({"meta"} | std_cols)
 
-    linked_maps: dict = {}
-    for name in field_names:
-        fd = field_defs.get(name)
-        if not fd or fd["type"] != "multipleRecordLinks":
-            continue
-        linked_table = next(
-            (t for t in tables if t["id"] == fd.get("options", {}).get("linkedTableId")), None
-        )
-        if not linked_table:
-            continue
-        primary = linked_table["fields"][0]["name"] if linked_table["fields"] else "Name"
-        recs = await select_all(linked_table["name"], {"fields": [primary]}, token=token, base_id=base_id)
-        linked_maps[name] = {r["id"]: r["fields"].get(primary, r["id"]) for r in recs}
+    r = await db_client.get(
+        _url("/rest/v1/replicated_assets"),
+        params={
+            "owner_type": "eq.studio",
+            "owner_id":   f"eq.{studio_id}",
+            "select":     select_cols,
+            "limit":      "10000",
+        },
+        headers=_headers(),
+    )
 
-    records = await select_all(asset_table_name, {"fields": field_names}, token=token, base_id=base_id)
-
-    def resolve_value(name: str, raw) -> Optional[str]:
-        if raw is None:
-            return None
-        fd = field_defs.get(name)
-        if not fd:
-            return str(raw)
-        t = fd["type"]
-        if t == "singleSelect":
-            return raw
-        if t == "multipleSelects":
-            return (raw[0] if isinstance(raw, list) else raw) if raw else None
-        if t == "multipleRecordLinks":
-            rid = raw[0] if isinstance(raw, list) else raw
-            return linked_maps.get(name, {}).get(rid, rid) if rid else None
-        v = raw[0] if isinstance(raw, list) else raw
-        return str(v) if v is not None else None
+    def _val(row, fname):
+        slot = fn_to_slot.get(fname)
+        v = row.get(slot) if slot in _STANDARD_SLOTS else (row.get("meta") or {}).get(fname)
+        return _extract_str(v)
 
     combo_counts: dict = {}
-    for r in records:
+    for row in (r.json() if r.is_success else []):
         combo: dict = {}
         complete = True
-        for name in field_names:
-            val = resolve_value(name, r["fields"].get(name))
+        for fname in field_names:
+            val = _val(row, fname)
             if val is None:
                 complete = False
                 break
-            combo[name] = val
+            combo[fname] = val
         if not complete:
             continue
         key = "\x00".join(combo[f] for f in field_names)
@@ -219,12 +244,12 @@ async def get_matrix_table_pg(current_user: CurrentUser = Depends(require_studio
         db_client.get(
             _url("/rest/v1/estimate_config"),
             params={"studio_id": f"eq.{studio_id}", "select": "variable_fields"},
-            headers=_user_headers(current_user.token),
+            headers=_headers(),
         ),
         db_client.get(
             _url("/rest/v1/workflow_steps"),
             params={"studio_id": f"eq.{studio_id}", "select": "id,name,craft"},
-            headers=_user_headers(current_user.token),
+            headers=_headers(),
         ),
         db_client.get(
             _url("/rest/v1/estimate_matrix"),
@@ -233,7 +258,7 @@ async def get_matrix_table_pg(current_user: CurrentUser = Depends(require_studio
                 "select": "workflow_step_id,variable_values,estimate_days",
                 "limit": "10000",
             },
-            headers=_user_headers(current_user.token),
+            headers=_headers(),
         ),
     )
 
@@ -252,7 +277,7 @@ async def get_matrix_table_pg(current_user: CurrentUser = Depends(require_studio
         r_deps = await db_client.get(
             _url("/rest/v1/workflow_step_dependencies"),
             params={"step_id": f"in.({ids_csv})", "select": "step_id,depends_on_step_id"},
-            headers=_user_headers(current_user.token),
+            headers=_headers(),
         )
         dep_graph = {s["id"]: [] for s in steps}
         for d in r_deps.json():
@@ -329,6 +354,36 @@ async def get_matrix_table_pg(current_user: CurrentUser = Depends(require_studio
     }
 
 
+class MatrixCellBody(BaseModel):
+    workflow_step_id: str
+    variable_values: dict
+    estimate_days: float
+
+
+@router.patch("/matrix-cell")
+async def update_matrix_cell(
+    body: MatrixCellBody,
+    current_user: CurrentUser = Depends(require_studio),
+):
+    studio_id = current_user.studio_id
+    if body.estimate_days < 0:
+        raise HTTPException(status_code=422, detail="estimate_days must be >= 0")
+
+    r = await db_client.post(
+        _url("/rest/v1/estimate_matrix?on_conflict=studio_id,workflow_step_id,variable_values"),
+        json={
+            "studio_id":        studio_id,
+            "workflow_step_id": body.workflow_step_id,
+            "variable_values":  body.variable_values,
+            "estimate_days":    body.estimate_days,
+        },
+        headers=_headers({"Prefer": "resolution=merge-duplicates,return=minimal"}),
+    )
+    if not r.is_success:
+        raise HTTPException(status_code=500, detail=f"Failed to update cell: {r.text}")
+    return {"ok": True}
+
+
 class VariableFieldItem(BaseModel):
     field: str
     type: str
@@ -380,11 +435,11 @@ async def create_matrix_pg(
     )
 
     # 3. Optionally import workflow steps from Airtable task templates.
-    # If the studio's base has no templates table (or access is denied), skip
-    # silently — the user can manage steps manually via the Workflows UI.
-    at_token, at_base_id = await get_studio_airtable_creds(studio_id)
-    template_table = await _get_template_table_name(studio_id, current_user.token)
+    # Skipped silently for non-Airtable studios or when templates table is absent —
+    # the user can manage steps manually via the Workflows UI.
     try:
+        at_token, at_base_id = await get_studio_airtable_creds(studio_id)
+        template_table = await _get_template_table_name(studio_id)
         templates, templates_str = await asyncio.gather(
             select_all(template_table, token=at_token, base_id=at_base_id),
             select_all(template_table, {

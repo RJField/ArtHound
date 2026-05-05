@@ -302,6 +302,24 @@ class JiraConnector(BaseConnector):
             for n in (_normalize_field(f) for f in r.json())
         ]
 
+    async def create_issue(self, fields: dict) -> str:
+        """Create a Jira issue and return the new issue ID (numeric string)."""
+        for attempt in range(_MAX_RETRIES):
+            r = await self._client.post(
+                f"{self._base}/issue",
+                headers={**self._headers(), "Content-Type": "application/json"},
+                json={"fields": fields},
+            )
+            if r.status_code != 429:
+                break
+            wait = int(r.headers.get("Retry-After", _DEFAULT_RETRY_WAIT))
+            log.warning("Jira 429 on create_issue — retrying in %ds (attempt %d)", wait, attempt + 1)
+            await asyncio.sleep(wait)
+
+        if not r.is_success:
+            raise RuntimeError(f"Jira create_issue failed ({r.status_code}): {r.text}")
+        return r.json()["id"]
+
     def build_entity_filter(self, entity_def: dict) -> str | None:
         """
         Return a JQL string for this entity definition.

@@ -112,6 +112,19 @@ async def create_records(
     return results
 
 
+async def fetch_base_schema(token: str, base_id: str) -> list:
+    r = await http_client.get(
+        f"https://api.airtable.com/v0/meta/bases/{base_id}/tables",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    if not r.is_success:
+        body = r.json()
+        raise ValueError(
+            body.get("error", {}).get("message") or f"Schema API returned {r.status_code}"
+        )
+    return r.json().get("tables", [])
+
+
 async def update_records(table_name: str, updates: list[dict]) -> list[dict]:
     base_id = _base_id()
     table_enc = quote(table_name, safe="")

@@ -1,8 +1,84 @@
-import { useState, useEffect, useRef, useLayoutEffect } from 'react'
+import { useState, useEffect, useRef, useLayoutEffect, useCallback } from 'react'
 import { toast } from 'sonner'
 import { apiFetch } from '../lib/api'
 import { cn } from '../lib/utils'
 import EstimateWizardModal from '../components/EstimateWizardModal'
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function colNameToVariableValues(colName, variableFields) {
+  if (colName === '__default__') return {}
+  const parts = colName.split('|')
+  return Object.fromEntries(variableFields.map((f, i) => [f, parts[i] ?? '']))
+}
+
+// ── MatrixCell ────────────────────────────────────────────────────────────────
+
+function MatrixCell({ stepId, colName, variableFields, initialValue }) {
+  const initStr = (initialValue != null && initialValue !== 0) ? String(initialValue) : ''
+  const [value, setValue] = useState(initStr)
+  const [saving, setSaving] = useState(false)
+  const committed = useRef(initStr)
+
+  useEffect(() => {
+    const s = (initialValue != null && initialValue !== 0) ? String(initialValue) : ''
+    setValue(s)
+    committed.current = s
+  }, [initialValue])
+
+  const save = useCallback(async () => {
+    const num = value === '' ? 0 : parseFloat(value)
+    if (isNaN(num) || num < 0) { setValue(committed.current); return }
+    const next = num === 0 ? '' : String(num)
+    if (next === committed.current) return
+    setSaving(true)
+    try {
+      await apiFetch('/api/setup/matrix-cell', {
+        method: 'PATCH',
+        body: JSON.stringify({
+          workflow_step_id: stepId,
+          variable_values: colNameToVariableValues(colName, variableFields),
+          estimate_days: num,
+        }),
+      })
+      committed.current = next
+      setValue(next)
+    } catch (e) {
+      toast.error(`Save failed: ${e.message}`)
+      setValue(committed.current)
+    } finally {
+      setSaving(false)
+    }
+  }, [value, stepId, colName, variableFields])
+
+  function handleKeyDown(e) {
+    if (e.key === 'Enter') e.currentTarget.blur()
+    if (e.key === 'Escape') { setValue(committed.current); e.currentTarget.blur() }
+  }
+
+  return (
+    <td className="py-0 px-1 text-center">
+      <input
+        type="number"
+        min="0"
+        step="0.5"
+        value={value}
+        placeholder="—"
+        onChange={e => setValue(e.target.value)}
+        onBlur={save}
+        onKeyDown={handleKeyDown}
+        disabled={saving}
+        className={cn(
+          'w-14 text-center text-xs bg-transparent rounded px-1 py-1.5 outline-none',
+          'border border-transparent hover:border-border focus:border-accent',
+          'text-foreground placeholder:text-muted [appearance:textfield]',
+          '[&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none',
+          saving && 'opacity-40 cursor-wait',
+        )}
+      />
+    </td>
+  )
+}
 
 // ── Matrix Table ──────────────────────────────────────────────────────────────
 
@@ -133,12 +209,15 @@ function MatrixTable({ reloadKey }) {
               <td className={cn(fixedCls, 'py-1.5 px-3 text-muted')}>
                 {t.dependsOn?.length ? t.dependsOn.join(', ') : '—'}
               </td>
-              {combinations.map(c => {
-                const val = t.estimates[c.colName]
-                return (val != null && val !== 0)
-                  ? <td key={c.colName} className="py-1.5 px-3 text-foreground text-center">{val}d</td>
-                  : <td key={c.colName} className="py-1.5 px-3 text-muted text-center">—</td>
-              })}
+              {combinations.map(c => (
+                <MatrixCell
+                  key={c.colName}
+                  stepId={t.id}
+                  colName={c.colName}
+                  variableFields={variableFields}
+                  initialValue={t.estimates[c.colName]}
+                />
+              ))}
             </tr>
           ))}
         </tbody>

@@ -1,42 +1,40 @@
 import asyncio
 import logging
+import re
 from datetime import datetime, timezone
-from typing import List, Optional
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
-from lib.airtable import select_all, create_records, find_record
 from lib.auth import CurrentUser, require_studio
 from lib.db import db_client, _url, _headers
 from lib.scheduler import build_schedule
-from lib.source_creds import get_studio_airtable_creds
-import config
+from lib.token_refresh import get_jira_token
+from lib.sync.connectors.jira import JiraConnector
 
 log = logging.getLogger(__name__)
 
 router = APIRouter()
 
 
-async def _write_work_snapshots(result: dict, created: list[dict]) -> None:
-    """Write a generated_work snapshot row for each work item created in the source tool.
-
-    Non-fatal — a Supabase write failure here must never roll back the Airtable
-    write, which is the source of truth. Errors are logged and swallowed.
+async def _write_work_snapshots(result: dict) -> dict[str, str]:
+    """Write generated_work snapshot rows.
+    Returns {workflow_step_id: generated_work_id} for source write-back.
+    Non-fatal — errors are logged and an empty map is returned.
     """
     canonical_asset_id = result["asset"].get("canonicalAssetId")
     studio_id          = result.get("_studioId")
     variable_values    = result.get("_variableValues", {})
+    work_items         = result.get("work", [])
 
-    if not canonical_asset_id or not studio_id or not created:
-        return
+    if not canonical_asset_id or not studio_id or not work_items:
+        return {}
 
     rows = [
         {
             "canonical_asset_id": canonical_asset_id,
             "studio_id":          studio_id,
-            "source_type":        "airtable",
-            "source_record_id":   at_rec.get("id"),
             "work_name":          item["workName"],
             "workflow_step_id":   item.get("workflowStepId"),
             "craft":              item.get("craft"),
@@ -45,28 +43,205 @@ async def _write_work_snapshots(result: dict, created: list[dict]) -> None:
             "start_date":         item.get("startDate"),
             "end_date":           item.get("endDate"),
         }
-        for item, at_rec in zip(result["work"], created)
+        for item in work_items
     ]
 
     try:
         r = await db_client.post(
             _url("/rest/v1/generated_work"),
             json=rows,
-            headers=_headers({"Prefer": "return=minimal"}),
+            headers=_headers({"Prefer": "return=representation"}),
         )
         if not r.is_success:
             log.warning("generated_work write failed: %s %s", r.status_code, r.text)
+            return {}
+        return {
+            row["workflow_step_id"]: row["id"]
+            for row in r.json()
+            if row.get("workflow_step_id") and row.get("id")
+        }
     except Exception as exc:
         log.warning("generated_work write error: %s", exc)
+        return {}
 
+
+# ── Source write-back helpers ─────────────────────────────────────────────────
+
+async def _get_studio_source_type(studio_id: str) -> str | None:
+    r = await db_client.get(
+        _url("/rest/v1/source_credentials"),
+        params={"owner_type": "eq.studio", "owner_id": f"eq.{studio_id}",
+                "select": "source_type", "limit": "1"},
+        headers=_headers(),
+    )
+    rows = r.json() if r.is_success else []
+    return rows[0]["source_type"] if rows else None
+
+
+_ISSUETYPE_RE = re.compile(r'issuetype\s*=\s*["\']?([^"\'\\s),]+)', re.IGNORECASE)
+
+
+def _parse_issue_type(jql_filter: str | None) -> str | None:
+    """Extract the issue type name from a JQL string, e.g. 'issuetype = "Sub-task"' → 'Sub-task'."""
+    if not jql_filter:
+        return None
+    m = _ISSUETYPE_RE.search(jql_filter)
+    return m.group(1) if m else None
+
+
+async def _get_work_entity_def(studio_id: str) -> dict | None:
+    r = await db_client.get(
+        _url("/rest/v1/source_entity_definitions"),
+        params={
+            "owner_type":  "eq.studio",
+            "owner_id":    f"eq.{studio_id}",
+            "entity_type": "eq.work",
+            "select": (
+                "table_id,jql_filter,rel_field_id,rel_field_name,"
+                "work_name_field_id,work_start_date_field_id,"
+                "work_end_date_field_id,work_estimate_field_id"
+            ),
+            "limit": "1",
+        },
+        headers=_headers(),
+    )
+    rows = r.json() if r.is_success else []
+    return rows[0] if rows else None
+
+
+async def _get_asset_jira_key(studio_id: str, source_record_id: str) -> str | None:
+    r = await db_client.get(
+        _url("/rest/v1/replicated_assets"),
+        params={
+            "owner_type":       "eq.studio",
+            "owner_id":         f"eq.{studio_id}",
+            "source_record_id": f"eq.{source_record_id}",
+            "select":           "meta",
+            "limit":            "1",
+        },
+        headers=_headers(),
+    )
+    rows = r.json() if r.is_success else []
+    if not rows:
+        return None
+    return (rows[0].get("meta") or {}).get("_jira_key")
+
+
+async def _write_back_to_source(result: dict, snapshot_map: dict[str, str]) -> int:
+    """Push generated work items to the studio's source tool.
+    Returns the count of items successfully created. Non-fatal — errors are logged.
+    Currently implemented for Jira only; Airtable write-back is deferred.
+    """
+    studio_id  = result["_studioId"]
+    work_items = result["work"]
+
+    if not snapshot_map or not work_items:
+        return 0
+
+    source_type = await _get_studio_source_type(studio_id)
+    if source_type != "jira":
+        return 0
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            jira_creds = await get_jira_token("studio", studio_id, client)
+        except RuntimeError as exc:
+            log.warning("Jira write-back: cannot get token for studio %s — %s", studio_id, exc)
+            return 0
+
+        work_def = await _get_work_entity_def(studio_id)
+        if not work_def:
+            log.warning("Jira write-back: no work entity def for studio %s", studio_id)
+            return 0
+
+        asset_jira_key = await _get_asset_jira_key(studio_id, result["asset"]["id"])
+        if not asset_jira_key:
+            log.warning(
+                "Jira write-back: no _jira_key in meta for asset %s — "
+                "re-sync the asset then retry",
+                result["asset"]["id"],
+            )
+            return 0
+
+        connector = JiraConnector(
+            access_token=jira_creds["access_token"],
+            client=client,
+            cloud_id=jira_creds.get("cloud_id"),
+            deployment=jira_creds.get("deployment", "cloud"),
+            instance_url=jira_creds.get("instance_url"),
+        )
+
+        project_key    = work_def.get("table_id")
+        # rel_field_id is null in Jira wizard saves; fall back to rel_field_name
+        rel_field      = work_def.get("rel_field_id") or work_def.get("rel_field_name")
+        start_field_id = work_def.get("work_start_date_field_id")
+        end_field_id   = work_def.get("work_end_date_field_id")
+        est_field_id   = work_def.get("work_estimate_field_id")
+        issue_type     = _parse_issue_type(work_def.get("jql_filter")) or "Task"
+
+        source_id_updates: list[dict] = []
+        created = 0
+
+        for item in work_items:
+            fields: dict = {
+                "project":   {"key": project_key},
+                "issuetype": {"name": issue_type},
+                "summary":   item["workName"],
+            }
+
+            if rel_field and asset_jira_key:
+                if rel_field == "parent":
+                    fields["parent"] = {"key": asset_jira_key}
+                else:
+                    fields[rel_field] = asset_jira_key
+
+            if start_field_id and item.get("startDate"):
+                fields[start_field_id] = item["startDate"]
+            if end_field_id and item.get("endDate"):
+                fields[end_field_id] = item["endDate"]
+            if est_field_id and item.get("estimate") is not None:
+                fields[est_field_id] = item["estimate"]
+
+            try:
+                issue_id = await connector.create_issue(fields)
+                created += 1
+                gw_id = snapshot_map.get(item.get("workflowStepId") or "")
+                if gw_id:
+                    source_id_updates.append({"id": gw_id, "source_record_id": issue_id})
+            except Exception as exc:
+                log.warning(
+                    "Jira write-back: create_issue failed for '%s': %s",
+                    item["workName"], exc,
+                )
+
+        if source_id_updates:
+            try:
+                await db_client.post(
+                    _url("/rest/v1/generated_work?on_conflict=id"),
+                    json=source_id_updates,
+                    headers=_headers({"Prefer": "resolution=merge-duplicates,return=minimal"}),
+                )
+            except Exception as exc:
+                log.warning("Jira write-back: source_record_id update failed: %s", exc)
+
+        log.info(
+            "Jira write-back: %d/%d issues created for asset %s (studio %s)",
+            created, len(work_items), result["asset"]["id"], studio_id,
+        )
+        return created
+
+
+# ── Route models ──────────────────────────────────────────────────────────────
 
 class AssetIdBody(BaseModel):
     assetId: str
 
 
 class AssetIdsBody(BaseModel):
-    assetIds: List[str]
+    assetIds: list[str]
 
+
+# ── Routes ────────────────────────────────────────────────────────────────────
 
 @router.get("/work-local")
 async def get_asset_work_local(
@@ -102,139 +277,20 @@ async def get_asset_work_local(
     ]
 
 
-@router.get("/work")
-async def get_asset_work(assetId: str = Query(...), assetName: Optional[str] = Query(None), _user: CurrentUser = Depends(require_studio)):
-    try:
-        token, base_id = await get_studio_airtable_creds(_user.studio_id)
-    except HTTPException:
-        return []
-
-    entity_r = await db_client.get(
-        _url("/rest/v1/source_entity_definitions"),
-        params={
-            "owner_type":  "eq.studio",
-            "owner_id":    f"eq.{_user.studio_id}",
-            "source_type": "eq.airtable",
-            "entity_type": "eq.work",
-            "select":      "table_id,rel_field_name,"
-                           "work_name_field_name,work_estimate_field_name,"
-                           "work_start_date_field_name,work_end_date_field_name",
-        },
-        headers=_headers(),
-    )
-    entity_rows = entity_r.json()
-
-    if entity_rows:
-        # New-system path: use studio's configured field names
-        ed = entity_rows[0]
-        work_table        = ed["table_id"]
-        link_field        = ed.get("rel_field_name")
-        name_field        = ed.get("work_name_field_name")
-        estimate_field    = ed.get("work_estimate_field_name")
-        start_date_field  = ed.get("work_start_date_field_name")
-        end_date_field    = ed.get("work_end_date_field_name")
-
-        if not name_field or not link_field:
-            # Entity def exists but work field mappings not yet configured
-            return []
-
-        if not assetName:
-            asset_table = config.tables.get("assets", "Assets")
-            rec = await find_record(asset_table, assetId, token=token, base_id=base_id)
-            assetName = rec["fields"].get("Name", "")
-
-        escaped = assetName.replace('"', '\\"')
-        fields_to_fetch = [f for f in [name_field, estimate_field, start_date_field, end_date_field] if f]
-        sort_field = start_date_field or name_field
-
-        records = await select_all(
-            work_table,
-            {
-                "filterByFormula": f'{{{link_field}}} = "{escaped}"',
-                "fields": fields_to_fetch,
-                "sort": [{"field": sort_field, "direction": "asc"}],
-            },
-            token=token,
-            base_id=base_id,
-        )
-        return [
-            {
-                "id":        r["id"],
-                "work":      r["fields"].get(name_field, ""),
-                "estimate":  r["fields"].get(estimate_field) if estimate_field else None,
-                "startDate": r["fields"].get(start_date_field, "") if start_date_field else "",
-                "endDate":   r["fields"].get(end_date_field, "") if end_date_field else "",
-            }
-            for r in records
-        ]
-
-    # Legacy path: fixed schema with hardcoded field names (pre-entity-def studios)
-    work_table = config.tables.get("work", "Tasks")
-    if not assetName:
-        asset_table = config.tables.get("assets", "Assets")
-        rec = await find_record(asset_table, assetId, token=token, base_id=base_id)
-        assetName = rec["fields"].get("Name", "")
-    escaped = assetName.replace('"', '\\"')
-    records = await select_all(
-        work_table,
-        {
-            "filterByFormula": f'{{Asset}} = "{escaped}"',
-            "fields": ["Task", "Estimate", "Start Date", "End Date"],
-            "sort": [{"field": "Start Date", "direction": "asc"}],
-        },
-        token=token,
-        base_id=base_id,
-    )
-    return [
-        {
-            "id":        r["id"],
-            "work":      r["fields"].get("Task", ""),
-            "estimate":  r["fields"].get("Estimate"),
-            "startDate": r["fields"].get("Start Date", ""),
-            "endDate":   r["fields"].get("End Date", ""),
-        }
-        for r in records
-    ]
-
-
-@router.get("/work/{work_id}")
-async def get_work_detail(work_id: str, _user: CurrentUser = Depends(require_studio)):
-    record, display_records = await asyncio.gather(
-        find_record(config.tables["work"], work_id),
-        select_all(
-            config.tables["work"],
-            {
-                "filterByFormula": f'RECORD_ID()="{work_id}"',
-                "cellFormat": "string",
-                "timeZone": "America/Los_Angeles",
-                "userLocale": "en-us",
-            },
-        ),
-    )
-    display_fields = display_records[0]["fields"] if display_records else {}
-    return {
-        "id": record["id"],
-        "fields": record.get("fields", {}),
-        "displayFields": display_fields,
-    }
-
-
 @router.post("/reconcile-work")
 async def reconcile_work(user: CurrentUser = Depends(require_studio)):
     """
-    Compare active generated_work snapshots against live Airtable work records.
-    Soft-deletes any snapshot rows whose source_record_id no longer exists in Airtable.
+    Compare active generated_work snapshots against replicated_work.
+    Soft-deletes any snapshot rows whose source_record_id no longer exists in the sync layer.
     """
     if not user.studio_id:
         raise HTTPException(status_code=403, detail="No studio linked")
 
-    # Fetch active snapshot rows that have an Airtable source reference
     r = await db_client.get(
         _url("/rest/v1/generated_work"),
         params={
             "studio_id":        f"eq.{user.studio_id}",
             "deleted_at":       "is.null",
-            "source_type":      "eq.airtable",
             "source_record_id": "not.is.null",
             "select":           "id,source_record_id",
         },
@@ -246,11 +302,18 @@ async def reconcile_work(user: CurrentUser = Depends(require_studio)):
     if not snapshot_rows:
         return {"checked": 0, "soft_deleted": 0}
 
-    # Fetch all live work IDs from Airtable (one field only to minimise payload)
-    live_records = await select_all(config.tables["work"], {"fields": ["Task"]})
-    live_ids = {rec["id"] for rec in live_records}
+    r_live = await db_client.get(
+        _url("/rest/v1/replicated_work"),
+        params={
+            "owner_type": "eq.studio",
+            "owner_id":   f"eq.{user.studio_id}",
+            "select":     "source_record_id",
+        },
+        headers=_headers(),
+    )
+    r_live.raise_for_status()
+    live_ids = {row["source_record_id"] for row in r_live.json() if row.get("source_record_id")}
 
-    # Soft-delete snapshots whose Airtable record no longer exists
     orphaned_ids = [row["id"] for row in snapshot_rows if row["source_record_id"] not in live_ids]
 
     if orphaned_ids:
@@ -274,8 +337,7 @@ async def reconcile_work(user: CurrentUser = Depends(require_studio)):
 async def preview_schedule(body: AssetIdBody, user: CurrentUser = Depends(require_studio)):
     if not body.assetId:
         raise HTTPException(status_code=400, detail="assetId is required")
-    token, base_id = await get_studio_airtable_creds(user.studio_id)
-    return await build_schedule(body.assetId, user.studio_id, token, base_id)
+    return await build_schedule(body.assetId, user.studio_id)
 
 
 @router.post("/generate")
@@ -283,24 +345,10 @@ async def generate_schedule(body: AssetIdBody, user: CurrentUser = Depends(requi
     if not body.assetId:
         raise HTTPException(status_code=400, detail="assetId is required")
 
-    token, base_id = await get_studio_airtable_creds(user.studio_id)
-    result = await build_schedule(body.assetId, user.studio_id, token, base_id)
-
-    records = [
-        {
-            "Asset": [body.assetId],
-            "Task": item["workName"],
-            "Estimate": item["estimate"],
-            "Craft": item["capCraftIds"],
-            "Start Date": item["startDate"],
-            "End Date": item["endDate"],
-        }
-        for item in result["work"]
-    ]
-
-    created = await create_records(config.tables["work"], records, token=token, base_id=base_id)
-    await _write_work_snapshots(result, created)
-    return {**result, "created": len(created)}
+    result       = await build_schedule(body.assetId, user.studio_id)
+    snapshot_map = await _write_work_snapshots(result)
+    source_created = await _write_back_to_source(result, snapshot_map)
+    return {**result, "created": len(result["work"]), "sourceCreated": source_created}
 
 
 @router.post("/generate-bulk")
@@ -308,48 +356,50 @@ async def generate_bulk(body: AssetIdsBody, user: CurrentUser = Depends(require_
     if not body.assetIds:
         raise HTTPException(status_code=400, detail="assetIds array is required")
 
-    token, base_id = await get_studio_airtable_creds(user.studio_id)
     results = await asyncio.gather(
-        *[build_schedule(aid, user.studio_id, token, base_id) for aid in body.assetIds],
+        *[build_schedule(aid, user.studio_id) for aid in body.assetIds],
         return_exceptions=True,
     )
 
-    all_records = []
-    failed = []
+    failed = [
+        {"id": body.assetIds[i], "error": str(r)}
+        for i, r in enumerate(results)
+        if isinstance(r, Exception)
+    ]
+    all_warnings = [
+        w
+        for r in results
+        if not isinstance(r, Exception)
+        for w in r.get("warnings", [])
+    ]
+    created_count = sum(
+        len(r.get("work", []))
+        for r in results
+        if not isinstance(r, Exception)
+    )
 
-    for i, result in enumerate(results):
-        if isinstance(result, Exception):
-            failed.append({"id": body.assetIds[i], "error": str(result)})
-        else:
-            for item in result["work"]:
-                all_records.append(
-                    {
-                        "Asset": [body.assetIds[i]],
-                        "Task": item["workName"],
-                        "Estimate": item["estimate"],
-                        "Craft": item["capCraftIds"],
-                        "Start Date": item["startDate"],
-                        "End Date": item["endDate"],
-                    }
-                )
+    valid_results = [r for r in results if not isinstance(r, Exception)]
 
-    all_warnings = []
-    for result in results:
-        if not isinstance(result, Exception):
-            all_warnings.extend(result.get("warnings", []))
+    snapshot_maps = await asyncio.gather(
+        *[_write_work_snapshots(r) for r in valid_results],
+        return_exceptions=True,
+    )
 
-    created = await create_records(config.tables["work"], all_records, token=token, base_id=base_id) if all_records else []
+    source_counts = await asyncio.gather(
+        *[
+            _write_back_to_source(
+                valid_results[i],
+                snapshot_maps[i] if not isinstance(snapshot_maps[i], Exception) else {},
+            )
+            for i in range(len(valid_results))
+        ],
+        return_exceptions=True,
+    )
+    source_created = sum(c for c in source_counts if isinstance(c, int))
 
-    # Write snapshots: slice `created` back per result using work item counts as boundaries.
-    if created:
-        offset = 0
-        snapshot_coros = []
-        for result in results:
-            if isinstance(result, Exception):
-                continue
-            count = len(result.get("work", []))
-            snapshot_coros.append(_write_work_snapshots(result, created[offset:offset + count]))
-            offset += count
-        await asyncio.gather(*snapshot_coros, return_exceptions=True)
-
-    return {"created": len(created), "failed": failed, "warnings": all_warnings}
+    return {
+        "created":       created_count,
+        "sourceCreated": source_created,
+        "failed":        failed,
+        "warnings":      all_warnings,
+    }

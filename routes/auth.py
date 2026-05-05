@@ -13,9 +13,9 @@ from lib.db import db_client, _url, _headers
 log = logging.getLogger(__name__)
 router = APIRouter()
 
-# Set SIGNUP_AUTO_CONFIRM=false in production to require email confirmation.
-# Defaults to true (skip confirmation) for dev-friendly behaviour.
-_AUTO_CONFIRM = os.environ.get("SIGNUP_AUTO_CONFIRM", "true").lower() != "false"
+# Set SIGNUP_AUTO_CONFIRM=true in dev to skip email confirmation.
+# Defaults to false (require confirmation) for safe production behaviour.
+_AUTO_CONFIRM = os.environ.get("SIGNUP_AUTO_CONFIRM", "false").lower() == "true"
 
 
 class SignupBody(BaseModel):
