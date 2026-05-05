@@ -224,6 +224,10 @@ async def dispatch_bulk(body: BulkDispatchBody, user: CurrentUser = Depends(requ
         await _log(dispatch_id, "dispatched", actor_studio_id=studio_id)
         dispatch_ids.append(dispatch_id)
 
+    from lib.attachments import enqueue_attachment_copy
+    for did in dispatch_ids:
+        await enqueue_attachment_copy(did)
+
     return {"dispatched": len(dispatch_ids), "dispatch_ids": dispatch_ids}
 
 

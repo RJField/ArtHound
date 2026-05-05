@@ -1,12 +1,14 @@
 import { useState, useEffect } from 'react'
 import { toast } from 'sonner'
 import { cn } from '../lib/utils'
+import AttachmentGallery from './media/AttachmentGallery'
 
 // DetailModal({ title, badge?, fields?, image?, actions?, loading?, onClose })
 //
-// fields: [{ label, value, type?, href?, resolve? }]
-//   type: 'text' (default) | 'link' | 'badge' | 'linked-record'
+// fields: [{ label, value, type?, href?, resolve?, items? }]
+//   type: 'text' (default) | 'link' | 'badge' | 'linked-record' | 'attachments'
 //   resolve: async fn() → { title, badge?, fields? }  — navigates to linked record
+//   items: [{ filename, mimetype, size_bytes, proxyUrl }]  — when type === 'attachments'
 // actions: [{ label, style?, onClick(closeFn) }]
 
 export default function DetailModal({ title, badge, fields = [], image, actions = [], loading, onClose }) {
@@ -72,9 +74,15 @@ export default function DetailModal({ title, badge, fields = [], image, actions 
           {current.fields.length > 0 && (
             <div className="flex flex-col divide-y divide-border/50">
               {current.fields.map((f, i) => {
+                if (f.type === 'attachments') {
+                  return (
+                    <div key={i} className="py-3">
+                      <AttachmentGallery label={f.label} attachments={f.items ?? []} />
+                    </div>
+                  )
+                }
                 const display = f.value != null && f.value !== '' ? String(f.value) : '—'
                 const isEmpty = display === '—'
-
                 return (
                   <FieldRow
                     key={i}

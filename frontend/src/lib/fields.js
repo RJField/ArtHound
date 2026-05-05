@@ -29,8 +29,14 @@ export function fieldDisplayString(v) {
   return String(v)
 }
 
-// Converts a raw field value dict into a FieldDef array for DetailModal/FieldGrid.
-export function formatRawFields(rawFields) {
+/**
+ * Converts a raw field value dict into a FieldDef array for DetailModal/FieldGrid.
+ *
+ * proxyUrlFn(fieldKey, idx) — optional; called for each attachment item to build
+ * the backend proxy URL. When omitted, items are emitted without a proxyUrl (e.g.
+ * for display-only contexts where viewing isn't needed).
+ */
+export function formatRawFields(rawFields, proxyUrlFn = null) {
   return Object.entries(rawFields)
     .filter(([, v]) => v != null && v !== '')
     .flatMap(([k, v]) => {
@@ -39,12 +45,17 @@ export function formatRawFields(rawFields) {
         const first = v[0]
         if (typeof first === 'object' && first !== null) {
           if ('url' in first) {
-            return v.map((att, i) => ({
-              label: v.length === 1 ? k : `${k} [${i + 1}]`,
-              value: att.filename || att.url,
-              type: 'link',
-              href: att.url,
-            }))
+            // Attachment list — group into a single 'attachments' entry
+            return [{
+              label: k,
+              type: 'attachments',
+              items: v.map((att, i) => ({
+                filename: att.filename || att.url || 'attachment',
+                mimetype: att.mimetype || null,
+                size_bytes: att.size_bytes || null,
+                proxyUrl: proxyUrlFn ? proxyUrlFn(k, i) : null,
+              })),
+            }]
           }
           if ('source_id' in first) {
             const display = v.map(x => x.display_name || x.source_id || '').filter(Boolean).join(', ')

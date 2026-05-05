@@ -1,22 +1,30 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { cn } from '../../lib/utils'
-import DetailsTab from './tabs/DetailsTab'
-import WorkTab    from './tabs/WorkTab'
-import ReviewsTab from './tabs/ReviewsTab'
-import BugsTab    from './tabs/BugsTab'
+import { formatRawFields } from '../../lib/fields'
+import DetailsTab     from './tabs/DetailsTab'
+import WorkTab        from './tabs/WorkTab'
+import ReviewsTab     from './tabs/ReviewsTab'
+import BugsTab        from './tabs/BugsTab'
+import AttachmentsTab from './tabs/AttachmentsTab'
 
-// Tab registry — add, remove, or reorder here without touching panel logic.
 const TABS = [
-  { id: 'details', label: 'Details', Component: DetailsTab },
-  { id: 'work',    label: 'Work',    Component: WorkTab },
-  { id: 'reviews', label: 'Reviews', Component: ReviewsTab },
-  { id: 'bugs',    label: 'Bugs',    Component: BugsTab },
+  { id: 'details',     label: () => 'Details',     Component: DetailsTab },
+  { id: 'attachments', label: n  => n ? `Attachments (${n})` : 'Attachments', Component: AttachmentsTab },
+  { id: 'work',        label: () => 'Work',         Component: WorkTab },
+  { id: 'reviews',     label: () => 'Reviews',      Component: ReviewsTab },
+  { id: 'bugs',        label: () => 'Bugs',         Component: BugsTab },
 ]
 
 export default function AssetDetailPanel({ asset, schema, workRefreshKey }) {
   const [activeTab, setActiveTab] = useState('details')
 
-  const { Component: ActiveComponent } = TABS.find(t => t.id === activeTab) ?? {}
+  const attachmentCount = useMemo(() => {
+    if (!asset?.rawFields) return 0
+    return formatRawFields(asset.rawFields).filter(f => f.type === 'attachments')
+      .reduce((sum, g) => sum + (g.items?.length ?? 0), 0)
+  }, [asset?.id])
+
+  const { Component: ActiveComponent, label: labelFn } = TABS.find(t => t.id === activeTab) ?? {}
 
   return (
     <div className="w-96 shrink-0 flex flex-col overflow-hidden">
@@ -62,7 +70,7 @@ export default function AssetDetailPanel({ asset, schema, workRefreshKey }) {
                     : 'border-transparent text-muted hover:text-foreground'
                 )}
               >
-                {tab.label}
+                {tab.label(tab.id === 'attachments' ? attachmentCount : null)}
               </button>
             ))}
           </div>

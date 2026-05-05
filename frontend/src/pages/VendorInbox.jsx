@@ -1,20 +1,25 @@
 import { useState, useEffect, useCallback } from 'react'
 import { toast } from 'sonner'
-import { apiFetch } from '../lib/api'
+import { apiFetch, payloadAttachmentUrl } from '../lib/api'
 import { formatRawFields, fieldDisplayString } from '../lib/fields'
 import DetailModal from '../components/DetailModal'
 
 const SKIP = new Set(['Name', 'name'])
 
 function buildModalProps(d) {
-  const data      = d.payload_data?.data ?? {}
-  const name      = data['Name'] || data['name'] || '—'
-  const itemType  = fieldDisplayString(data['Item Type'] || data['item_type'] || '')
-  const priority  = d.payload_data?.priority
-  const studio    = d.payload_data?.sender_studio_name || 'Unknown Studio'
-  const date      = d.created_at ? new Date(d.created_at).toLocaleDateString() : '—'
-  const badge     = [itemType, priority != null ? `P${priority}` : ''].filter(Boolean).join(' · ')
-  const raw       = Object.fromEntries(Object.entries(data).filter(([k]) => !SKIP.has(k)))
+  const data          = d.payload_data?.data ?? {}
+  const assetGlobalId = d.payload_data?.asset_global_id
+  const name          = data['Name'] || data['name'] || '—'
+  const itemType      = fieldDisplayString(data['Item Type'] || data['item_type'] || '')
+  const priority      = d.payload_data?.priority
+  const studio        = d.payload_data?.sender_studio_name || 'Unknown Studio'
+  const date          = d.created_at ? new Date(d.created_at).toLocaleDateString() : '—'
+  const badge         = [itemType, priority != null ? `P${priority}` : ''].filter(Boolean).join(' · ')
+  const raw           = Object.fromEntries(Object.entries(data).filter(([k]) => !SKIP.has(k)))
+
+  const proxyUrlFn = assetGlobalId
+    ? (fieldKey, idx) => payloadAttachmentUrl(d.id, assetGlobalId, fieldKey, idx)
+    : null
 
   return {
     title:  name,
@@ -22,7 +27,7 @@ function buildModalProps(d) {
     fields: [
       { label: 'From',     value: studio },
       { label: 'Received', value: date },
-      ...formatRawFields(raw),
+      ...formatRawFields(raw, proxyUrlFn),
     ],
   }
 }

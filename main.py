@@ -32,6 +32,7 @@ from routes.auth import router as auth_router
 from routes.work import router as work_router
 from routes.synthetic import router as synthetic_router
 from routes.connectors.jira_oauth import router as jira_oauth_router
+from routes.attachments import router as attachments_router
 
 log = logging.getLogger(__name__)
 
@@ -66,6 +67,44 @@ async def _poll_loop() -> None:
                     )
         except Exception as exc:
             log.warning("Poll cycle error: %s", exc)
+
+
+async def _attachment_drain_loop() -> None:
+    """
+    Always-on loop that drains pending attachment copy jobs.
+    Runs independently of sync polling so jobs process even when
+    SYNC_POLL_INTERVAL_SECONDS is unset.
+    """
+    from lib.attachments import drain_attachment_jobs
+    log.info("Attachment drain loop started — interval: 30s")
+    while True:
+        await asyncio.sleep(30)
+        try:
+            await drain_attachment_jobs()
+        except Exception as exc:
+            log.warning("Attachment drain error: %s", exc)
+
+
+async def _attachment_purge_loop() -> None:
+    """
+    Nightly purge of storage blobs with no active dispatch reference.
+    Disabled when PURGE_ATTACHMENTS_INTERVAL_HOURS is set to 0.
+    """
+    interval_hours = float(os.environ.get("PURGE_ATTACHMENTS_INTERVAL_HOURS", "24"))
+    if not interval_hours:
+        return
+    interval_secs = interval_hours * 3600
+    log.info("Attachment purge loop started — interval: %.1fh", interval_hours)
+    await asyncio.sleep(interval_secs)
+    while True:
+        log.info("Attachment purge: starting")
+        try:
+            from lib.attachments import purge_orphaned_attachments
+            result = await purge_orphaned_attachments()
+            log.info("Attachment purge complete: %s", result)
+        except Exception as exc:
+            log.error("Attachment purge error: %s", exc)
+        await asyncio.sleep(interval_secs)
 
 
 async def _nightly_full_sync_loop() -> None:
@@ -135,9 +174,13 @@ async def lifespan(app: FastAPI):
     _validate_env()
     poll_task        = asyncio.create_task(_poll_loop())
     nightly_task     = asyncio.create_task(_nightly_full_sync_loop())
+    drain_task       = asyncio.create_task(_attachment_drain_loop())
+    purge_task       = asyncio.create_task(_attachment_purge_loop())
     yield
     poll_task.cancel()
     nightly_task.cancel()
+    drain_task.cancel()
+    purge_task.cancel()
     await http_client.aclose()
     await db_client.aclose()
 
@@ -186,6 +229,8 @@ app.include_router(sync_webhook_router,   prefix="/api/sync")
 app.include_router(auth_router,           prefix="/api/auth")
 # Jira OAuth: /initiate requires JWT; /callback is public (state-validated)
 app.include_router(jira_oauth_router,     prefix="/api/connectors/jira/oauth")
+# Attachment proxy: /asset/* requires studio JWT; /payload/* accepts studio or vendor JWT
+app.include_router(attachments_router,    prefix="/api/attachments", dependencies=_auth)
 
 
 _REPLICATED_TABLE: dict[str, str] = {
