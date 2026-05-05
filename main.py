@@ -279,6 +279,21 @@ async def get_config():
     }
 
 
+@app.get("/health")
+async def health_check():
+    try:
+        r = await db_client.get(
+            _url("/rest/v1/studios"),
+            params={"select": "id", "limit": "1"},
+            headers=_headers(),
+        )
+        r.raise_for_status()
+        return JSONResponse(status_code=200, content={"status": "ok"})
+    except Exception as exc:
+        log.error("Health check failed: %s", exc)
+        return JSONResponse(status_code=503, content={"status": "unavailable"})
+
+
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
     return JSONResponse(status_code=exc.status_code, content={"error": exc.detail})
@@ -286,7 +301,8 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    return JSONResponse(status_code=500, content={"error": str(exc)})
+    log.error("Unhandled exception on %s %s", request.method, request.url.path, exc_info=exc)
+    return JSONResponse(status_code=500, content={"error": "Internal server error"})
 
 
 
