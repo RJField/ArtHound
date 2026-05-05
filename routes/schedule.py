@@ -78,7 +78,7 @@ async def _get_studio_source_type(studio_id: str) -> str | None:
     return rows[0]["source_type"] if rows else None
 
 
-_ISSUETYPE_RE = re.compile(r'issuetype\s*=\s*["\']?([^"\'\\s),]+)', re.IGNORECASE)
+_ISSUETYPE_RE = re.compile(r'issuetype\s*=\s*["\']?([^"\'\s),]+)', re.IGNORECASE)
 
 
 def _parse_issue_type(jql_filter: str | None) -> str | None:
@@ -177,10 +177,28 @@ async def _write_back_to_source(result: dict, snapshot_map: dict[str, str]) -> i
         start_field_id = work_def.get("work_start_date_field_id")
         end_field_id   = work_def.get("work_end_date_field_id")
         est_field_id   = work_def.get("work_estimate_field_id")
-        issue_type     = _parse_issue_type(work_def.get("jql_filter")) or "Task"
+
+        jql_issue_type = _parse_issue_type(work_def.get("jql_filter"))
+        if jql_issue_type:
+            issue_type = jql_issue_type
+        else:
+            available = await connector.fetch_project_issue_types(project_key)
+            issue_type = available[0] if available else "Task"
+            log.info(
+                "Jira write-back: no issuetype in JQL — using '%s' from project %s (available: %s)",
+                issue_type, project_key, available,
+            )
+
+        log.info(
+            "Jira write-back: project=%s issuetype=%s rel_field=%s asset=%s",
+            project_key, issue_type, rel_field, asset_jira_key,
+        )
 
         source_id_updates: list[dict] = []
         created = 0
+        # Link type used when the asset and work item are at the same hierarchy level.
+        # "Relates" is a standard Jira link type present in all installations.
+        _LINK_TYPE = "Relates"
 
         for item in work_items:
             fields: dict = {
@@ -188,12 +206,6 @@ async def _write_back_to_source(result: dict, snapshot_map: dict[str, str]) -> i
                 "issuetype": {"name": issue_type},
                 "summary":   item["workName"],
             }
-
-            if rel_field and asset_jira_key:
-                if rel_field == "parent":
-                    fields["parent"] = {"key": asset_jira_key}
-                else:
-                    fields[rel_field] = asset_jira_key
 
             if start_field_id and item.get("startDate"):
                 fields[start_field_id] = item["startDate"]
@@ -203,15 +215,24 @@ async def _write_back_to_source(result: dict, snapshot_map: dict[str, str]) -> i
                 fields[est_field_id] = item["estimate"]
 
             try:
-                issue_id = await connector.create_issue(fields)
+                issue_key = await connector.create_issue(fields)
                 created += 1
                 gw_id = snapshot_map.get(item.get("workflowStepId") or "")
                 if gw_id:
-                    source_id_updates.append({"id": gw_id, "source_record_id": issue_id})
+                    source_id_updates.append({"id": gw_id, "source_record_id": issue_key})
+
+                if asset_jira_key:
+                    try:
+                        await connector.create_issue_link(_LINK_TYPE, asset_jira_key, issue_key)
+                    except Exception as link_exc:
+                        log.warning(
+                            "Jira write-back: issue link failed (%s → %s): %s",
+                            asset_jira_key, issue_key, link_exc,
+                        )
             except Exception as exc:
                 log.warning(
-                    "Jira write-back: create_issue failed for '%s': %s",
-                    item["workName"], exc,
+                    "Jira write-back: create_issue failed for '%s' (project=%s issuetype=%s): %s",
+                    item["workName"], project_key, issue_type, exc,
                 )
 
         if source_id_updates:

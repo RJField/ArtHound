@@ -44,7 +44,7 @@ _ATLASSIAN_TOKEN_URL     = "https://auth.atlassian.com/oauth/token"
 _ATLASSIAN_RESOURCES_URL = "https://api.atlassian.com/oauth/token/accessible-resources"
 
 # offline_access enables refresh tokens — Cloud only; DC refresh is always supported.
-_CLOUD_SCOPES = "read:jira-work read:jira-user manage:jira-webhook offline_access"
+_CLOUD_SCOPES = "read:jira-work write:jira-work read:jira-user manage:jira-webhook offline_access"
 
 _STATE_TTL_SECONDS = 600  # 10 minutes
 
@@ -275,6 +275,26 @@ async def jira_oauth_callback(code: str, state: str):
     )
 
     return RedirectResponse(url=f"{frontend_base}/init?jira=connected", status_code=302)
+
+
+# ── Disconnect ────────────────────────────────────────────────────────────────
+
+@router.delete("/disconnect")
+async def disconnect_jira(user: CurrentUser = Depends(require_studio)):
+    """Delete the studio's Jira credentials, allowing re-authorization."""
+    r = await db_client.delete(
+        _url("/rest/v1/source_credentials"),
+        params={
+            "owner_type":  "eq.studio",
+            "owner_id":    f"eq.{user.studio_id}",
+            "source_type": "eq.jira",
+        },
+        headers=_headers({"Prefer": "return=minimal"}),
+    )
+    if not r.is_success:
+        raise HTTPException(status_code=500, detail="Failed to remove Jira credentials")
+    log.info("Studio %s disconnected Jira", user.studio_id)
+    return {"ok": True}
 
 
 # ── Instance picker (Cloud only) ───────────────────────────────────────────────

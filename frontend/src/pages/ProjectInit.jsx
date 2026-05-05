@@ -239,6 +239,7 @@ function StepJiraOAuth({ onSuccess, onBack }) {
   const [instances, setInstances] = useState([])
   const [selectedId, setSelectedId] = useState(null)
   const [pickLoading, setPickLoading] = useState(false)
+  const [disconnectLoading, setDisconnectLoading] = useState(false)
 
   useEffect(() => {
     if (!connected) {
@@ -375,9 +376,32 @@ function StepJiraOAuth({ onSuccess, onBack }) {
         </>
       ) : (
         <>
-          <div className="flex items-center gap-2 px-3 py-2 bg-accent/10 border border-accent/30 rounded-md">
-            <span className="text-accent text-sm">✓</span>
-            <span className="text-foreground text-sm">Jira workspace connected</span>
+          <div className="flex items-center justify-between px-3 py-2 bg-accent/10 border border-accent/30 rounded-md">
+            <div className="flex items-center gap-2">
+              <span className="text-accent text-sm">✓</span>
+              <span className="text-foreground text-sm">Jira workspace connected</span>
+            </div>
+            <button
+              type="button"
+              disabled={disconnectLoading}
+              onClick={async () => {
+                setDisconnectLoading(true)
+                setError(null)
+                try {
+                  await apiFetch('/api/connectors/jira/oauth/disconnect', { method: 'DELETE' })
+                  setConnected(false)
+                  setInstances([])
+                  setSelectedId(null)
+                } catch (e) {
+                  setError(e.message)
+                } finally {
+                  setDisconnectLoading(false)
+                }
+              }}
+              className="text-xs text-muted hover:text-error transition-colors cursor-pointer disabled:opacity-40"
+            >
+              {disconnectLoading ? 'Disconnecting…' : 'Disconnect'}
+            </button>
           </div>
 
           {/* Instance picker — only shown for Cloud with multiple sites */}

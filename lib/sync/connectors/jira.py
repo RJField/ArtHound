@@ -302,6 +302,38 @@ class JiraConnector(BaseConnector):
             for n in (_normalize_field(f) for f in r.json())
         ]
 
+    async def create_issue_link(
+        self,
+        link_type: str,
+        inward_key: str,
+        outward_key: str,
+    ) -> None:
+        """Create a named link between two issues (e.g. 'Relates' inward←outward).
+        Raises RuntimeError on failure."""
+        r = await self._client.post(
+            f"{self._base}/issueLink",
+            headers={**self._headers(), "Content-Type": "application/json"},
+            json={
+                "type":         {"name": link_type},
+                "inwardIssue":  {"key": inward_key},
+                "outwardIssue": {"key": outward_key},
+            },
+        )
+        if not r.is_success:
+            raise RuntimeError(f"Jira create_issue_link failed ({r.status_code}): {r.text}")
+
+    async def fetch_project_issue_types(self, project_key: str) -> list[str]:
+        """Return non-subtask issue type names available for the given project."""
+        r = await self._get_with_retry(f"{self._base}/project/{project_key}")
+        if not r.is_success:
+            log.warning("Jira: could not fetch issue types for project %s (%s)", project_key, r.status_code)
+            return []
+        return [
+            it["name"]
+            for it in r.json().get("issueTypes", [])
+            if not it.get("subtask", False)
+        ]
+
     async def create_issue(self, fields: dict) -> str:
         """Create a Jira issue and return the new issue ID (numeric string)."""
         for attempt in range(_MAX_RETRIES):
@@ -318,7 +350,8 @@ class JiraConnector(BaseConnector):
 
         if not r.is_success:
             raise RuntimeError(f"Jira create_issue failed ({r.status_code}): {r.text}")
-        return r.json()["id"]
+        data = r.json()
+        return data.get("key") or data["id"]
 
     def build_entity_filter(self, entity_def: dict) -> str | None:
         """
