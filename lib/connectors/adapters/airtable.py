@@ -170,6 +170,14 @@ class AirtableFieldAdapter:
                 if isinstance(rec_id, str) and rec_id.startswith("rec"):
                     display = v.get("name") or (reference_resolver or {}).get(rec_id)
                     result.append(LinkedRecord(source_id=rec_id, display_name=display))
+                elif "url" in v:
+                    # Attachment object from a lookup on an attachments field
+                    result.append(AttachmentValue(
+                        url=v.get("url", ""),
+                        filename=v.get("filename", ""),
+                        mimetype=v.get("type"),
+                        size_bytes=v.get("size"),
+                    ))
                 else:
                     name = v.get("name") or v.get("text") or v.get("email")
                     result.append(str(name) if name else str(v))

@@ -270,6 +270,12 @@ def _coerce_slot(slot: str, canonical: Any, adapter=None) -> object:
     _adp = adapter or _airtable_adapter
 
     if slot == "product":
+        # Bare integers/floats are never valid product names — they indicate a
+        # numeric field (autoNumber, formula, priority, etc.) is wrongly resolving
+        # to this slot. Reject them so a correctly-mapped linked-record field
+        # (which may have iterated first) is not overwritten.
+        if isinstance(canonical, (int, float)):
+            return None
         # Prefer the display name; fall back to source_id so the slot is never
         # null for a linked asset (critical for DB-level product filtering).
         if isinstance(canonical, list) and canonical:
