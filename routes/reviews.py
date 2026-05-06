@@ -84,7 +84,7 @@ async def list_assets_for_picker(user: CurrentUser = Depends(require_studio)):
     r2 = await db_client.get(
         _url("/rest/v1/replicated_assets"),
         params={
-            "select": "canonical_asset_id,name,source_record_id",
+            "select": "canonical_asset_id,name,source_record_id,source_type,meta",
             "owner_type": "eq.studio",
             "owner_id": f"eq.{studio_id}",
             "canonical_asset_id": f"in.({ids_csv})",
@@ -93,17 +93,29 @@ async def list_assets_for_picker(user: CurrentUser = Depends(require_studio)):
     )
 
     name_map: dict = {}
-    source_map: dict = {}
+    source_map: dict = {}  # canonical_asset_id -> source_record_id
+    source_type_map: dict = {}
+    source_key_map: dict = {}  # canonical_asset_id -> human-readable source key
     if r2.is_success:
         for row in r2.json():
-            name_map[row["canonical_asset_id"]] = row.get("name", "")
-            source_map[row["canonical_asset_id"]] = row.get("source_record_id", "")
+            cid = row["canonical_asset_id"]
+            name_map[cid] = row.get("name", "")
+            source_map[cid] = row.get("source_record_id", "")
+            st = row.get("source_type", "airtable")
+            source_type_map[cid] = st
+            meta = row.get("meta") or {}
+            if st == "jira":
+                source_key_map[cid] = meta.get("_jira_key") or row.get("source_record_id", "")
+            else:
+                source_key_map[cid] = row.get("source_record_id", "")
 
     return [
         {
             "id": a["id"],
             "name": name_map.get(a["id"]) or a.get("airtable_record_id", a["id"]),
             "source_record_id": source_map.get(a["id"]) or a.get("airtable_record_id"),
+            "source_type": source_type_map.get(a["id"], "airtable"),
+            "source_key": source_key_map.get(a["id"]) or source_map.get(a["id"]) or a.get("airtable_record_id"),
         }
         for a in canonical
     ]

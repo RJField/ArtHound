@@ -99,6 +99,7 @@ function NewReviewModal({ onClose, onCreated }) {
   const [form, setForm] = useState({
     canonical_asset_id: '',
     source_record_id: '',
+    source_type: 'airtable',
     description: '',
     status: '',
   })
@@ -107,12 +108,16 @@ function NewReviewModal({ onClose, onCreated }) {
     apiFetch('/api/reviews/assets')
       .then(data => {
         setAssets(data)
+        const studioSourceType = data[0]?.source_type || 'airtable'
         if (data.length === 1) {
           setForm(f => ({
             ...f,
             canonical_asset_id: data[0].id,
-            source_record_id: data[0].source_record_id || '',
+            source_record_id: data[0].source_key || data[0].source_record_id || '',
+            source_type: studioSourceType,
           }))
+        } else {
+          setForm(f => ({ ...f, source_type: studioSourceType }))
         }
       })
       .catch(err => toast.error(err.message))
@@ -124,7 +129,8 @@ function NewReviewModal({ onClose, onCreated }) {
     setForm(f => ({
       ...f,
       canonical_asset_id: id,
-      source_record_id: asset?.source_record_id || '',
+      source_record_id: asset?.source_key || asset?.source_record_id || '',
+      source_type: asset?.source_type || 'airtable',
     }))
   }
 
@@ -180,7 +186,9 @@ function NewReviewModal({ onClose, onCreated }) {
         </div>
 
         <div className="flex flex-col gap-1">
-          <label className="text-muted text-xs">Asset (Airtable ID)</label>
+          <label className="text-muted text-xs">
+            Source ID {form.source_type === 'jira' ? '(Jira Key)' : '(Airtable)'}
+          </label>
           <input
             type="text"
             value={form.source_record_id}
@@ -438,7 +446,7 @@ export default function Reviews() {
               <p className="text-foreground text-xs font-semibold uppercase tracking-wide mb-1">Review</p>
               <div className="flex flex-col">
                 <FieldRow label="Description"     value={selected.description} span="full" />
-                <FieldRow label="Asset (Airtable)" value={selected.source_record_id} />
+                <FieldRow label="Source ID" value={selected.source_record_id} />
               </div>
 
               {/* Status — inline editor */}
