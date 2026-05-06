@@ -144,7 +144,41 @@ async def get_asset_attachment(
         source_type, creds = await _get_studio_source_creds(caller.studio_id, client)
         fetch_headers = _source_fetch_headers(source_type, creds)
         r_file = await client.get(source_url, headers=fetch_headers, follow_redirects=True)
-        r_file.raise_for_status()
+
+        if r_file.status_code == 410:
+            # CDN URL expired — run a sync to get fresh signed URLs, then re-read
+            # the asset meta so subsequent operations use the updated values.
+            from lib.sync.runner import run_sync
+            await run_sync("studio", caller.studio_id, source_type, trigger="attachment_refresh")
+
+            r_fresh = await db_client.get(
+                _url("/rest/v1/replicated_assets"),
+                params={
+                    "canonical_asset_id": f"eq.{canonical_asset_id}",
+                    "owner_type": "eq.studio",
+                    "owner_id": f"eq.{caller.studio_id}",
+                    "select": "meta",
+                },
+                headers=_headers(),
+            )
+            fresh_rows = r_fresh.json()
+            if fresh_rows:
+                meta = fresh_rows[0].get("meta") or meta
+                fresh_field = meta.get(field_key)
+                if isinstance(fresh_field, list) and idx < len(fresh_field):
+                    field_data = fresh_field
+                    item = field_data[idx]
+                    source_url = item.get("url") or source_url
+
+            r_file = await client.get(source_url, headers=fetch_headers, follow_redirects=True)
+
+        try:
+            r_file.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            if status == 410:
+                raise HTTPException(410, detail="Attachment URL expired and could not be refreshed after sync")
+            raise HTTPException(502, detail=f"Source returned {status} fetching attachment")
 
         file_bytes = r_file.content
         resolved_type = r_file.headers.get("content-type", mimetype).split(";")[0].strip()

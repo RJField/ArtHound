@@ -32,7 +32,8 @@
       "Bash(Write-Output \"Deleted both files\")",
       "Bash(python -c \"import ast, sys; files = ['lib/token_refresh.py', 'routes/connectors/jira_oauth.py', 'lib/sync/runner.py', 'main.py']; [print\\(f'OK: {f}'\\) or ast.parse\\(open\\(f\\).read\\(\\)\\) for f in files]\")",
       "Bash(python -c ' *)",
-      "Bash(npm run *)"
+      "Bash(npm run *)",
+      "Bash(pip show *)"
     ]
   }
 }
