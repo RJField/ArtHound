@@ -36,7 +36,9 @@
       "Bash(pip show *)",
       "Bash(Select-Object -ExpandProperty Name)",
       "Bash(xargs grep -l \"ProjectInit\")",
-      "Bash(~/bin/supabase.exe db *)"
+      "Bash(~/bin/supabase.exe db *)",
+      "Bash(xargs grep -l \"attached_meta\\\\|extra_fields\")",
+      "Bash(xargs grep -l \"replicated_work\\\\|replicated_tasks\")"
     ]
   }
 }
