@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 
 import httpx
 
-from lib.canonical import get_or_create_canonical_ids
+from lib.canonical import get_or_create_studio_airtable_canonical_ids
 from lib.crypto import decrypt_credentials
 from lib.db import db_client, _url, _headers
 from lib.sync.connector import BaseConnector
@@ -168,6 +168,48 @@ async def _finish_log(log_id: str, status: str, records_synced: int, error: str 
     )
 
 
+async def _get_ingest_canonical_map(
+    vendor_id: str, source_type: str, source_record_ids: list[str]
+) -> dict[str, str]:
+    """
+    Returns {source_record_id: canonical_asset_id} for vendor records that were
+    created via payload ingest. Scoped to the current sync batch — only looks up
+    IDs present in source_record_ids rather than pulling all ingest records for the
+    vendor, keeping the query index-backed and URL-length bounded.
+
+    Chunked at 200 IDs per request to stay under PostgREST's URL length ceiling
+    (~8KB). A 500-record batch that is not chunked will fail with a 414 or gateway
+    error; chunking makes this safe at any batch size.
+
+    Vendor records not found here (no payload_export_records entry) were created
+    outside of ArtHound ingestion — they land in replicated_assets with
+    canonical_asset_id=NULL and origin='sync'. Known v1 gap; explicit-map reconciles.
+    """
+    if not source_record_ids:
+        return {}
+
+    result: dict[str, str] = {}
+    for i in range(0, len(source_record_ids), 200):
+        chunk = source_record_ids[i : i + 200]
+        r = await db_client.get(
+            _url("/rest/v1/payload_export_records"),
+            params={
+                "vendor_id":             f"eq.{vendor_id}",
+                "vendor_source_type":    f"eq.{source_type}",
+                "vendor_tool_record_id": f"in.({','.join(chunk)})",
+                "select":                "vendor_tool_record_id,canonical_asset_id",
+            },
+            headers=_headers(),
+        )
+        r.raise_for_status()
+        result.update({
+            row["vendor_tool_record_id"]: row["canonical_asset_id"]
+            for row in r.json()
+        })
+
+    return result
+
+
 # ── field-derived item types ──────────────────────────────────────────────────
 
 from lib.sync.connector import RawRecord as _RawRecord
@@ -309,7 +351,13 @@ async def sync_single_asset(
 
         canonical_map: dict[str, str] = {}
         if owner_type == "studio" and source_type in ("airtable", "jira"):
-            canonical_map = await get_or_create_canonical_ids([source_record_id], owner_id)
+            canonical_map = await get_or_create_studio_airtable_canonical_ids(
+                [source_record_id], owner_id
+            )
+        elif owner_type == "vendor":
+            canonical_map = await _get_ingest_canonical_map(
+                owner_id, source_type, [source_record_id]
+            )
 
         await upsert_assets(owner_type, owner_id, source_type, [norm], canonical_map)
 
@@ -527,12 +575,20 @@ async def run_sync(
                 assets_to_write = norm_assets
                 log.info("Full sync: writing all %d records", len(assets_to_write))
 
-            # ── Canonical ID linking (all studio source types) ───────────────
+            # ── Canonical ID linking ──────────────────────────────────────────
             canonical_map: dict[str, str] = {}
+            source_ids = [r["source_record_id"] for r in assets_to_write]
             if owner_type == "studio" and source_type in ("airtable", "jira"):
-                source_ids = [r["source_record_id"] for r in assets_to_write]
                 if source_ids:
-                    canonical_map = await get_or_create_canonical_ids(source_ids, owner_id)
+                    canonical_map = await get_or_create_studio_airtable_canonical_ids(
+                        source_ids, owner_id
+                    )
+            elif owner_type == "vendor" and source_ids:
+                # Attach canonical IDs for records created via payload ingest.
+                # Records not in payload_export_records (manual creates) stay NULL.
+                canonical_map = await _get_ingest_canonical_map(
+                    owner_id, source_type, source_ids
+                )
 
             # ── Write ─────────────────────────────────────────────────────────
             await upsert_assets(owner_type, owner_id, source_type, assets_to_write, canonical_map)

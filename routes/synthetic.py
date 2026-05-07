@@ -12,7 +12,6 @@ from pydantic import BaseModel
 from lib.auth import CurrentUser, get_current_user, require_admin
 from lib.crypto import decrypt_credentials, encrypt_credentials
 from lib.db import db_client, _url, _headers
-from lib.airtable import http_client
 from lib.sync.connectors.airtable import AirtableConnector
 
 log = logging.getLogger(__name__)
@@ -177,46 +176,47 @@ async def _airtable_batch_create(
     payload = {"records": [{"fields": r} for r in records]}
     backoff = 2.0
 
-    for attempt in range(_MAX_RETRIES + 1):
-        try:
-            r = await http_client.post(url, json=payload, headers=headers)
-        except httpx.TimeoutException as exc:
-            if attempt == _MAX_RETRIES:
-                raise HTTPException(504, f"Airtable timed out after {_MAX_RETRIES + 1} attempts") from exc
-            log.warning("Airtable timeout — backoff %.0fs (attempt %d)", backoff, attempt + 1)
-            await asyncio.sleep(backoff)
-            backoff *= 2
-            continue
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                r = await client.post(url, json=payload, headers=headers)
+            except httpx.TimeoutException as exc:
+                if attempt == _MAX_RETRIES:
+                    raise HTTPException(504, f"Airtable timed out after {_MAX_RETRIES + 1} attempts") from exc
+                log.warning("Airtable timeout — backoff %.0fs (attempt %d)", backoff, attempt + 1)
+                await asyncio.sleep(backoff)
+                backoff *= 2
+                continue
 
-        if r.status_code == 429:
-            if attempt == _MAX_RETRIES:
-                raise HTTPException(429, f"Rate limited by Airtable — exhausted {_MAX_RETRIES} retries")
-            wait = float(r.headers.get("Retry-After", 30))
-            log.warning("Airtable 429 — waiting %.0fs (attempt %d)", wait, attempt + 1)
-            await asyncio.sleep(wait)
-            continue
+            if r.status_code == 429:
+                if attempt == _MAX_RETRIES:
+                    raise HTTPException(429, f"Rate limited by Airtable — exhausted {_MAX_RETRIES} retries")
+                wait = float(r.headers.get("Retry-After", 30))
+                log.warning("Airtable 429 — waiting %.0fs (attempt %d)", wait, attempt + 1)
+                await asyncio.sleep(wait)
+                continue
 
-        if r.status_code >= 500:
-            if attempt == _MAX_RETRIES:
-                raise HTTPException(502, f"Airtable server error {r.status_code} after {_MAX_RETRIES} retries")
-            log.warning("Airtable %d — backoff %.0fs (attempt %d)", r.status_code, backoff, attempt + 1)
-            await asyncio.sleep(backoff)
-            backoff *= 2
-            continue
+            if r.status_code >= 500:
+                if attempt == _MAX_RETRIES:
+                    raise HTTPException(502, f"Airtable server error {r.status_code} after {_MAX_RETRIES} retries")
+                log.warning("Airtable %d — backoff %.0fs (attempt %d)", r.status_code, backoff, attempt + 1)
+                await asyncio.sleep(backoff)
+                backoff *= 2
+                continue
 
-        if r.status_code == 401:
-            raise HTTPException(401, "Airtable rejected the token — verify it has write access to this base")
-        if r.status_code == 403:
-            raise HTTPException(403, "Airtable access denied — token may lack write permissions")
-        if r.status_code == 404:
-            raise HTTPException(404, f"Table '{table}' not found in base '{base_id}' — check the table name")
-        if r.status_code == 422:
-            err = r.json().get("error", {})
-            msg = err.get("message", r.text) if isinstance(err, dict) else r.text
-            raise HTTPException(422, f"Airtable rejected records — check link field names. Detail: {msg}")
+            if r.status_code == 401:
+                raise HTTPException(401, "Airtable rejected the token — verify it has write access to this base")
+            if r.status_code == 403:
+                raise HTTPException(403, "Airtable access denied — token may lack write permissions")
+            if r.status_code == 404:
+                raise HTTPException(404, f"Table '{table}' not found in base '{base_id}' — check the table name")
+            if r.status_code == 422:
+                err = r.json().get("error", {})
+                msg = err.get("message", r.text) if isinstance(err, dict) else r.text
+                raise HTTPException(422, f"Airtable rejected records — check link field names. Detail: {msg}")
 
-        r.raise_for_status()
-        return r.json()["records"]
+            r.raise_for_status()
+            return r.json()["records"]
 
     raise HTTPException(500, "Airtable request failed — unexpected state after retries")
 

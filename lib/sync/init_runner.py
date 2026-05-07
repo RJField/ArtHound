@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 
 import httpx
 
-from lib.canonical import get_or_create_canonical_ids
+from lib.canonical import get_or_create_studio_airtable_canonical_ids
 from lib.crypto import decrypt_credentials
 from lib.db import db_client, _url, _headers
 from lib.sync.connectors.airtable import AirtableConnector, build_filter_formula
@@ -235,7 +235,7 @@ async def run_init_sync(
             if owner_type == "studio" and source_type in ("airtable", "jira"):
                 source_ids = [r["source_record_id"] for r in batch]
                 if source_ids:
-                    batch_canonical = await get_or_create_canonical_ids(source_ids, owner_id)
+                    batch_canonical = await get_or_create_studio_airtable_canonical_ids(source_ids, owner_id)
                     canonical_map.update(batch_canonical)
 
             await upsert_assets(owner_type, owner_id, source_type, batch, canonical_map)

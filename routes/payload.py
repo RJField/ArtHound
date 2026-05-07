@@ -47,6 +47,78 @@ async def _log(
         log.warning("payload audit log failed (dispatch=%s event=%s): %s", dispatch_id, event, exc)
 
 
+async def _write_canonical_link(
+    dispatch_id: str,
+    vendor_id: str,
+    source_type: str,
+    source_record_id: str,
+    canonical_asset_id: str,
+) -> tuple[bool, bool]:
+    """
+    Writes two rows after a successful ingest:
+      - payload_export_records: links vendor's new source record → studio's canonical asset
+      - replicated_assets: stub row so the record is immediately queryable via ArtHound
+
+    Both writes are idempotent (ignore-duplicates), so retrying after a partial success
+    on a subsequent attempt is safe — the already-written row is a no-op.
+
+    Returns (export_records_ok, replicated_assets_ok). Caller logs and surfaces
+    which writes failed so manual remediation targets the right table(s).
+    """
+    _DELAYS = [0.0, 0.1, 0.3]
+    export_ok = replicated_ok = False
+
+    for attempt, delay in enumerate(_DELAYS):
+        if delay:
+            await asyncio.sleep(delay)
+
+        results = await asyncio.gather(
+            db_client.post(
+                _url("/rest/v1/payload_export_records"),
+                headers=_headers({"Prefer": "resolution=ignore-duplicates,return=minimal"}),
+                json={
+                    "dispatch_id":           dispatch_id,
+                    "vendor_id":             vendor_id,
+                    "vendor_source_type":    source_type,
+                    "vendor_tool_record_id": source_record_id,
+                    "canonical_asset_id":    canonical_asset_id,
+                },
+            ),
+            db_client.post(
+                _url("/rest/v1/replicated_assets"
+                     "?on_conflict=owner_type,owner_id,source_type,source_record_id"),
+                headers=_headers({"Prefer": "resolution=ignore-duplicates,return=minimal"}),
+                json={
+                    "owner_type":         "vendor",
+                    "owner_id":           vendor_id,
+                    "source_type":        source_type,
+                    "source_record_id":   source_record_id,
+                    "canonical_asset_id": canonical_asset_id,
+                    "origin":             "ingest",
+                    "meta":               {},
+                },
+            ),
+            return_exceptions=True,
+        )
+
+        export_ok   = export_ok   or not isinstance(results[0], Exception)
+        replicated_ok = replicated_ok or not isinstance(results[1], Exception)
+
+        if export_ok and replicated_ok:
+            return True, True
+
+        log.warning(
+            "canonical link attempt %d/3 — export_records=%s replicated_assets=%s "
+            "(dispatch=%s source_record=%s)",
+            attempt + 1,
+            "ok" if export_ok else "failed",
+            "ok" if replicated_ok else "failed",
+            dispatch_id, source_record_id,
+        )
+
+    return export_ok, replicated_ok
+
+
 async def _get_dispatch(dispatch_id: str, select: str = "*") -> dict | None:
     r = await db_client.get(
         _url("/rest/v1/payload_dispatches"),
@@ -617,7 +689,7 @@ async def do_ingest(dispatch_id: str, user: CurrentUser = Depends(require_vendor
     mappings = mapping_row.get("mappings") or {}
 
     dispatch = await _get_dispatch(
-        dispatch_id, select="id,recipient_vendor_id,revoked_at,expires_at,payload_data"
+        dispatch_id, select="id,asset_id,recipient_vendor_id,revoked_at,expires_at,payload_data"
     )
     if not dispatch or dispatch.get("recipient_vendor_id") != user.vendor_id:
         raise HTTPException(status_code=404, detail="Dispatch not found")
@@ -737,6 +809,24 @@ async def do_ingest(dispatch_id: str, user: CurrentUser = Depends(require_vendor
         else:
             source_record_id = await connector.create_record(target_table_id, target_fields)
 
+    # Write canonical link + replicated_assets stub. External record exists from this
+    # point regardless of what follows — patch payload_field_mappings unconditionally.
+    export_ok, replicated_ok = await _write_canonical_link(
+        dispatch_id, user.vendor_id, source_type, source_record_id, dispatch["asset_id"]
+    )
+    if not export_ok or not replicated_ok:
+        # ORPHAN: prefix is the alerting hook — filter on this in your log aggregator.
+        # Manual remediation: check each table individually using the IDs below.
+        # payload_export_records missing if export_ok=False; replicated_assets missing if replicated_ok=False.
+        log.error(
+            "ORPHAN: canonical link failed after 3 attempts — "
+            "export_records=%s replicated_assets=%s — "
+            "dispatch=%s vendor=%s source_record=%s canonical_asset=%s",
+            "ok" if export_ok else "MISSING",
+            "ok" if replicated_ok else "MISSING",
+            dispatch_id, user.vendor_id, source_record_id, dispatch["asset_id"],
+        )
+
     await db_client.patch(
         _url("/rest/v1/payload_field_mappings"),
         params={"dispatch_id": f"eq.{dispatch_id}", "recipient_vendor_id": f"eq.{user.vendor_id}"},
@@ -748,7 +838,13 @@ async def do_ingest(dispatch_id: str, user: CurrentUser = Depends(require_vendor
         },
     )
     await _log(dispatch_id, "ingested", detail={"source_record_id": source_record_id})
-    return {"ok": True, "source_record_id": source_record_id}
+
+    canonical_ok = export_ok and replicated_ok
+    return {
+        "ok": True,
+        "source_record_id": source_record_id,
+        **({"canonical_link": "failed"} if not canonical_ok else {}),
+    }
 
 
 # ── internal: build a connector for a vendor's connected source tool ──────────

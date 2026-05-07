@@ -376,7 +376,7 @@ class JiraConnector(BaseConnector):
         if not r.is_success:
             raise RuntimeError(f"Jira create_issue failed ({r.status_code}): {r.text}")
         data = r.json()
-        return data.get("key") or data["id"]
+        return data["id"]
 
     def build_entity_filter(self, entity_def: dict) -> str | None:
         """

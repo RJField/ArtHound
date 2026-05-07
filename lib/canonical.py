@@ -32,9 +32,10 @@ async def get_studio_id() -> str:
     return _studio_id
 
 
-async def get_or_create_canonical_ids(airtable_ids: list[str], studio_id: str | None = None) -> dict[str, str]:
+async def get_or_create_studio_airtable_canonical_ids(airtable_ids: list[str], studio_id: str | None = None) -> dict[str, str]:
     """Returns {airtable_record_id: canonical_uuid} for the given Airtable IDs.
-    Mints new UUIDs for any that don't exist yet.
+    Mints new UUIDs for any that don't exist yet. Studio-side only — vendor canonical
+    IDs are linked via payload_export_records, not minted here.
     studio_id comes from the authenticated user; falls back to env-based lookup."""
     if not airtable_ids:
         return {}
