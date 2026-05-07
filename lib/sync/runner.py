@@ -203,7 +203,113 @@ def _extract_field_item_types(raw_assets: list, field_id: str) -> list:
     ]
 
 
-# ── public entry point ────────────────────────────────────────────────────────
+# ── public entry points ───────────────────────────────────────────────────────
+
+async def sync_single_asset(
+    owner_type: str,
+    owner_id: str,
+    source_record_id: str,
+    source_type: str = "airtable",
+) -> dict:
+    """
+    Re-sync one asset record without triggering a full sync.
+    Pulls fresh data from the source tool, normalizes it, and upserts into replicated_assets.
+    Used for targeted refresh (e.g. 410 attachment URL expiry recovery).
+    """
+    try:
+        creds = await _get_credentials(owner_type, owner_id, source_type)
+        if not creds:
+            raise ValueError(f"No credentials found for {owner_type}/{owner_id}/{source_type}")
+
+        entity_defs = await _get_entity_definitions(owner_type, owner_id, source_type)
+        asset_def = entity_defs.get("asset")
+        table_id = asset_def["table_id"] if asset_def else None
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            if source_type == "jira":
+                from lib.token_refresh import get_jira_token
+                creds = await get_jira_token(owner_type, owner_id, client)
+
+            connector = _build_connector(source_type, creds, client)
+
+            raw = await connector.fetch_single_asset(source_record_id, table_id=table_id)
+            if raw is None:
+                log.warning("sync_single_asset: record %s not found in source", source_record_id)
+                return {"status": "not_found"}
+
+            schema_fields = await connector.fetch_asset_schema(table_id=table_id)
+            field_type_map: dict[str, str] = {}
+            for _f in schema_fields:
+                field_type_map[_f.name] = _f.type
+                if _f.id != _f.name:
+                    field_type_map[_f.id] = _f.type
+
+            mappings = await _get_mappings(owner_type, owner_id, source_type)
+            if mappings is None:
+                mappings = default_mappings_from_schema(schema_fields)
+
+        # Build reference resolver from already-replicated reference data — no extra source API calls.
+        r_prods = await db_client.get(
+            _url("/rest/v1/replicated_products"),
+            params={
+                "owner_type":  f"eq.{owner_type}",
+                "owner_id":    f"eq.{owner_id}",
+                "source_type": f"eq.{source_type}",
+                "select":      "source_record_id,name",
+            },
+            headers=_headers(),
+        )
+        r_types = await db_client.get(
+            _url("/rest/v1/replicated_item_types"),
+            params={
+                "owner_type":  f"eq.{owner_type}",
+                "owner_id":    f"eq.{owner_id}",
+                "source_type": f"eq.{source_type}",
+                "select":      "source_record_id,name",
+            },
+            headers=_headers(),
+        )
+        reference_resolver = {
+            **{row["source_record_id"]: row["name"] for row in (r_prods.json() or []) if row.get("name")},
+            **{row["source_record_id"]: row["name"] for row in (r_types.json() or []) if row.get("name")},
+        }
+
+        if source_type == "jira":
+            from lib.connectors.adapters.jira import JiraFieldAdapter
+            field_adapter = JiraFieldAdapter()
+        else:
+            field_adapter = None
+
+        product_rel_field_id: str | None = None
+        if asset_def and asset_def.get("rel_direction") == "child_holds_link":
+            if source_type == "airtable":
+                product_rel_field_id = asset_def.get("rel_field_name") or asset_def.get("rel_field_id") or None
+            else:
+                product_rel_field_id = asset_def.get("rel_field_id") or None
+        elif source_type == "jira" and entity_defs.get("product"):
+            product_rel_field_id = (asset_def.get("rel_field_id") or "parent") if asset_def else "parent"
+
+        norm = normalize_asset(
+            raw, mappings,
+            field_type_map=field_type_map,
+            reference_resolver=reference_resolver,
+            adapter=field_adapter,
+            product_rel_field_id=product_rel_field_id,
+        )
+
+        canonical_map: dict[str, str] = {}
+        if owner_type == "studio" and source_type in ("airtable", "jira"):
+            canonical_map = await get_or_create_canonical_ids([source_record_id], owner_id)
+
+        await upsert_assets(owner_type, owner_id, source_type, [norm], canonical_map)
+
+        log.info("sync_single_asset: refreshed %s for %s/%s", source_record_id, owner_type, owner_id)
+        return {"status": "success"}
+
+    except Exception as exc:
+        log.exception("sync_single_asset failed for %s/%s record %s", owner_type, owner_id, source_record_id)
+        return {"status": "error", "error": str(exc)}
+
 
 async def run_sync(
     owner_type: str,

@@ -31,6 +31,12 @@ class BaseConnector(ABC):
     @abstractmethod
     async def fetch_asset_schema(self) -> list[SchemaField]: ...
 
+    async def fetch_single_asset(
+        self, source_record_id: str, table_id: str | None = None
+    ) -> RawRecord | None:
+        """Fetch one asset record by ID. Returns None if not found. Override in subclasses."""
+        return None
+
     def build_entity_filter(self, entity_def: dict) -> str | None:
         """Return a connector-specific filter expression from an entity definition."""
         return None

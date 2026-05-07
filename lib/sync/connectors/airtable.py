@@ -78,6 +78,25 @@ class AirtableConnector(BaseConnector):
 
         return records
 
+    async def fetch_single_asset(
+        self, source_record_id: str, table_id: str | None = None
+    ) -> RawRecord | None:
+        table = table_id or config.tables["assets"]
+        table_enc = quote(table, safe="")
+        r = await self._client.get(
+            f"{_AT_BASE}/{self._base_id}/{table_enc}/{source_record_id}",
+            headers=self._headers(),
+        )
+        if r.status_code == 404:
+            return None
+        r.raise_for_status()
+        rec = r.json()
+        return RawRecord(
+            source_record_id=rec["id"],
+            fields=rec.get("fields", {}),
+            source_last_modified_at=rec.get("createdTime"),
+        )
+
     async def fetch_assets(self, since: str | None = None) -> list[RawRecord]:
         records = await self._select_all(config.tables["assets"], since)
         return [

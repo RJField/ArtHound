@@ -97,7 +97,7 @@ async def get_asset_attachment(
             "canonical_asset_id": f"eq.{canonical_asset_id}",
             "owner_type": "eq.studio",
             "owner_id": f"eq.{caller.studio_id}",
-            "select": "meta",
+            "select": "meta,source_record_id",
         },
         headers=_headers(),
     )
@@ -146,10 +146,15 @@ async def get_asset_attachment(
         r_file = await client.get(source_url, headers=fetch_headers, follow_redirects=True)
 
         if r_file.status_code == 410:
-            # CDN URL expired — run a sync to get fresh signed URLs, then re-read
-            # the asset meta so subsequent operations use the updated values.
-            from lib.sync.runner import run_sync
-            await run_sync("studio", caller.studio_id, source_type, trigger="attachment_refresh")
+            # CDN URL expired — re-sync just this record to get fresh signed URLs,
+            # then re-read the asset meta so subsequent operations use the updated values.
+            from lib.sync.runner import sync_single_asset
+            source_record_id = rows[0].get("source_record_id")
+            if source_record_id:
+                await sync_single_asset("studio", caller.studio_id, source_record_id, source_type)
+            else:
+                from lib.sync.runner import run_sync
+                await run_sync("studio", caller.studio_id, source_type, trigger="attachment_refresh")
 
             r_fresh = await db_client.get(
                 _url("/rest/v1/replicated_assets"),
