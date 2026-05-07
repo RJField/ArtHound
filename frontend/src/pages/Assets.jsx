@@ -23,7 +23,7 @@ export default function Assets() {
 
   const [genBusy,        setGenBusy]        = useState(false)
   const [genResult,      setGenResult]      = useState(null)
-  const [taskRefreshKey, setTaskRefreshKey] = useState(0)
+  const [workRefreshKey, setWorkRefreshKey] = useState(0)
   const [modal,          setModal]          = useState(null) // 'send' | 'schema'
 
   const focusedAsset   = assets.find(a => a.id === state.focusedAssetId) ?? null
@@ -62,8 +62,8 @@ export default function Assets() {
       })
       setGenResult(result)
       if (result.created > 0) {
-        toast.success(`${result.created} task${result.created !== 1 ? 's' : ''} created`)
-        setTaskRefreshKey(k => k + 1)
+        toast.success(`${result.created} work item${result.created !== 1 ? 's' : ''} created`)
+        setWorkRefreshKey(k => k + 1)
       } else if (result.failed?.length) {
         toast.error('Generation failed — see details below')
       }
@@ -104,7 +104,7 @@ export default function Assets() {
       <AssetDetailPanel
         asset={focusedAsset}
         schema={schema}
-        taskRefreshKey={taskRefreshKey}
+        workRefreshKey={workRefreshKey}
       />
 
       {modal === 'send' && (

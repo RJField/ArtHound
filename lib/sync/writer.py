@@ -124,7 +124,7 @@ async def upsert_item_types(
     await _upsert("replicated_item_types", "owner_type,owner_id,source_type,source_record_id", rows)
 
 
-async def upsert_tasks(
+async def upsert_work(
     owner_type: str,
     owner_id: str,
     source_type: str,
@@ -151,7 +151,7 @@ async def upsert_tasks(
         }
         for r in records
     ]
-    await _upsert("replicated_tasks", "owner_type,owner_id,source_type,source_record_id", rows)
+    await _upsert("replicated_work", "owner_type,owner_id,source_type,source_record_id", rows)
 
 
 async def delete_orphaned_records(
@@ -162,7 +162,7 @@ async def delete_orphaned_records(
     fetched_product_ids: set[str],
     fetched_item_type_ids: set[str],
     full_sync: bool,
-    fetched_task_ids: set[str] | None = None,
+    fetched_work_ids: set[str] | None = None,
 ) -> int:
     """
     Delete rows from replicated tables whose source_record_id is no longer
@@ -179,8 +179,8 @@ async def delete_orphaned_records(
     checks: list[tuple[str, set[str]]] = []
     if full_sync:
         checks.append(("replicated_assets", fetched_asset_ids))
-        if fetched_task_ids is not None:
-            checks.append(("replicated_tasks", fetched_task_ids))
+        if fetched_work_ids is not None:
+            checks.append(("replicated_work", fetched_work_ids))
     checks.append(("replicated_products", fetched_product_ids))
     checks.append(("replicated_item_types", fetched_item_type_ids))
 

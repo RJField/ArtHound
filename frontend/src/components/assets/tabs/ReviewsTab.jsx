@@ -1,8 +1,10 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
+import { ChevronDown, ChevronRight } from 'lucide-react'
 import { toast } from 'sonner'
-import { apiFetch } from '../../../lib/api'
-import { fmtDate } from '../../../lib/fields'
+import { apiFetch, assetAttachmentUrl } from '../../../lib/api'
+import { fmtDate, formatRawFields } from '../../../lib/fields'
 import { cn } from '../../../lib/utils'
+import AttachmentGallery from '../../media/AttachmentGallery'
 
 const STATUS_STYLES = {
   pending:   'bg-surface-2 text-muted',
@@ -12,8 +14,17 @@ const STATUS_STYLES = {
 }
 
 export default function ReviewsTab({ asset }) {
-  const [reviews, setReviews] = useState(null)
-  const [loading, setLoading] = useState(false)
+  const [reviews, setReviews]             = useState(null)
+  const [loading, setLoading]             = useState(false)
+  const [attachmentsOpen, setAttachmentsOpen] = useState(false)
+
+  const attachmentGroups = useMemo(() => {
+    if (!asset?.rawFields || !asset?.canonicalId) return []
+    const proxyUrlFn = (fieldKey, idx) => assetAttachmentUrl(asset.canonicalId, fieldKey, idx)
+    return formatRawFields(asset.rawFields, proxyUrlFn).filter(f => f.type === 'attachments')
+  }, [asset?.id, asset?.canonicalId])
+
+  const attachmentCount = attachmentGroups.reduce((sum, g) => sum + (g.items?.length ?? 0), 0)
 
   useEffect(() => {
     if (!asset?.canonicalId) { setReviews([]); return }
@@ -31,6 +42,24 @@ export default function ReviewsTab({ asset }) {
 
   return (
     <div className="h-full overflow-y-auto p-3 flex flex-col gap-2">
+      {attachmentCount > 0 && (
+        <div className="rounded-lg border border-border/40 overflow-hidden">
+          <button
+            onClick={() => setAttachmentsOpen(o => !o)}
+            className="w-full flex items-center justify-between px-3 py-2 text-xs text-muted hover:text-foreground hover:bg-surface-2/40 transition-colors"
+          >
+            <span>Asset Attachments ({attachmentCount})</span>
+            {attachmentsOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          </button>
+          {attachmentsOpen && (
+            <div className="px-3 pb-3 flex flex-col gap-3 border-t border-border/40">
+              {attachmentGroups.map((group, i) => (
+                <AttachmentGallery key={i} label={group.label} attachments={group.items} />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
       {reviews.map(r => (
         <div
           key={r.id}

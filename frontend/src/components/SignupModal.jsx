@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { apiFetch } from '../lib/api'
 
 const STEP = { ROLE: 1, CREDENTIALS: 2, SUCCESS: 3 }
 
@@ -18,13 +19,10 @@ export default function SignupModal({ onClose }) {
     setError(null)
     setBusy(true)
     try {
-      const res = await fetch('/api/auth/signup', {
+      const data = await apiFetch('/api/auth/signup', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password, role, org_name: orgName }),
       })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.detail ?? data.error ?? res.statusText)
       setEmailConfirmRequired(data.email_confirmation_required)
       setStep(STEP.SUCCESS)
     } catch (err) {

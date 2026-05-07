@@ -17,6 +17,11 @@ export default function UserModal({ onClose }) {
   const [deleting, setDeleting]             = useState(false)
   const [deleteError, setDeleteError]       = useState(null)
 
+  // Admin purge state
+  const [purging, setPurging]       = useState(false)
+  const [purgeResult, setPurgeResult] = useState(null)
+  const [purgeError, setPurgeError] = useState(null)
+
   useEffect(() => {
     if (profile?.org) return
     apiFetch('/api/user/orgs').then(setOrgs).catch(console.warn)
@@ -42,9 +47,23 @@ export default function UserModal({ onClose }) {
 
   async function handleReconcile() {
     try {
-      await apiFetch('/api/schedule/reconcile-tasks', { method: 'POST' })
+      await apiFetch('/api/schedule/reconcile-work', { method: 'POST' })
     } catch (err) {
       console.warn('Reconcile error:', err)
+    }
+  }
+
+  async function handlePurgeAttachments() {
+    setPurging(true)
+    setPurgeResult(null)
+    setPurgeError(null)
+    try {
+      const result = await apiFetch('/api/attachments/admin/purge', { method: 'POST' })
+      setPurgeResult(result)
+    } catch (err) {
+      setPurgeError(err.message)
+    } finally {
+      setPurging(false)
     }
   }
 
@@ -118,8 +137,22 @@ export default function UserModal({ onClose }) {
               onClick={handleReconcile}
               className="px-4 py-2 rounded-lg bg-surface-2 text-foreground text-sm hover:bg-surface-3 transition-colors cursor-pointer text-left"
             >
-              Reconcile tasks
+              Reconcile work
             </button>
+            <button
+              onClick={handlePurgeAttachments}
+              disabled={purging}
+              className="px-4 py-2 rounded-lg bg-surface-2 text-foreground text-sm hover:bg-surface-3 transition-colors cursor-pointer text-left disabled:opacity-50"
+            >
+              {purging ? 'Purging…' : 'Purge orphaned attachments'}
+            </button>
+            {purgeResult && (
+              <p className="text-xs text-muted">
+                Deleted {purgeResult.deleted}, kept {purgeResult.kept}
+                {purgeResult.errors > 0 && `, ${purgeResult.errors} errors`}
+              </p>
+            )}
+            {purgeError && <p className="text-xs text-error">{purgeError}</p>}
           </div>
         )}
 

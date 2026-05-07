@@ -7,7 +7,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from lib.auth import CurrentUser, get_current_user, require_studio, require_vendor
-from lib.db import db_client, _url, _headers, _user_headers
+from lib.db import db_client, _url, _headers
 from lib.sync.runner import run_sync
 
 log = logging.getLogger(__name__)
@@ -122,7 +122,7 @@ async def sync_status(
             "limit":      "5",
             "select":     "trigger,started_at,completed_at,records_synced,status,error_detail",
         },
-        headers=_user_headers(user.token),
+        headers=_headers(),
     )
 
     cursor_r = await db_client.get(
@@ -130,9 +130,9 @@ async def sync_status(
         params={
             "owner_type": f"eq.{owner_type}",
             "owner_id":   f"eq.{owner_id}",
-            "select":     "source_type,last_synced_at",
+            "select":     "source_type,last_synced_at,last_full_sync_at",
         },
-        headers=_user_headers(user.token),
+        headers=_headers(),
     )
 
     return {
@@ -157,10 +157,10 @@ _SLOT_LABELS = [
 
 @router.get("/field-mapping")
 async def get_field_mapping(
-    source_type: str = "airtable",
     user: CurrentUser = Depends(get_current_user),
 ):
-    """Return current field mappings + available ArtHound slot labels."""
+    """Return current field mappings + available ArtHound slot labels.
+    Source type is auto-detected from whatever mapping exists for this owner."""
     owner_type = user.role
     owner_id   = user.studio_id if user.role == "studio" else user.vendor_id
     if not owner_id:
@@ -169,19 +169,21 @@ async def get_field_mapping(
     r = await db_client.get(
         _url("/rest/v1/source_field_mappings"),
         params={
-            "owner_type":  f"eq.{owner_type}",
-            "owner_id":    f"eq.{owner_id}",
-            "source_type": f"eq.{source_type}",
-            "select":      "mappings,updated_at",
+            "owner_type": f"eq.{owner_type}",
+            "owner_id":   f"eq.{owner_id}",
+            "select":     "source_type,mappings,updated_at",
+            "limit":      "1",
         },
-        headers=_user_headers(user.token),
+        headers=_headers(),
     )
     r.raise_for_status()
     rows = r.json()
+    row  = rows[0] if rows else None
     return {
-        "mappings":   rows[0]["mappings"] if rows else [],
-        "slots":      _SLOT_LABELS,
-        "updated_at": rows[0].get("updated_at") if rows else None,
+        "source_type": row["source_type"] if row else "airtable",
+        "mappings":    row["mappings"]    if row else [],
+        "slots":       _SLOT_LABELS,
+        "updated_at":  row.get("updated_at") if row else None,
     }
 
 
@@ -247,16 +249,26 @@ async def _handle_webhook_deletions(
       }
 
     Tables touched: replicated_assets, replicated_products, replicated_item_types.
-    generated_tasks is intentionally excluded — those are historical snapshots and
-    should not be deleted when a source task is removed. Use generation versioning
+    generated_work is intentionally excluded — those are historical snapshots and
+    should not be deleted when a source work item is removed. Use generation versioning
     to manage current vs. historical views instead.
     """
     if os.environ.get("ENABLE_WEBHOOK_DELETIONS", "").lower() != "true":
         return
 
     destroyed_ids: list[str] = []
-    for table_changes in payload.get("changedTablesById", {}).values():
-        destroyed_ids.extend(table_changes.get("destroyedRecordIds", []))
+
+    if source_type == "jira":
+        event = payload.get("webhookEvent", "")
+        if event == "jira:issue_deleted":
+            issue = payload.get("issue", {})
+            issue_id = str(issue.get("id", "")).strip()
+            if issue_id:
+                destroyed_ids.append(issue_id)
+    else:
+        # Airtable shape
+        for table_changes in payload.get("changedTablesById", {}).values():
+            destroyed_ids.extend(table_changes.get("destroyedRecordIds", []))
 
     if not destroyed_ids:
         return
@@ -278,11 +290,11 @@ async def _handle_webhook_deletions(
         if not r.is_success:
             log.warning("Deletion sync failed for %s: %s %s", table, r.status_code, r.text)
 
-    # Soft-delete matching generated_tasks rows — studios only, vendors have no snapshots.
+    # Soft-delete matching generated_work rows — studios only, vendors have no snapshots.
     # Sets deleted_at rather than hard-deleting so history is preserved for bots and audit.
     if owner_type == "studio":
         r = await db_client.patch(
-            _url("/rest/v1/generated_tasks"),
+            _url("/rest/v1/generated_work"),
             params={
                 "studio_id":        f"eq.{owner_id}",
                 "source_record_id": f"in.({ids_csv})",
@@ -292,7 +304,7 @@ async def _handle_webhook_deletions(
             headers=_headers({"Prefer": "return=minimal"}),
         )
         if not r.is_success:
-            log.warning("Soft-delete of generated_tasks failed: %s %s", r.status_code, r.text)
+            log.warning("Soft-delete of generated_work failed: %s %s", r.status_code, r.text)
 
     log.info(
         "Webhook deletion sync: %d record IDs processed for %s/%s",

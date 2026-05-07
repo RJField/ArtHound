@@ -1,30 +1,22 @@
 import asyncio
 import logging
-import os
-from typing import Any, List, Optional
+from typing import List
 
-logger = logging.getLogger(__name__)
-
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
-from fastapi.responses import Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 
-from lib.airtable import select_all, http_client
+from lib.airtable import select_all
 from lib.auth import CurrentUser, require_studio
-from lib.db import db_client, _url, _headers, _user_headers
+from lib.db import db_client, _url, _headers
 from lib.source_creds import get_studio_airtable_creds
 from lib.utils import link_id
 import config
 
+log = logging.getLogger(__name__)
 router = APIRouter()
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-async def _get_entity_table_name(studio_id: str, entity_type: str, fallback: str, jwt: str) -> str:
-    """Return the studio-configured table name for entity_type, falling back to fallback."""
+async def _get_entity_table_name(studio_id: str, entity_type: str, fallback: str) -> str:
     r = await db_client.get(
         _url("/rest/v1/source_entity_definitions"),
         params={
@@ -34,7 +26,7 @@ async def _get_entity_table_name(studio_id: str, entity_type: str, fallback: str
             "entity_type": f"eq.{entity_type}",
             "select":      "table_name",
         },
-        headers=_user_headers(jwt),
+        headers=_headers(),
     )
     rows = r.json()
     if rows and rows[0].get("table_name"):
@@ -42,170 +34,8 @@ async def _get_entity_table_name(studio_id: str, entity_type: str, fallback: str
     return fallback
 
 
-async def _get_asset_table_name(studio_id: str, jwt: str) -> str:
-    return await _get_entity_table_name(studio_id, "asset", config.tables["assets"], jwt)
-
-
-async def _get_template_table_name(studio_id: str, jwt: str) -> str:
-    return await _get_entity_table_name(studio_id, "template", config.tables["templates"], jwt)
-
-
-
-async def fetch_base_schema(token: str, base_id: str) -> list:
-    r = await http_client.get(
-        f"https://api.airtable.com/v0/meta/bases/{base_id}/tables",
-        headers={"Authorization": f"Bearer {token}"},
-    )
-    if not r.is_success:
-        body = r.json()
-        raise ValueError(
-            body.get("error", {}).get("message") or f"Schema API returned {r.status_code}"
-        )
-    return r.json().get("tables", [])
-
-
-
-# ---------------------------------------------------------------------------
-# Routes
-# ---------------------------------------------------------------------------
-
-@router.get("/fields")
-async def get_fields(current_user: CurrentUser = Depends(require_studio)):
-    token, base_id = await get_studio_airtable_creds(current_user.studio_id)
-    asset_table_name = await _get_asset_table_name(current_user.studio_id, current_user.token)
-    tables = await fetch_base_schema(token, base_id)
-    assets_table = next((t for t in tables if t["name"] == asset_table_name), None)
-    if not assets_table:
-        raise ValueError(f'Assets table "{asset_table_name}" not found')
-
-    eligible_types = {
-        "singleSelect", "multipleSelects", "multipleRecordLinks",
-        "number", "rating", "lookup", "multipleLookupValues", "rollup",
-    }
-    fields = [
-        {"id": f["id"], "name": f["name"], "type": f["type"]}
-        for f in assets_table["fields"]
-        if f["type"] in eligible_types
-    ]
-    return {"fields": fields}
-
-
-@router.get("/field-values")
-async def get_field_values(field: str = Query(...), current_user: CurrentUser = Depends(require_studio)):
-    token, base_id = await get_studio_airtable_creds(current_user.studio_id)
-    asset_table_name = await _get_asset_table_name(current_user.studio_id, current_user.token)
-    tables = await fetch_base_schema(token, base_id)
-    assets_table = next((t for t in tables if t["name"] == asset_table_name), None)
-    if not assets_table:
-        raise ValueError(f'Assets table "{asset_table_name}" not found')
-
-    field_def = next((f for f in assets_table["fields"] if f["name"] == field), None)
-    if not field_def:
-        raise ValueError(f'Field "{field}" not found')
-
-    values = []
-    ftype = field_def["type"]
-
-    if ftype in ("singleSelect", "multipleSelects"):
-        values = [
-            {"id": c["name"], "name": c["name"]}
-            for c in field_def.get("options", {}).get("choices", [])
-        ]
-    elif ftype == "multipleRecordLinks":
-        linked_table_id = field_def.get("options", {}).get("linkedTableId")
-        linked_table = next((t for t in tables if t["id"] == linked_table_id), None)
-        if not linked_table:
-            raise ValueError(f'Linked table not found for field "{field}"')
-        primary = linked_table["fields"][0]["name"] if linked_table["fields"] else "Name"
-        records = await select_all(linked_table["name"], {"fields": [primary]}, token=token, base_id=base_id)
-        values = [{"id": r["id"], "name": r["fields"].get(primary, r["id"])} for r in records]
-    else:
-        records = await select_all(asset_table_name, {"fields": [field]}, token=token, base_id=base_id)
-        seen: dict = {}
-        for r in records:
-            raw = r["fields"].get(field)
-            v = raw[0] if isinstance(raw, list) else raw
-            if v is not None:
-                seen[str(v)] = v
-        values = [
-            {"id": k, "name": str(v)}
-            for k, v in sorted(seen.items(), key=lambda x: x[1])
-        ]
-
-    return {"field": field, "type": ftype, "values": values}
-
-
-@router.get("/asset-combinations")
-async def get_asset_combinations(field: List[str] = Query(default=[]), current_user: CurrentUser = Depends(require_studio)):
-    field_names = [f.strip() for f in field if f.strip()]
-    if not field_names:
-        raise HTTPException(status_code=400, detail="at least one field param required")
-
-    token, base_id = await get_studio_airtable_creds(current_user.studio_id)
-    asset_table_name = await _get_asset_table_name(current_user.studio_id, current_user.token)
-    tables = await fetch_base_schema(token, base_id)
-    assets_table = next((t for t in tables if t["name"] == asset_table_name), None)
-    if not assets_table:
-        raise ValueError(f'Assets table "{asset_table_name}" not found')
-
-    field_defs = {f["name"]: f for f in assets_table["fields"] if f["name"] in field_names}
-
-    linked_maps: dict = {}
-    for name in field_names:
-        fd = field_defs.get(name)
-        if not fd or fd["type"] != "multipleRecordLinks":
-            continue
-        linked_table = next(
-            (t for t in tables if t["id"] == fd.get("options", {}).get("linkedTableId")), None
-        )
-        if not linked_table:
-            continue
-        primary = linked_table["fields"][0]["name"] if linked_table["fields"] else "Name"
-        recs = await select_all(linked_table["name"], {"fields": [primary]}, token=token, base_id=base_id)
-        linked_maps[name] = {r["id"]: r["fields"].get(primary, r["id"]) for r in recs}
-
-    records = await select_all(asset_table_name, {"fields": field_names}, token=token, base_id=base_id)
-
-    def resolve_value(name: str, raw) -> Optional[str]:
-        if raw is None:
-            return None
-        fd = field_defs.get(name)
-        if not fd:
-            return str(raw)
-        t = fd["type"]
-        if t == "singleSelect":
-            return raw
-        if t == "multipleSelects":
-            return (raw[0] if isinstance(raw, list) else raw) if raw else None
-        if t == "multipleRecordLinks":
-            rid = raw[0] if isinstance(raw, list) else raw
-            return linked_maps.get(name, {}).get(rid, rid) if rid else None
-        v = raw[0] if isinstance(raw, list) else raw
-        return str(v) if v is not None else None
-
-    combo_counts: dict = {}
-    for r in records:
-        combo: dict = {}
-        complete = True
-        for name in field_names:
-            val = resolve_value(name, r["fields"].get(name))
-            if val is None:
-                complete = False
-                break
-            combo[name] = val
-        if not complete:
-            continue
-        key = "\x00".join(combo[f] for f in field_names)
-        if key in combo_counts:
-            combo_counts[key]["count"] += 1
-        else:
-            combo_counts[key] = {"values": combo, "count": 1}
-
-    combinations = sorted(
-        combo_counts.values(),
-        key=lambda x: tuple(x["values"].get(f, "") for f in field_names),
-    )
-    return {"combinations": combinations}
+async def _get_template_table_name(studio_id: str) -> str:
+    return await _get_entity_table_name(studio_id, "template", config.tables["templates"])
 
 
 @router.get("/matrix-table-pg")
@@ -214,17 +44,16 @@ async def get_matrix_table_pg(current_user: CurrentUser = Depends(require_studio
     if not studio_id:
         raise HTTPException(status_code=403, detail="No studio linked to this user")
 
-    # Fetch config, steps, dependencies, and matrix rows in parallel
     r_cfg, r_steps, r_matrix = await asyncio.gather(
         db_client.get(
             _url("/rest/v1/estimate_config"),
             params={"studio_id": f"eq.{studio_id}", "select": "variable_fields"},
-            headers=_user_headers(current_user.token),
+            headers=_headers(),
         ),
         db_client.get(
             _url("/rest/v1/workflow_steps"),
             params={"studio_id": f"eq.{studio_id}", "select": "id,name,craft"},
-            headers=_user_headers(current_user.token),
+            headers=_headers(),
         ),
         db_client.get(
             _url("/rest/v1/estimate_matrix"),
@@ -233,26 +62,25 @@ async def get_matrix_table_pg(current_user: CurrentUser = Depends(require_studio
                 "select": "workflow_step_id,variable_values,estimate_days",
                 "limit": "10000",
             },
-            headers=_user_headers(current_user.token),
+            headers=_headers(),
         ),
     )
 
     cfg_rows = r_cfg.json()
     if not cfg_rows:
-        return {"variableFields": [], "combinations": [], "tasks": [], "attributeFields": []}
+        return {"variableFields": [], "combinations": [], "work": [], "attributeFields": []}
     variable_fields = cfg_rows[0]["variable_fields"]
 
     steps = r_steps.json()
     step_by_id = {s["id"]: s for s in steps}
 
-    # Dependencies (fetch only if steps exist)
     dep_names: dict = {s["id"]: [] for s in steps}
     if steps:
         ids_csv = ",".join(s["id"] for s in steps)
         r_deps = await db_client.get(
             _url("/rest/v1/workflow_step_dependencies"),
             params={"step_id": f"in.({ids_csv})", "select": "step_id,depends_on_step_id"},
-            headers=_user_headers(current_user.token),
+            headers=_headers(),
         )
         dep_graph = {s["id"]: [] for s in steps}
         for d in r_deps.json():
@@ -263,7 +91,6 @@ async def get_matrix_table_pg(current_user: CurrentUser = Depends(require_studio
     else:
         dep_graph = {}
 
-    # Topological sort (iterative post-order DFS)
     visited: set = set()
     sorted_ids: list = []
     for start in dep_graph:
@@ -283,7 +110,6 @@ async def get_matrix_table_pg(current_user: CurrentUser = Depends(require_studio
                 if nxt not in visited:
                     stack.append((nxt, False))
 
-    # Build step estimates: step_id → {combo_key → days}
     _DEFAULT_COL = "__default__"
     matrix_rows = r_matrix.json()
     step_estimates: dict = {}
@@ -303,7 +129,7 @@ async def get_matrix_table_pg(current_user: CurrentUser = Depends(require_studio
     if _DEFAULT_COL in all_combo_keys:
         combinations.append({"key": "Default", "colName": _DEFAULT_COL, "label": "Default"})
 
-    tasks = []
+    work_steps = []
     for idx, step_id in enumerate(sorted_ids):
         s = step_by_id.get(step_id)
         if not s:
@@ -311,7 +137,7 @@ async def get_matrix_table_pg(current_user: CurrentUser = Depends(require_studio
         linked_values = {}
         if s.get("craft"):
             linked_values["Craft"] = [s["craft"]]
-        tasks.append({
+        work_steps.append({
             "id": step_id,
             "step": idx + 1,
             "name": s["name"],
@@ -324,9 +150,39 @@ async def get_matrix_table_pg(current_user: CurrentUser = Depends(require_studio
     return {
         "variableFields": variable_fields,
         "combinations": combinations,
-        "tasks": tasks,
+        "work": work_steps,
         "attributeFields": attribute_fields,
     }
+
+
+class MatrixCellBody(BaseModel):
+    workflow_step_id: str
+    variable_values: dict
+    estimate_days: float
+
+
+@router.patch("/matrix-cell")
+async def update_matrix_cell(
+    body: MatrixCellBody,
+    current_user: CurrentUser = Depends(require_studio),
+):
+    studio_id = current_user.studio_id
+    if body.estimate_days < 0:
+        raise HTTPException(status_code=422, detail="estimate_days must be >= 0")
+
+    r = await db_client.post(
+        _url("/rest/v1/estimate_matrix?on_conflict=studio_id,workflow_step_id,variable_values"),
+        json={
+            "studio_id":        studio_id,
+            "workflow_step_id": body.workflow_step_id,
+            "variable_values":  body.variable_values,
+            "estimate_days":    body.estimate_days,
+        },
+        headers=_headers({"Prefer": "resolution=merge-duplicates,return=minimal"}),
+    )
+    if not r.is_success:
+        raise HTTPException(status_code=500, detail=f"Failed to update cell: {r.text}")
+    return {"ok": True}
 
 
 class VariableFieldItem(BaseModel):
@@ -347,15 +203,13 @@ async def create_matrix_pg(
     background_tasks: BackgroundTasks,
     current_user: CurrentUser = Depends(require_studio),
 ):
-    """ArtHound-native estimation matrix stored in Postgres instead of Airtable columns."""
+    """ArtHound-native estimation matrix stored in Postgres."""
     studio_id = current_user.studio_id
     if not studio_id:
         raise HTTPException(status_code=403, detail="No studio linked to this user")
 
     variable_fields = sorted(v.field for v in body.variables)
 
-    # 1. Clear existing matrix rows and Airtable-sourced workflow steps if requested.
-    # Manually-added steps (airtable_template_id IS NULL) are preserved.
     if body.clearExisting:
         await db_client.delete(
             _url("/rest/v1/estimate_matrix"),
@@ -364,14 +218,10 @@ async def create_matrix_pg(
         )
         await db_client.delete(
             _url("/rest/v1/workflow_steps"),
-            params={
-                "studio_id": f"eq.{studio_id}",
-                "airtable_template_id": "not.is.null",
-            },
+            params={"studio_id": f"eq.{studio_id}", "airtable_template_id": "not.is.null"},
             headers=_headers(),
         )
 
-    # 2. Upsert estimate_config for this studio
     await db_client.post(
         _url("/rest/v1/estimate_config"),
         params={"on_conflict": "studio_id"},
@@ -379,12 +229,11 @@ async def create_matrix_pg(
         json={"studio_id": studio_id, "variable_fields": variable_fields},
     )
 
-    # 3. Optionally import workflow steps from Airtable task templates.
-    # If the studio's base has no templates table (or access is denied), skip
-    # silently — the user can manage steps manually via the Workflows UI.
-    at_token, at_base_id = await get_studio_airtable_creds(studio_id)
-    template_table = await _get_template_table_name(studio_id, current_user.token)
+    upserted_steps = []
+    at_token = at_base_id = template_table = None
     try:
+        at_token, at_base_id = await get_studio_airtable_creds(studio_id)
+        template_table = await _get_template_table_name(studio_id)
         templates, templates_str = await asyncio.gather(
             select_all(template_table, token=at_token, base_id=at_base_id),
             select_all(template_table, {
@@ -398,7 +247,6 @@ async def create_matrix_pg(
             for r in templates_str
         }
 
-        # 4. Upsert workflow_steps from Airtable templates
         step_rows = [
             {
                 "studio_id": studio_id,
@@ -420,7 +268,6 @@ async def create_matrix_pg(
         upserted_steps = r.json()
         template_to_step_id = {row["airtable_template_id"]: row["id"] for row in upserted_steps}
 
-        # 5. Sync workflow_step_dependencies from Airtable "Depends upon" field
         step_ids = [row["id"] for row in upserted_steps]
         if step_ids:
             ids_csv = ",".join(step_ids)
@@ -451,7 +298,6 @@ async def create_matrix_pg(
     except Exception:
         upserted_steps = []
 
-    # 6. Fetch all workflow steps for this studio (includes manually-added ones)
     r_steps = await db_client.get(
         _url("/rest/v1/workflow_steps"),
         params={"studio_id": f"eq.{studio_id}", "select": "id"},
@@ -459,7 +305,6 @@ async def create_matrix_pg(
     )
     workflow_steps = r_steps.json()
 
-    # 7. Upsert estimate_matrix rows: one per (workflow_step × active combo)
     active_combos = body.combinations
     matrix_rows = []
     for step in workflow_steps:
@@ -483,8 +328,6 @@ async def create_matrix_pg(
         if not r.is_success:
             raise HTTPException(status_code=500, detail=f"Failed to upsert estimate_matrix: {r.text}")
 
-    # Always upsert a Default row (variable_values={}) for every step — used as fallback
-    # when no specific combination matches an asset. Existing values are preserved.
     default_rows = [
         {"studio_id": studio_id, "workflow_step_id": step["id"], "variable_values": {}, "estimate_days": 0}
         for step in workflow_steps
@@ -497,19 +340,15 @@ async def create_matrix_pg(
             json=default_rows,
         )
 
-    # 8. Prefill from existing Airtable column if requested
     prefill_pending = False
-    if body.prefillCol and upserted_steps:
+    if body.prefillCol and upserted_steps and at_token:
         prefill_pending = True
-
         _prefill_template_to_step = {row["airtable_template_id"]: row["id"] for row in upserted_steps}
 
         async def run_pg_prefill():
             try:
                 await asyncio.sleep(1.0)
-                # Read Airtable template records with the prefill column value
                 records = await select_all(template_table, {"fields": ["Task", body.prefillCol]}, token=at_token, base_id=at_base_id)
-                updates = []
                 for rec in records:
                     val = rec["fields"].get(body.prefillCol)
                     if val is None:
@@ -521,16 +360,15 @@ async def create_matrix_pg(
                         days = float(val)
                     except (TypeError, ValueError):
                         continue
-                    # Update all matrix rows for this step to the prefill value
                     await db_client.patch(
                         _url("/rest/v1/estimate_matrix"),
                         params={"studio_id": f"eq.{studio_id}", "workflow_step_id": f"eq.{step_id}"},
                         headers=_headers(),
                         json={"estimate_days": days},
                     )
-                print(f"[pg-prefill] done, updated {len(records)} steps")
+                log.info("pg-prefill complete for studio %s", studio_id)
             except Exception as e:
-                print(f"[pg-prefill error] {e}")
+                log.warning("pg-prefill error for studio %s: %s", studio_id, e)
 
         background_tasks.add_task(run_pg_prefill)
 
@@ -540,5 +378,3 @@ async def create_matrix_pg(
         "cleared": body.clearExisting,
         "prefillPending": prefill_pending,
     }
-
-

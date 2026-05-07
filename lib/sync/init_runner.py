@@ -15,8 +15,9 @@ from lib.canonical import get_or_create_canonical_ids
 from lib.crypto import decrypt_credentials
 from lib.db import db_client, _url, _headers
 from lib.sync.connectors.airtable import AirtableConnector, build_filter_formula
-from lib.sync.normalizer import default_mappings_from_schema, normalize_asset, normalize_reference, normalize_task
+from lib.sync.normalizer import default_mappings_from_schema, normalize_asset, normalize_reference, normalize_work
 from lib.sync.runner import (
+    _extract_field_item_types,
     _get_entity_definitions,
     _get_mappings,
     _finish_log,
@@ -29,14 +30,14 @@ from lib.sync.writer import (
     upsert_assets,
     upsert_item_types,
     upsert_products,
-    upsert_tasks,
+    upsert_work,
 )
 
 log = logging.getLogger(__name__)
 
 REQUIRED_SLOTS = {"name", "status", "item_type"}
 _BATCH_SIZE = 50
-_PAGE_DELAY_S = 0.25  # ~4 req/s — safely under Airtable's 5 req/s limit
+_AIRTABLE_PAGE_DELAY_S = 0.25  # ~4 req/s — safely under Airtable's 5 req/s limit
 
 
 async def _get_creds(owner_type: str, owner_id: str, source_type: str) -> dict | None:
@@ -86,12 +87,7 @@ async def run_init_sync(
     log_id = None
 
     try:
-        await _update_job(
-            job_id,
-            status="running",
-            phase="sync",
-            started_at=sync_started,
-        )
+        await _update_job(job_id, status="running", phase="sync", started_at=sync_started)
 
         creds = await _get_creds(owner_type, owner_id, source_type)
         if not creds:
@@ -101,7 +97,7 @@ async def run_init_sync(
         asset_def     = entity_defs.get("asset")
         product_def   = entity_defs.get("product")
         item_type_def = entity_defs.get("item_type")
-        task_def      = entity_defs.get("task")
+        work_def      = entity_defs.get("work")
 
         async with httpx.AsyncClient(timeout=120.0) as client:
             if source_type == "airtable":
@@ -109,23 +105,48 @@ async def run_init_sync(
                     api_token=creds["api_token"],
                     base_id=creds["base_id"],
                     client=client,
-                    page_delay_s=_PAGE_DELAY_S,
+                    page_delay_s=_AIRTABLE_PAGE_DELAY_S,
                 )
+                field_adapter = None
+
+            elif source_type == "jira":
+                from lib.token_refresh import get_jira_token
+                from lib.sync.connectors.jira import JiraConnector
+                from lib.connectors.adapters.jira import JiraFieldAdapter
+                creds = await get_jira_token(owner_type, owner_id, client)
+                connector = JiraConnector(
+                    access_token=creds["access_token"],
+                    client=client,
+                    cloud_id=creds.get("cloud_id"),
+                    deployment=creds.get("deployment", "cloud"),
+                    instance_url=creds.get("instance_url"),
+                )
+                field_adapter = JiraFieldAdapter()
+
             else:
                 raise ValueError(f"Unsupported source_type: {source_type}")
 
+            # ── Schema + mappings ─────────────────────────────────────────────
             schema_fields = await connector.fetch_asset_schema(
                 table_id=asset_def["table_id"] if asset_def else None
             )
-            field_type_map = {f.name: f.type for f in schema_fields}
+            field_type_map: dict[str, str] = {}
+            for _f in schema_fields:
+                field_type_map[_f.name] = _f.type  # display name (Airtable)
+                if _f.id != _f.name:
+                    field_type_map[_f.id] = _f.type  # API field ID (Jira)
 
             mappings = await _get_mappings(owner_type, owner_id, source_type)
             if mappings is None:
                 mappings = default_mappings_from_schema(schema_fields)
                 await save_default_mappings(owner_type, owner_id, source_type, mappings)
 
+            # ── Fetch assets ──────────────────────────────────────────────────
             if asset_def:
-                formula = build_filter_formula(asset_def.get("filters") or [])
+                if source_type == "airtable":
+                    formula = build_filter_formula(asset_def.get("filters") or [])
+                else:
+                    formula = connector.build_entity_filter(asset_def)
                 raw_assets = await connector.fetch_entity(
                     table_id=asset_def["table_id"],
                     filter_formula=formula,
@@ -133,17 +154,30 @@ async def run_init_sync(
             else:
                 raw_assets = await connector.fetch_assets()
 
+            # ── Fetch products ────────────────────────────────────────────────
             if product_def:
-                formula = build_filter_formula(product_def.get("filters") or [])
+                if source_type == "airtable":
+                    formula = build_filter_formula(product_def.get("filters") or [])
+                else:
+                    formula = connector.build_entity_filter(product_def)
                 raw_products = await connector.fetch_entity(
                     table_id=product_def["table_id"],
                     filter_formula=formula,
                 )
             else:
-                raw_products = []
+                raw_products = await connector.fetch_products() if source_type == "jira" else []
 
-            if item_type_def:
-                formula = build_filter_formula(item_type_def.get("filters") or [])
+            # ── Fetch item types ──────────────────────────────────────────────
+            if item_type_def and item_type_def.get("item_type_source") == "field_values":
+                # Derived from a field on asset records — no separate API call needed
+                raw_item_types = _extract_field_item_types(
+                    raw_assets, item_type_def["item_type_field_id"]
+                )
+            elif item_type_def:
+                if source_type == "airtable":
+                    formula = build_filter_formula(item_type_def.get("filters") or [])
+                else:
+                    formula = connector.build_entity_filter(item_type_def)
                 raw_item_types = await connector.fetch_entity(
                     table_id=item_type_def["table_id"],
                     filter_formula=formula,
@@ -151,32 +185,46 @@ async def run_init_sync(
             else:
                 raw_item_types = []
 
-            if task_def:
-                formula = build_filter_formula(task_def.get("filters") or [])
-                raw_tasks = await connector.fetch_entity(
-                    table_id=task_def["table_id"],
+            # ── Fetch work ────────────────────────────────────────────────────
+            if work_def:
+                if source_type == "airtable":
+                    formula = build_filter_formula(work_def.get("filters") or [])
+                else:
+                    formula = connector.build_entity_filter(work_def)
+                raw_work = await connector.fetch_entity(
+                    table_id=work_def["table_id"],
                     filter_formula=formula,
                 )
             else:
-                raw_tasks = []
+                raw_work = []
 
-        norm_products = [normalize_reference(r, "Product") for r in raw_products]
+        # ── Normalize ─────────────────────────────────────────────────────────
+        norm_products   = [normalize_reference(r, "Product") for r in raw_products]
         norm_item_types = [normalize_reference(r, "Item") for r in raw_item_types]
 
         reference_resolver = {
-            **{r["source_record_id"]: r["name"] for r in norm_products if r["name"]},
+            **{r["source_record_id"]: r["name"] for r in norm_products   if r["name"]},
             **{r["source_record_id"]: r["name"] for r in norm_item_types if r["name"]},
         }
+
+        product_rel_field_id: str | None = None
+        if asset_def and asset_def.get("rel_direction") == "child_holds_link":
+            product_rel_field_id = asset_def.get("rel_field_id") or None
+        elif source_type == "jira" and product_def:
+            product_rel_field_id = asset_def.get("rel_field_id") or "parent"
 
         norm_assets = [
             normalize_asset(
                 r, mappings,
                 field_type_map=field_type_map,
                 reference_resolver=reference_resolver,
+                adapter=field_adapter,
+                product_rel_field_id=product_rel_field_id,
             )
             for r in raw_assets
         ]
 
+        # ── Batched write with progress ───────────────────────────────────────
         total = len(norm_assets)
         await _update_job(job_id, progress_total=total)
         log_id = await _start_log(owner_type, owner_id, source_type, "init")
@@ -185,7 +233,7 @@ async def run_init_sync(
         for i in range(0, max(total, 1), _BATCH_SIZE):
             batch = norm_assets[i : i + _BATCH_SIZE]
 
-            if owner_type == "studio" and source_type == "airtable":
+            if owner_type == "studio" and source_type in ("airtable", "jira"):
                 source_ids = [r["source_record_id"] for r in batch]
                 if source_ids:
                     batch_canonical = await get_or_create_canonical_ids(source_ids, owner_id)
@@ -197,24 +245,23 @@ async def run_init_sync(
         await upsert_products(owner_type, owner_id, source_type, norm_products)
         await upsert_item_types(owner_type, owner_id, source_type, norm_item_types)
 
-        # Tasks: normalize after assets so canonical_map is complete
-        task_rel_field = task_def.get("rel_field_name") if task_def else None
-        norm_tasks = [
-            normalize_task(r, rel_field_name=task_rel_field, asset_canonical_map=canonical_map)
-            for r in raw_tasks
+        work_rel_field = work_def.get("rel_field_name") if work_def else None
+        norm_work = [
+            normalize_work(r, rel_field_name=work_rel_field, asset_canonical_map=canonical_map)
+            for r in raw_work
         ]
-        await upsert_tasks(owner_type, owner_id, source_type, norm_tasks)
+        await upsert_work(owner_type, owner_id, source_type, norm_work)
 
         await delete_orphaned_records(
             owner_type, owner_id, source_type,
             fetched_asset_ids={r["source_record_id"] for r in norm_assets},
             fetched_product_ids={r["source_record_id"] for r in norm_products},
             fetched_item_type_ids={r["source_record_id"] for r in norm_item_types},
-            fetched_task_ids={r["source_record_id"] for r in norm_tasks},
+            fetched_work_ids={r["source_record_id"] for r in norm_work},
             full_sync=True,
         )
 
-        await _save_cursor(owner_type, owner_id, source_type, sync_started)
+        await _save_cursor(owner_type, owner_id, source_type, sync_started, full=True)
         if log_id:
             await _finish_log(log_id, "success", total)
 

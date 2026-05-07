@@ -23,7 +23,7 @@ from pydantic import BaseModel
 
 from lib.auth import CurrentUser, get_current_user, require_studio
 from lib.crypto import decrypt_credentials, encrypt_credentials
-from lib.db import db_client, _url, _headers, _user_headers
+from lib.db import db_client, _url, _headers
 from lib.sync.connectors.airtable import AirtableConnector, build_filter_formula
 from lib.sync.init_runner import REQUIRED_SLOTS, run_init_sync
 from lib.sync.normalizer import default_mappings_from_schema
@@ -128,6 +128,23 @@ async def save_credentials(
             raise HTTPException(status_code=422, detail="Connected but no tables found in base")
         table_count = len(tables)
         field_count = sum(len(t["fields"]) for t in tables)
+
+    elif body.source_type == "jira":
+        # Credentials were stored by the OAuth callback — just verify they exist
+        r = await db_client.get(
+            _url("/rest/v1/source_credentials"),
+            params={
+                "owner_type":  f"eq.{owner_type}",
+                "owner_id":    f"eq.{owner_id}",
+                "source_type": "eq.jira",
+                "select":      "id",
+            },
+            headers=_headers(),
+        )
+        if not r.json():
+            raise HTTPException(status_code=422, detail="Jira not connected — complete OAuth flow first")
+        return {"ok": True, "connected": True, "table_count": 0, "field_count": 0}
+
     else:
         raise HTTPException(status_code=422, detail=f"Unsupported source_type: {body.source_type}")
 
@@ -167,14 +184,25 @@ async def discover_schema(
 ):
     """Fetch full base schema (all tables + fields with options) and cache it."""
     owner_type, owner_id = _owner(user)
-    creds = await _load_creds(owner_type, owner_id, source_type)
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(timeout=60.0) as client:
         if source_type == "airtable":
+            creds = await _load_creds(owner_type, owner_id, source_type)
             connector = AirtableConnector(
                 api_token=creds["api_token"],
                 base_id=creds["base_id"],
                 client=client,
+            )
+        elif source_type == "jira":
+            from lib.sync.connectors.jira import JiraConnector
+            from lib.token_refresh import get_jira_token
+            jira_creds = await get_jira_token(owner_type, owner_id, client)
+            connector = JiraConnector(
+                access_token=jira_creds["access_token"],
+                client=client,
+                cloud_id=jira_creds.get("cloud_id"),
+                deployment=jira_creds.get("deployment", "cloud"),
+                instance_url=jira_creds.get("instance_url"),
             )
         else:
             raise HTTPException(status_code=422, detail=f"Unsupported source_type: {source_type}")
@@ -217,7 +245,7 @@ async def get_schema_cache(
             "source_type": f"eq.{source_type}",
             "select":      "fields,discovered_at",
         },
-        headers=_user_headers(user.token),
+        headers=_headers(),
     )
     rows = r.json()
     if not rows:
@@ -227,13 +255,13 @@ async def get_schema_cache(
 
 # ── 4. Entity definitions ─────────────────────────────────────────────────────
 
-EntityType   = Literal["product", "asset", "task", "item_type"]
+EntityType   = Literal["product", "asset", "work", "item_type"]
 RelDirection = Literal["child_holds_link", "parent_holds_link"]
 
 _PARENT_OF: dict[str, str | None] = {
     "product":   None,
     "asset":     "product",
-    "task":      "asset",
+    "work":      "asset",
     "item_type": None,
 }
 
@@ -251,21 +279,26 @@ class EntityDefinitionBody(BaseModel):
     table_id:       str
     table_name:     str
     filters:        list[FilterRule] = []
+    jql_filter:     str | None = None
     rel_field_id:   str | None = None
     rel_field_name: str | None = None
     rel_direction:  RelDirection | None = None
-    # Task-specific field mappings (only populated when entity_type == 'task')
-    task_name_field_id:         str | None = None
-    task_name_field_name:       str | None = None
-    task_status_field_id:       str | None = None
-    task_status_field_name:     str | None = None
-    task_start_date_field_id:   str | None = None
-    task_start_date_field_name: str | None = None
-    task_end_date_field_id:     str | None = None
-    task_end_date_field_name:   str | None = None
-    task_estimate_field_id:     str | None = None
-    task_estimate_field_name:   str | None = None
+    # Work-specific field mappings (only populated when entity_type == 'work')
+    work_name_field_id:         str | None = None
+    work_name_field_name:       str | None = None
+    work_status_field_id:       str | None = None
+    work_status_field_name:     str | None = None
+    work_start_date_field_id:   str | None = None
+    work_start_date_field_name: str | None = None
+    work_end_date_field_id:     str | None = None
+    work_end_date_field_name:   str | None = None
+    work_estimate_field_id:     str | None = None
+    work_estimate_field_name:   str | None = None
     field_mappings:             dict       = {}
+    # Item-type-specific: source mode and nominated field (when source is 'field_values')
+    item_type_source:     str       = "issues"
+    item_type_field_id:   str | None = None
+    item_type_field_name: str | None = None
 
 
 @router.get("/entity-definitions")
@@ -282,16 +315,17 @@ async def get_entity_definitions(
             "owner_type":  f"eq.{owner_type}",
             "owner_id":    f"eq.{owner_id}",
             "source_type": f"eq.{source_type}",
-            "select":      "entity_type,table_id,table_name,filters,"
+            "select":      "entity_type,table_id,table_name,filters,jql_filter,"
                            "parent_entity_type,rel_field_id,rel_field_name,rel_direction,"
-                           "task_name_field_id,task_name_field_name,"
-                           "task_status_field_id,task_status_field_name,"
-                           "task_start_date_field_id,task_start_date_field_name,"
-                           "task_end_date_field_id,task_end_date_field_name,"
-                           "task_estimate_field_id,task_estimate_field_name,"
-                           "field_mappings",
+                           "work_name_field_id,work_name_field_name,"
+                           "work_status_field_id,work_status_field_name,"
+                           "work_start_date_field_id,work_start_date_field_name,"
+                           "work_end_date_field_id,work_end_date_field_name,"
+                           "work_estimate_field_id,work_estimate_field_name,"
+                           "field_mappings,"
+                           "item_type_source,item_type_field_id,item_type_field_name",
         },
-        headers=_user_headers(user.token),
+        headers=_headers(),
     )
     r.raise_for_status()
     return {row["entity_type"]: row for row in r.json()}
@@ -319,21 +353,25 @@ async def save_entity_definition(
             "table_id":                  body.table_id,
             "table_name":                body.table_name,
             "filters":                   [f.model_dump() for f in body.filters],
+            "jql_filter":                body.jql_filter,
             "parent_entity_type":        parent_entity_type,
             "rel_field_id":              body.rel_field_id,
             "rel_field_name":            body.rel_field_name,
             "rel_direction":             body.rel_direction,
-            "task_name_field_id":        body.task_name_field_id,
-            "task_name_field_name":      body.task_name_field_name,
-            "task_status_field_id":      body.task_status_field_id,
-            "task_status_field_name":    body.task_status_field_name,
-            "task_start_date_field_id":  body.task_start_date_field_id,
-            "task_start_date_field_name": body.task_start_date_field_name,
-            "task_end_date_field_id":    body.task_end_date_field_id,
-            "task_end_date_field_name":  body.task_end_date_field_name,
-            "task_estimate_field_id":    body.task_estimate_field_id,
-            "task_estimate_field_name":  body.task_estimate_field_name,
+            "work_name_field_id":        body.work_name_field_id,
+            "work_name_field_name":      body.work_name_field_name,
+            "work_status_field_id":      body.work_status_field_id,
+            "work_status_field_name":    body.work_status_field_name,
+            "work_start_date_field_id":  body.work_start_date_field_id,
+            "work_start_date_field_name": body.work_start_date_field_name,
+            "work_end_date_field_id":    body.work_end_date_field_id,
+            "work_end_date_field_name":  body.work_end_date_field_name,
+            "work_estimate_field_id":    body.work_estimate_field_id,
+            "work_estimate_field_name":  body.work_estimate_field_name,
             "field_mappings":            body.field_mappings,
+            "item_type_source":          body.item_type_source,
+            "item_type_field_id":        body.item_type_field_id,
+            "item_type_field_name":      body.item_type_field_name,
         },
     )
     r.raise_for_status()
@@ -389,6 +427,7 @@ class PreviewBody(BaseModel):
     entity_type: EntityType
     table_id:    str
     filters:     list[FilterRule] = []
+    jql_filter:  str | None = None
 
 
 @router.post("/preview-entity")
@@ -401,17 +440,28 @@ async def preview_entity(
     has_more flag, and 3 name samples — validates the definition before committing.
     """
     owner_type, owner_id = _owner(user)
-    creds = await _load_creds(owner_type, owner_id, body.source_type)
-
-    formula = build_filter_formula([f.model_dump() for f in body.filters])
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         if body.source_type == "airtable":
+            creds = await _load_creds(owner_type, owner_id, body.source_type)
             connector = AirtableConnector(
                 api_token=creds["api_token"],
                 base_id=creds["base_id"],
                 client=client,
             )
+            formula = build_filter_formula([f.model_dump() for f in body.filters])
+        elif body.source_type == "jira":
+            from lib.sync.connectors.jira import JiraConnector
+            from lib.token_refresh import get_jira_token
+            jira_creds = await get_jira_token(owner_type, owner_id, client)
+            connector = JiraConnector(
+                access_token=jira_creds["access_token"],
+                client=client,
+                cloud_id=jira_creds.get("cloud_id"),
+                deployment=jira_creds.get("deployment", "cloud"),
+                instance_url=jira_creds.get("instance_url"),
+            )
+            formula = body.jql_filter
         else:
             raise HTTPException(
                 status_code=422,
@@ -426,17 +476,20 @@ async def preview_entity(
         except httpx.HTTPStatusError as e:
             raise HTTPException(
                 status_code=422,
-                detail=f"Airtable error {e.response.status_code}: {e.response.text[:200]}",
+                detail=f"API error {e.response.status_code}: {e.response.text[:200]}",
             )
 
     has_more = len(records) > 100
     records  = records[:100]
 
     def _name(fields: dict) -> str:
-        for key in ("Name", "name", "Title", "title", "Asset Name", "Task Name"):
+        for key in ("summary", "Name", "name", "Title", "title", "Asset Name", "Task Name"):
             if isinstance(fields.get(key), str) and fields[key].strip():
                 return fields[key]
-        return next((v for v in fields.values() if isinstance(v, str) and v.strip()), "(unnamed)")
+        return next(
+            (v for v in fields.values() if isinstance(v, str) and v.strip() and not v.startswith("http")),
+            "(unnamed)",
+        )
 
     return {
         "count":    len(records),
@@ -498,7 +551,7 @@ async def get_field_mappings(
             "source_type": f"eq.{source_type}",
             "select":      "mappings,updated_at",
         },
-        headers=_user_headers(user.token),
+        headers=_headers(),
     )
     rows = r.json()
     mappings = rows[0]["mappings"] if rows else []
@@ -610,7 +663,7 @@ async def reset_project(
 
     if owner_type == "studio":
         await db_client.patch(
-            _url("/rest/v1/generated_tasks"),
+            _url("/rest/v1/generated_work"),
             params={"studio_id": f"eq.{owner_id}", "deleted_at": "is.null"},
             json={"deleted_at": datetime.now(timezone.utc).isoformat()},
             headers=_headers({"Prefer": "return=minimal"}),

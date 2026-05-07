@@ -2,8 +2,6 @@ import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { apiFetch } from '../lib/api'
 
-const SOURCE_TYPE = 'airtable'
-
 const SETTINGS_NAV = [
   { label: 'Estimates', to: '/estimates' },
   { label: 'Workflows', to: '/workflows' },
@@ -11,6 +9,7 @@ const SETTINGS_NAV = [
 
 export default function FieldMappingModal({ onClose }) {
   const navigate = useNavigate()
+  const [sourceType, setSourceType] = useState('airtable')
   const [mappings, setMappings]   = useState([])
   const [slots, setSlots]         = useState([])
   const [updatedAt, setUpdatedAt] = useState(null)
@@ -27,7 +26,8 @@ export default function FieldMappingModal({ onClose }) {
     setLoading(true)
     setError(null)
     try {
-      const data = await apiFetch(`/api/sync/field-mapping?source_type=${SOURCE_TYPE}`)
+      const data = await apiFetch('/api/sync/field-mapping')
+      setSourceType(data.source_type ?? 'airtable')
       setMappings(data.mappings)
       setSlots(data.slots)
       setUpdatedAt(data.updated_at)
@@ -54,7 +54,7 @@ export default function FieldMappingModal({ onClose }) {
       })
       await apiFetch('/api/sync/field-mapping', {
         method: 'PUT',
-        body: JSON.stringify({ source_type: SOURCE_TYPE, mappings: updated }),
+        body: JSON.stringify({ source_type: sourceType, mappings: updated }),
       })
       setMappings(updated)
       setStatus(`Saved at ${new Date().toLocaleString()}`)
@@ -71,7 +71,7 @@ export default function FieldMappingModal({ onClose }) {
     try {
       await apiFetch('/api/sync/run', {
         method: 'POST',
-        body: JSON.stringify({ source_type: SOURCE_TYPE, full: true }),
+        body: JSON.stringify({ source_type: sourceType, full: true }),
       })
       setTimeout(() => window.location.reload(), 4000)
     } catch (e) {

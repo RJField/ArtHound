@@ -6,9 +6,9 @@ from lib.connectors.adapters.airtable import AirtableFieldAdapter
 from lib.connectors.field_types import LinkedRecord, SelectValue, to_json
 from lib.sync.connector import RawRecord, SchemaField
 
-_TASK_NAME_PRIORITY = ["task", "name", "title", "ticket", "item"]
-_TASK_STATUS_ALIASES = ["status", "state", "phase"]
-_TASK_ESTIMATE_ALIASES = ["estimate", "duration", "hours", "days", "frames", "time"]
+_WORK_NAME_PRIORITY = ["task", "name", "title", "ticket", "item"]
+_WORK_STATUS_ALIASES = ["status", "state", "phase"]
+_WORK_ESTIMATE_ALIASES = ["estimate", "duration", "hours", "days", "frames", "time"]
 
 ARTHOUND_SLOTS = {
     "name", "dev_name", "item_type", "priority",
@@ -16,9 +16,9 @@ ARTHOUND_SLOTS = {
 }
 
 _SLOT_ALIASES: dict[str, list[str]] = {
-    "name":         ["asset name", "name", "asset"],
+    "name":         ["asset name", "name", "asset", "summary"],  # "summary" = Jira title field
     "dev_name":     ["dev name", "devname", "internal name", "dev", "development name"],
-    "item_type":    ["item type", "itemtype", "type", "asset type"],
+    "item_type":    ["item type", "itemtype", "type", "asset type", "issue type"],  # Jira
     "priority":     ["priority"],
     "product":      ["product", "project", "game", "title"],
     "project_date": ["project date", "due date", "delivery date", "target date", "date"],
@@ -32,7 +32,7 @@ _NAME_TO_SLOT: dict[str, str] = {
     for alias in aliases
 }
 
-_adapter = AirtableFieldAdapter()
+_airtable_adapter = AirtableFieldAdapter()
 
 
 def default_mappings_from_schema(schema_fields: list[SchemaField]) -> list[dict]:
@@ -66,6 +66,8 @@ def normalize_asset(
     mappings: list[dict],
     field_type_map: dict[str, str] | None = None,
     reference_resolver: dict[str, str] | None = None,
+    adapter=None,
+    product_rel_field_id: str | None = None,
 ) -> dict:
     """
     Apply field mappings to a raw source record using the connector field adapter.
@@ -78,9 +80,30 @@ def normalize_asset(
         reference tables (products, item types) so linked record fields resolve to
         display names without extra API calls.
 
+    product_rel_field_id: when set, this field on the asset record drives the product
+        slot instead of alias-based detection. Allows Epic→Feature hierarchies in Jira
+        where the parent field (not the project field) identifies the product.
+
     Returns a dict ready for insertion into replicated_assets.
     """
-    by_name = {m["source_field_name"]: m.get("arthound_slot") for m in mappings}
+    _adp = adapter or _airtable_adapter
+    # Build lookup tables from mappings.
+    # by_id: field ID → slot (covers connectors like Jira where record keys are API IDs)
+    # by_name: display name → slot (covers Airtable where record keys are display names)
+    # id_to_display: field ID → display name (for human-readable meta keys)
+    by_id: dict[str, str | None] = {}
+    by_name: dict[str, str | None] = {}
+    id_to_display: dict[str, str] = {}
+    for m in mappings:
+        slot = m.get("arthound_slot")
+        fid  = m.get("source_field_id")
+        fname = m.get("source_field_name", "")
+        by_name[fname] = slot
+        if fid:
+            by_id[fid] = slot
+            if fname and fid != fname:
+                id_to_display[fid] = fname
+
     resolved_type_map = field_type_map or {}
 
     slots: dict = {}
@@ -88,20 +111,41 @@ def normalize_asset(
 
     for field_name, raw_value in record.fields.items():
         field_type = resolved_type_map.get(field_name, "unknown")
-        canonical = _adapter.deserialize(field_type, raw_value, reference_resolver)
+        canonical = _adp.deserialize(field_type, raw_value, reference_resolver)
 
         if canonical is None:
             continue
 
-        slot = by_name.get(field_name)
+        # Slot lookup priority:
+        # 1. Explicit mapping by field ID or display name
+        # 2. product_rel_field_id — this specific field is forced to the product slot
+        # 3. Alias fallback on display name (but suppressed for product when rel_field drives it)
+        display_name = id_to_display.get(field_name, field_name)
+        slot = by_id.get(field_name) or by_name.get(field_name) or by_name.get(display_name)
+
+        # When product_rel_field_id is configured, it is the sole authority for the
+        # product slot. Block both explicit stored mappings and alias matches on every
+        # other field — even if the stored mapping says "project → product".
+        if slot == "product" and product_rel_field_id and field_name != product_rel_field_id:
+            slot = None
+
+        if slot is None:
+            if product_rel_field_id and field_name == product_rel_field_id:
+                slot = "product"
+            else:
+                alias = _NAME_TO_SLOT.get(display_name.lower())
+                if alias == "product" and product_rel_field_id:
+                    alias = None
+                slot = alias
+
         if slot and slot in ARTHOUND_SLOTS:
-            coerced = _coerce_slot(slot, canonical)
+            coerced = _coerce_slot(slot, canonical, _adp)
             if coerced is not None:
                 slots[slot] = coerced
 
-        # Store canonical JSON in meta for all fields — slot columns are a
-        # denormalized convenience; meta is the full structured record.
-        meta[field_name] = to_json(canonical)
+        # Store canonical JSON in meta using the human-readable display name so
+        # the detail panel shows "Issue Type" instead of "issuetype", etc.
+        meta[display_name] = to_json(canonical)
 
     source_hash = hashlib.sha256(
         json.dumps(record.fields, sort_keys=True, default=str).encode()
@@ -131,19 +175,19 @@ def normalize_reference(record: RawRecord, name_field: str) -> dict:
     }
 
 
-def normalize_task(
+def normalize_work(
     record: RawRecord,
     rel_field_name: str | None = None,
     asset_canonical_map: dict[str, str] | None = None,
 ) -> dict:
     """
-    Normalize a raw task record into a replicated_tasks row.
+    Normalize a raw work record into a replicated_work row.
 
-    rel_field_name: name of the linked-record field on the task pointing to the
-        parent asset (from source_entity_definitions.rel_field_name).
+    rel_field_name: name of the linked-record field on the work item pointing to
+        the parent asset (from source_entity_definitions.rel_field_name).
     asset_canonical_map: {source_asset_record_id: canonical_asset_id} — built
-        from canonical_map after asset upsert so tasks resolve to ArtHound IDs.
-    Only child_holds_link direction is supported (task has the link to asset).
+        from canonical_map after asset upsert so work items resolve to ArtHound IDs.
+    Only child_holds_link direction is supported (work item has the link to asset).
     """
     # Resolve parent asset
     source_asset_record_id: str | None = None
@@ -165,7 +209,7 @@ def normalize_task(
     }
 
     name: str | None = None
-    for alias in _TASK_NAME_PRIORITY:
+    for alias in _WORK_NAME_PRIORITY:
         if alias in fields_by_lower:
             _, val = fields_by_lower[alias]
             if isinstance(val, str) and val.strip():
@@ -178,7 +222,7 @@ def normalize_task(
                 break
 
     status: str | None = None
-    for alias in _TASK_STATUS_ALIASES:
+    for alias in _WORK_STATUS_ALIASES:
         if alias in fields_by_lower:
             _, val = fields_by_lower[alias]
             if isinstance(val, str) and val.strip():
@@ -186,7 +230,7 @@ def normalize_task(
                 break
 
     estimate: float | None = None
-    for alias in _TASK_ESTIMATE_ALIASES:
+    for alias in _WORK_ESTIMATE_ALIASES:
         if alias in fields_by_lower:
             _, val = fields_by_lower[alias]
             if val is not None:
@@ -215,13 +259,15 @@ def normalize_task(
     }
 
 
-def _coerce_slot(slot: str, canonical: Any) -> object:
+def _coerce_slot(slot: str, canonical: Any, adapter=None) -> object:
     """
     Extract a slot-appropriate scalar from a canonical value.
     Text slots use the adapter's display_string; numeric/date slots parse accordingly.
     """
     if canonical is None:
         return None
+
+    _adp = adapter or _airtable_adapter
 
     if slot == "product":
         # Prefer the display name; fall back to source_id so the slot is never
@@ -230,7 +276,17 @@ def _coerce_slot(slot: str, canonical: Any) -> object:
             item = canonical[0]
             if hasattr(item, "display_name") and hasattr(item, "source_id"):
                 return item.display_name or item.source_id
-        display = _adapter.display_string(canonical)
+        # Raw Jira issue-link dicts (parent/epic fields that survive as "unknown" type):
+        # {id, key, fields: {summary, ...}}
+        if isinstance(canonical, dict):
+            display = (
+                (canonical.get("fields", {}).get("summary")
+                 if isinstance(canonical.get("fields"), dict) else None)
+                or canonical.get("name")
+                or canonical.get("key")
+            )
+            return display if display else None
+        display = _adp.display_string(canonical)
         return display if display else None
 
     if slot == "priority":
@@ -241,6 +297,14 @@ def _coerce_slot(slot: str, canonical: Any) -> object:
                 return int(canonical.strip().upper().lstrip("P"))
             except ValueError:
                 return None
+        # SelectValue — Jira priority objects (Highest/High/Medium/Low/Lowest)
+        if hasattr(canonical, "label"):
+            _pmap = {"highest": 1, "critical": 1, "high": 2, "medium": 3, "low": 4, "lowest": 5}
+            label = (canonical.label or "").lower().strip()
+            try:
+                return int(label)
+            except ValueError:
+                return _pmap.get(label)
         # Lookup arrays may contain numbers
         if isinstance(canonical, list) and canonical:
             first = canonical[0]
@@ -254,9 +318,9 @@ def _coerce_slot(slot: str, canonical: Any) -> object:
         return None
 
     if slot == "project_date":
-        val = canonical if isinstance(canonical, str) else _adapter.display_string(canonical)
+        val = canonical if isinstance(canonical, str) else _adp.display_string(canonical)
         return val[:10] if isinstance(val, str) and len(val) >= 10 else None
 
     # All remaining slots are text — resolve via adapter display_string
-    display = _adapter.display_string(canonical)
+    display = _adp.display_string(canonical)
     return display if display else None

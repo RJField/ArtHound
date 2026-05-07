@@ -4,8 +4,8 @@ Application-level credential encryption using Fernet (AES-128-CBC + HMAC).
 Set CREDENTIALS_ENCRYPTION_KEY in .env to a Fernet key:
   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 
-If the key is absent, encrypt_credentials() stores plaintext (logs a warning).
-decrypt_credentials() transparently handles both encrypted and legacy plaintext rows.
+Both encrypt_credentials() and decrypt_credentials() raise RuntimeError if
+encryption is unavailable for any reason (missing package or missing key).
 """
 
 import json
@@ -19,25 +19,26 @@ try:
     _FERNET_AVAILABLE = True
 except ImportError:
     _FERNET_AVAILABLE = False
-    log.warning("cryptography package not installed — credential encryption disabled")
 
 
-def _get_fernet():
+def _get_fernet() -> "Fernet":
     if not _FERNET_AVAILABLE:
-        return None
+        raise RuntimeError(
+            "cryptography package is not installed — cannot encrypt or decrypt credentials. "
+            "Run: pip install cryptography"
+        )
     key = os.environ.get("CREDENTIALS_ENCRYPTION_KEY", "").strip()
     if not key:
-        return None
+        raise RuntimeError(
+            "CREDENTIALS_ENCRYPTION_KEY is not set — refusing to store credentials unencrypted. "
+            "Generate a key with: python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
+        )
     return Fernet(key.encode())
 
 
 def encrypt_credentials(creds: dict) -> dict:
-    """Return {"_enc": ciphertext} if a key is configured, else creds unchanged."""
-    f = _get_fernet()
-    if f is None:
-        log.warning("CREDENTIALS_ENCRYPTION_KEY not set — storing credentials unencrypted")
-        return creds
-    ciphertext = f.encrypt(json.dumps(creds).encode()).decode()
+    """Return {"_enc": ciphertext}. Raises RuntimeError if encryption is unavailable."""
+    ciphertext = _get_fernet().encrypt(json.dumps(creds).encode()).decode()
     return {"_enc": ciphertext}
 
 
@@ -45,11 +46,5 @@ def decrypt_credentials(stored: dict) -> dict:
     """Decrypt an encrypted credentials dict; pass-through for legacy plaintext rows."""
     if "_enc" not in stored:
         return stored
-    f = _get_fernet()
-    if f is None:
-        raise RuntimeError(
-            "CREDENTIALS_ENCRYPTION_KEY not set but encrypted credentials were found. "
-            "Set the key to match the one used when credentials were stored."
-        )
-    plaintext = f.decrypt(stored["_enc"].encode())
+    plaintext = _get_fernet().decrypt(stored["_enc"].encode())
     return json.loads(plaintext)

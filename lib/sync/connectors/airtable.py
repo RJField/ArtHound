@@ -186,6 +186,9 @@ class AirtableConnector(BaseConnector):
             for t in tables
         ]
 
+    def build_entity_filter(self, entity_def: dict) -> str | None:
+        return build_filter_formula(entity_def.get("filters") or []) if entity_def else None
+
     async def fetch_asset_schema(self, table_id: str | None = None) -> list[SchemaField]:
         """
         Return schema fields for the asset table. When table_id is given, looks

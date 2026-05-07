@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from lib.auth import CurrentUser, get_current_user
+from lib.auth import CurrentUser, get_current_user, require_admin
 from lib.crypto import decrypt_credentials, encrypt_credentials
 from lib.db import db_client, _url, _headers
 from lib.airtable import http_client
@@ -19,7 +19,6 @@ log = logging.getLogger(__name__)
 
 router = APIRouter()
 
-_ADMIN_EMAIL   = "rjfield@pm.me"
 _BATCH_SIZE    = 10
 _INTER_BATCH_S = 0.2   # 200ms between batches — stays under Airtable's 5 req/s limit
 _MAX_RETRIES   = 3
@@ -139,10 +138,6 @@ def _random_value(field_type: str, options: dict) -> Any:
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _require_admin(user: CurrentUser) -> None:
-    if user.email != _ADMIN_EMAIL:
-        raise HTTPException(status_code=403, detail="Admin only")
 
 
 async def _load_target(target_id: str, studio_id: str) -> dict:
@@ -304,7 +299,7 @@ class GenerateRequest(BaseModel):
 
 @router.get("/targets")
 async def list_targets(user: CurrentUser = Depends(get_current_user)):
-    _require_admin(user)
+    require_admin(user)
     r = await db_client.get(
         _url("/rest/v1/synthetic_targets"),
         params={
@@ -323,7 +318,7 @@ async def list_targets(user: CurrentUser = Depends(get_current_user)):
 @router.post("/targets", status_code=201)
 async def create_target(body: TargetCreate, user: CurrentUser = Depends(get_current_user)):
     """Save credentials only — table mapping is set separately via PATCH."""
-    _require_admin(user)
+    require_admin(user)
     if not user.studio_id:
         raise HTTPException(400, "No studio linked to this account")
 
@@ -374,7 +369,7 @@ async def update_target_mapping(
     user: CurrentUser = Depends(get_current_user),
 ):
     """Save table/field mapping after schema discovery."""
-    _require_admin(user)
+    require_admin(user)
     r = await db_client.patch(
         _url("/rest/v1/synthetic_targets"),
         params={
@@ -400,7 +395,7 @@ async def update_target_mapping(
 @router.get("/targets/{target_id}/schema")
 async def get_target_schema(target_id: str, user: CurrentUser = Depends(get_current_user)):
     """Fetch all tables + fields from the target base. Used to populate mapping dropdowns."""
-    _require_admin(user)
+    require_admin(user)
     t = await _load_target(target_id, user.studio_id or "")
     token = decrypt_credentials(t["token_enc"])["token"]
 
@@ -422,7 +417,7 @@ async def get_target_schema(target_id: str, user: CurrentUser = Depends(get_curr
 
 @router.delete("/targets/{target_id}", status_code=204)
 async def delete_target(target_id: str, user: CurrentUser = Depends(get_current_user)):
-    _require_admin(user)
+    require_admin(user)
     r = await db_client.delete(
         _url("/rest/v1/synthetic_targets"),
         params={
@@ -436,7 +431,7 @@ async def delete_target(target_id: str, user: CurrentUser = Depends(get_current_
 
 @router.post("/generate")
 async def generate(body: GenerateRequest, user: CurrentUser = Depends(get_current_user)):
-    _require_admin(user)
+    require_admin(user)
 
     for label, val in [("p_count", body.p_count), ("a_count", body.a_count), ("w_count", body.w_count)]:
         if not 1 <= val <= 1000:

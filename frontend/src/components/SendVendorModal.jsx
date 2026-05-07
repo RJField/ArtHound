@@ -86,7 +86,7 @@ export default function SendVendorModal({ selectedAssets, onClose, onSent }) {
   async function send() {
     const assets = selectedAssets
       .filter(a => a.canonicalId)
-      .map(a => ({ asset_id: a.canonicalId, asset_data: a.rawFields ?? {} }))
+      .map(a => ({ asset_id: a.canonicalId, asset_data: { name: a.name, ...(a.rawFields ?? {}) } }))
 
     if (!assets.length) {
       toast.error('No assets with canonical IDs — load the Asset Manager first')

@@ -24,6 +24,37 @@ export async function apiFetch(path, opts = {}) {
   return res.json()
 }
 
+// Raw fetch with JWT — returns the Response object for blob/stream consumption.
+export async function apiFetchRaw(path, opts = {}) {
+  const sb = await getSupabase()
+  const { data: { session } } = await sb.auth.getSession()
+  const token = session?.access_token
+  return fetch(path, {
+    ...opts,
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...opts.headers,
+    },
+  })
+}
+
+// Returns the JWT access token (needed for pdf.js httpHeaders).
+export async function getAuthToken() {
+  const sb = await getSupabase()
+  const { data: { session } } = await sb.auth.getSession()
+  return session?.access_token ?? null
+}
+
+// Proxy URL for a live attachment on a replicated asset (studio Asset Viewer only).
+export function assetAttachmentUrl(canonicalAssetId, fieldKey, idx) {
+  return `/api/attachments/asset/${canonicalAssetId}/${encodeURIComponent(fieldKey)}/${idx}`
+}
+
+// Proxy URL for a frozen attachment copy stored in Supabase Storage (vendor inbox / reviews).
+export function payloadAttachmentUrl(dispatchId, canonicalAssetId, fieldKey, idx) {
+  return `/api/attachments/payload/${dispatchId}/${canonicalAssetId}/${encodeURIComponent(fieldKey)}/${idx}`
+}
+
 // Builds a resolve() fn for DetailModal linked-record fields.
 export function makeRecordResolver(tableKey, recordId, fallbackTitle) {
   return async () => {
