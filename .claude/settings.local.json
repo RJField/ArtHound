@@ -34,7 +34,9 @@
       "Bash(python -c ' *)",
       "Bash(npm run *)",
       "Bash(pip show *)",
-      "Bash(Select-Object -ExpandProperty Name)"
+      "Bash(Select-Object -ExpandProperty Name)",
+      "Bash(xargs grep -l \"ProjectInit\")",
+      "Bash(~/bin/supabase.exe db *)"
     ]
   }
 }

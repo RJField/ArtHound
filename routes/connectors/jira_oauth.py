@@ -32,7 +32,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
-from lib.auth import CurrentUser, require_studio
+from lib.auth import CurrentUser, get_current_user
 from lib.crypto import decrypt_credentials, encrypt_credentials
 from lib.db import db_client, _url, _headers
 
@@ -49,15 +49,15 @@ _CLOUD_SCOPES = "read:jira-work write:jira-work read:jira-user manage:jira-webho
 _STATE_TTL_SECONDS = 600  # 10 minutes
 
 
-def _sign_state(studio_id: str, deployment: str = "cloud") -> str:
-    payload = json.dumps({"studio_id": studio_id, "deployment": deployment, "ts": int(time.time())})
+def _sign_state(owner_id: str, deployment: str = "cloud", owner_type: str = "studio") -> str:
+    payload = json.dumps({"owner_type": owner_type, "owner_id": owner_id, "deployment": deployment, "ts": int(time.time())})
     key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").encode()
     sig = hmac.new(key, payload.encode(), hashlib.sha256).hexdigest()
     return base64.urlsafe_b64encode(f"{payload}|{sig}".encode()).decode()
 
 
-def _verify_state(state: str) -> tuple[str, str]:
-    """Validate HMAC-signed state and return (studio_id, deployment), or raise 400."""
+def _verify_state(state: str) -> tuple[str, str, str]:
+    """Validate HMAC-signed state and return (owner_type, owner_id, deployment), or raise 400."""
     try:
         raw = base64.urlsafe_b64decode(state.encode()).decode()
         payload_str, sig = raw.rsplit("|", 1)
@@ -68,7 +68,9 @@ def _verify_state(state: str) -> tuple[str, str]:
         payload = json.loads(payload_str)
         if int(time.time()) - payload["ts"] > _STATE_TTL_SECONDS:
             raise ValueError("state expired")
-        return payload["studio_id"], payload.get("deployment", "cloud")
+        owner_type = payload.get("owner_type", "studio")
+        owner_id   = payload.get("owner_id") or payload.get("studio_id")  # backwards compat
+        return owner_type, owner_id, payload.get("deployment", "cloud")
     except (ValueError, KeyError, Exception) as exc:
         raise HTTPException(status_code=400, detail=f"Invalid OAuth state: {exc}")
 
@@ -80,17 +82,26 @@ class InitiateBody(BaseModel):
     dc_client_secret: str | None = None  # DC only
 
 
+def _owner(user: CurrentUser) -> tuple[str, str]:
+    owner_type = user.role
+    owner_id   = user.studio_id if user.role == "studio" else user.vendor_id
+    if not owner_id:
+        raise HTTPException(status_code=403, detail="No studio/vendor linked to account")
+    return owner_type, owner_id
+
+
 @router.post("/initiate")
 async def initiate_jira_oauth(
     body: InitiateBody,
-    user: CurrentUser = Depends(require_studio),
+    user: CurrentUser = Depends(get_current_user),
 ):
     """
     Return the authorization URL. The frontend navigates the user there.
     For Cloud: uses ArtHound's global Atlassian app registration.
     For Data Center: requires instance_url + dc_client_id + dc_client_secret from the
-    studio's Application Link; stores partial credentials before redirecting.
+    owner's Application Link; stores partial credentials before redirecting.
     """
+    owner_type, owner_id = _owner(user)
     redirect_uri = os.environ.get("JIRA_REDIRECT_URI")
     if not redirect_uri:
         raise HTTPException(status_code=503, detail="Jira OAuth is not configured on this server")
@@ -105,7 +116,7 @@ async def initiate_jira_oauth(
             "client_id":     client_id,
             "scope":         _CLOUD_SCOPES,
             "redirect_uri":  redirect_uri,
-            "state":         _sign_state(user.studio_id, "cloud"),
+            "state":         _sign_state(owner_id, "cloud", owner_type),
             "response_type": "code",
             "prompt":        "consent",
         }
@@ -132,8 +143,8 @@ async def initiate_jira_oauth(
             _url("/rest/v1/source_credentials?on_conflict=owner_type,owner_id,source_type"),
             headers=_headers({"Prefer": "resolution=merge-duplicates,return=minimal"}),
             json={
-                "owner_type":  "studio",
-                "owner_id":    user.studio_id,
+                "owner_type":  owner_type,
+                "owner_id":    owner_id,
                 "source_type": "jira",
                 "credentials": encrypt_credentials(partial_creds),
             },
@@ -144,7 +155,7 @@ async def initiate_jira_oauth(
             "client_id":     body.dc_client_id,
             "redirect_uri":  redirect_uri,
             "response_type": "code",
-            "state":         _sign_state(user.studio_id, "datacenter"),
+            "state":         _sign_state(owner_id, "datacenter", owner_type),
         }
         return {"url": f"{instance_url}/rest/oauth2/latest/authorize?{urlencode(params)}"}
 
@@ -158,7 +169,7 @@ async def jira_oauth_callback(code: str, state: str):
     Public endpoint — Jira redirects here after the user authorises.
     Handles both Cloud (Atlassian-hosted) and Data Center flows.
     """
-    studio_id, deployment = _verify_state(state)
+    owner_type, owner_id, deployment = _verify_state(state)
     redirect_uri = os.environ.get("JIRA_REDIRECT_URI")
     frontend_base = os.environ.get("FRONTEND_URL", "http://localhost:5173")
 
@@ -178,7 +189,7 @@ async def jira_oauth_callback(code: str, state: str):
                 },
             )
             if not token_r.is_success:
-                log.error("Jira Cloud token exchange failed for studio %s: %s", studio_id, token_r.text)
+                log.error("Jira Cloud token exchange failed for %s %s: %s", owner_type, owner_id, token_r.text)
                 raise HTTPException(status_code=502, detail="Token exchange with Atlassian failed")
             tokens = token_r.json()
 
@@ -187,7 +198,7 @@ async def jira_oauth_callback(code: str, state: str):
                 headers={"Authorization": f"Bearer {tokens['access_token']}"},
             )
             if not resources_r.is_success:
-                log.error("Jira accessible-resources failed for studio %s: %s", studio_id, resources_r.text)
+                log.error("Jira accessible-resources failed for %s %s: %s", owner_type, owner_id, resources_r.text)
                 raise HTTPException(status_code=502, detail="Failed to discover Jira instance")
 
             resources = resources_r.json()
@@ -207,8 +218,8 @@ async def jira_oauth_callback(code: str, state: str):
                 "available_resources": resources,
             }
             log.info(
-                "Jira Cloud OAuth complete for studio %s (cloud_id=%s, site=%s)",
-                studio_id, resource["id"], resource["url"],
+                "Jira Cloud OAuth complete for %s %s (cloud_id=%s, site=%s)",
+                owner_type, owner_id, resource["id"], resource["url"],
             )
 
         elif deployment == "datacenter":
@@ -216,8 +227,8 @@ async def jira_oauth_callback(code: str, state: str):
             creds_r = await db_client.get(
                 _url("/rest/v1/source_credentials"),
                 params={
-                    "owner_type":  "eq.studio",
-                    "owner_id":    f"eq.{studio_id}",
+                    "owner_type":  f"eq.{owner_type}",
+                    "owner_id":    f"eq.{owner_id}",
                     "source_type": "eq.jira",
                     "select":      "credentials",
                 },
@@ -243,7 +254,7 @@ async def jira_oauth_callback(code: str, state: str):
                 },
             )
             if not token_r.is_success:
-                log.error("Jira DC token exchange failed for studio %s: %s", studio_id, token_r.text)
+                log.error("Jira DC token exchange failed for %s %s: %s", owner_type, owner_id, token_r.text)
                 raise HTTPException(status_code=502, detail="Token exchange with Jira Data Center failed")
             tokens = token_r.json()
 
@@ -258,7 +269,7 @@ async def jira_oauth_callback(code: str, state: str):
                     datetime.now(timezone.utc) + timedelta(seconds=tokens.get("expires_in", 3600))
                 ).isoformat(),
             }
-            log.info("Jira DC OAuth complete for studio %s (instance=%s)", studio_id, instance_url)
+            log.info("Jira DC OAuth complete for %s %s (instance=%s)", owner_type, owner_id, instance_url)
 
         else:
             raise HTTPException(status_code=400, detail=f"Unknown deployment in state: {deployment}")
@@ -267,8 +278,8 @@ async def jira_oauth_callback(code: str, state: str):
         _url("/rest/v1/source_credentials?on_conflict=owner_type,owner_id,source_type"),
         headers=_headers({"Prefer": "resolution=merge-duplicates,return=minimal"}),
         json={
-            "owner_type":  "studio",
-            "owner_id":    studio_id,
+            "owner_type":  owner_type,
+            "owner_id":    owner_id,
             "source_type": "jira",
             "credentials": encrypt_credentials(creds),
         },
@@ -280,36 +291,38 @@ async def jira_oauth_callback(code: str, state: str):
 # ── Disconnect ────────────────────────────────────────────────────────────────
 
 @router.delete("/disconnect")
-async def disconnect_jira(user: CurrentUser = Depends(require_studio)):
-    """Delete the studio's Jira credentials, allowing re-authorization."""
+async def disconnect_jira(user: CurrentUser = Depends(get_current_user)):
+    """Delete the owner's Jira credentials, allowing re-authorization."""
+    owner_type, owner_id = _owner(user)
     r = await db_client.delete(
         _url("/rest/v1/source_credentials"),
         params={
-            "owner_type":  "eq.studio",
-            "owner_id":    f"eq.{user.studio_id}",
+            "owner_type":  f"eq.{owner_type}",
+            "owner_id":    f"eq.{owner_id}",
             "source_type": "eq.jira",
         },
         headers=_headers({"Prefer": "return=minimal"}),
     )
     if not r.is_success:
         raise HTTPException(status_code=500, detail="Failed to remove Jira credentials")
-    log.info("Studio %s disconnected Jira", user.studio_id)
+    log.info("%s %s disconnected Jira", owner_type, owner_id)
     return {"ok": True}
 
 
 # ── Instance picker (Cloud only) ───────────────────────────────────────────────
 
 @router.get("/instances")
-async def list_instances(user: CurrentUser = Depends(require_studio)):
+async def list_instances(user: CurrentUser = Depends(get_current_user)):
     """
-    Return the list of Atlassian Cloud sites the studio's token has access to.
+    Return the list of Atlassian Cloud sites the owner's token has access to.
     Only meaningful for Cloud deployments — DC always has exactly one instance.
     """
+    owner_type, owner_id = _owner(user)
     r = await db_client.get(
         _url("/rest/v1/source_credentials"),
         params={
-            "owner_type":  "eq.studio",
-            "owner_id":    f"eq.{user.studio_id}",
+            "owner_type":  f"eq.{owner_type}",
+            "owner_id":    f"eq.{owner_id}",
             "source_type": "eq.jira",
             "select":      "credentials",
         },
@@ -339,17 +352,18 @@ class SelectInstanceBody(BaseModel):
 @router.post("/select-instance")
 async def select_instance(
     body: SelectInstanceBody,
-    user: CurrentUser = Depends(require_studio),
+    user: CurrentUser = Depends(get_current_user),
 ):
     """
-    Set the active Atlassian Cloud instance for this studio.
+    Set the active Atlassian Cloud instance for this owner.
     Updates cloud_id and site_url in stored credentials.
     """
+    owner_type, owner_id = _owner(user)
     r = await db_client.get(
         _url("/rest/v1/source_credentials"),
         params={
-            "owner_type":  "eq.studio",
-            "owner_id":    f"eq.{user.studio_id}",
+            "owner_type":  f"eq.{owner_type}",
+            "owner_id":    f"eq.{owner_id}",
             "source_type": "eq.jira",
             "select":      "credentials",
         },
@@ -370,11 +384,11 @@ async def select_instance(
         _url("/rest/v1/source_credentials?on_conflict=owner_type,owner_id,source_type"),
         headers=_headers({"Prefer": "resolution=merge-duplicates,return=minimal"}),
         json={
-            "owner_type":  "studio",
-            "owner_id":    user.studio_id,
+            "owner_type":  owner_type,
+            "owner_id":    owner_id,
             "source_type": "jira",
             "credentials": encrypt_credentials(updated),
         },
     )
-    log.info("Studio %s selected Jira instance %s (%s)", user.studio_id, match["id"], match["url"])
+    log.info("%s %s selected Jira instance %s (%s)", owner_type, owner_id, match["id"], match["url"])
     return {"ok": True, "cloud_id": match["id"], "site_url": match["url"]}

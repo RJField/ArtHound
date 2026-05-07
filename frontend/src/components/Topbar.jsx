@@ -14,8 +14,9 @@ const STUDIO_NAV = [
 ]
 
 const VENDOR_NAV = [
-  { label: 'Home',  to: '/vendor-home' },
-  { label: 'Inbox', to: '/inbox' },
+  { label: 'Home',   to: '/vendor-home' },
+  { label: 'Assets', to: '/assets' },
+  { label: 'Inbox',  to: '/inbox' },
 ]
 
 export default function Topbar() {

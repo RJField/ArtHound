@@ -341,6 +341,12 @@ async def run_sync(
         item_type_def = entity_defs.get("item_type")
         work_def      = entity_defs.get("work")
 
+        # Jira requires entity definitions to build a valid JQL query — skip if not yet configured.
+        if source_type == "jira" and not asset_def:
+            log.info("Skipping sync for %s/%s — Jira entity definitions not configured yet", owner_type, owner_id)
+            await _finish_log(log_id, "success", 0)
+            return {"status": "skipped", "reason": "entity_definitions_not_configured"}
+
         async with httpx.AsyncClient(timeout=60.0) as client:
             # Refresh OAuth tokens before building connector (Jira only for now)
             if source_type == "jira":

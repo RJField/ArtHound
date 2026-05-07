@@ -15,7 +15,8 @@ import SchemaModal     from '../components/SchemaModal'
 
 export default function Assets() {
   const { state, update }                            = useAppState()
-  const { profile }                                  = useAuth()
+  const { profile, role }                            = useAuth()
+  const isStudio                                     = role === 'studio'
   const { products, loading: productsLoading }       = useProducts()
   const { assets,   loading: assetsLoading }         = useAssets(state.selectedProductId)
   const schema                                       = useViewSchema()
@@ -96,10 +97,10 @@ export default function Assets() {
         onToggleAsset={toggleAsset}
         onToggleAll={toggleAll}
         onFocusAsset={id => update({ focusedAssetId: id })}
-        genBusy={genBusy}
-        genResult={genResult}
-        onGenerate={generate}
-        onSend={() => setModal('send')}
+        genBusy={isStudio ? genBusy : false}
+        genResult={isStudio ? genResult : null}
+        onGenerate={isStudio ? generate : null}
+        onSend={isStudio ? () => setModal('send') : null}
       />
       <AssetDetailPanel
         asset={focusedAsset}
