@@ -1,7 +1,10 @@
 import asyncio
+import logging
 from urllib.parse import quote
 
 import httpx
+
+log = logging.getLogger(__name__)
 
 import config
 from lib.connectors.adapters.airtable import AIRTABLE_MANIFEST  # noqa: F401 — re-exported
@@ -251,9 +254,11 @@ class AirtableConnector(BaseConnector):
     async def create_record(self, table_id: str, fields: dict) -> str:
         """Create a record in the given table. Returns the new record ID."""
         r = await self._client.post(
-            f"{_AT_BASE}/v0/{self._base_id}/{quote(table_id, safe='')}",
+            f"{_AT_BASE}/{self._base_id}/{quote(table_id, safe='')}",
             headers={**self._headers(), "Content-Type": "application/json"},
-            json={"fields": fields},
+            json={"fields": fields, "typecast": True},
         )
+        if r.is_error:
+            log.error("Airtable create_record %s — %s %s", r.status_code, r.text, fields)
         r.raise_for_status()
         return r.json()["id"]

@@ -39,14 +39,18 @@ const BOTS = [
 export default function StudioHome() {
   const { profile } = useAuth()
   const navigate = useNavigate()
-  const [summary, setSummary]   = useState(null)
-  const [error, setError]       = useState(null)
-  const [openBot, setOpenBot]   = useState(null)
+  const [summary, setSummary]       = useState(null)
+  const [vendorCount, setVendorCount] = useState(null)
+  const [error, setError]           = useState(null)
+  const [openBot, setOpenBot]       = useState(null)
 
   useEffect(() => {
     apiFetch('/api/user/studio-summary')
       .then(setSummary)
       .catch(e => setError(e.message))
+    apiFetch('/api/handshake/links')
+      .then(links => setVendorCount(links.length))
+      .catch(() => setVendorCount(0))
   }, [])
 
   const loading = !summary && !error
@@ -106,6 +110,12 @@ export default function StudioHome() {
           label="Generated work"
           value={summary?.work_count}
           loading={loading}
+        />
+        <StatCard
+          label="Vendors"
+          value={vendorCount}
+          loading={vendorCount === null}
+          onClick={() => navigate('/vendors')}
         />
       </div>
 

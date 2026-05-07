@@ -11,12 +11,14 @@ const STUDIO_NAV = [
   { label: 'Assets',  to: '/assets' },
   { label: 'Shares',  to: '/shares' },
   { label: 'Reviews', to: '/reviews' },
+  { label: 'Vendors', to: '/vendors' },
 ]
 
 const VENDOR_NAV = [
-  { label: 'Home',   to: '/vendor-home' },
-  { label: 'Assets', to: '/assets' },
-  { label: 'Inbox',  to: '/inbox' },
+  { label: 'Home',    to: '/vendor-home' },
+  { label: 'Assets',  to: '/assets' },
+  { label: 'Inbox',   to: '/inbox' },
+  { label: 'Studios', to: '/studios' },
 ]
 
 export default function Topbar() {

@@ -141,10 +141,28 @@ def _assert_valid(dispatch: dict) -> None:
 # ── vendors list (for dispatch modal dropdown) ────────────────────────────────
 
 @router.get("/vendors")
-async def list_vendors(_: CurrentUser = Depends(require_studio)):
+async def list_vendors(user: CurrentUser = Depends(require_studio)):
+    """Returns only vendors with an active handshake link to this studio."""
+    r_links = await db_client.get(
+        _url("/rest/v1/studio_vendor_links"),
+        params={
+            "studio_id": f"eq.{user.studio_id}",
+            "status":    "eq.active",
+            "select":    "vendor_id",
+        },
+        headers=_headers(),
+    )
+    vendor_ids = [row["vendor_id"] for row in r_links.json()]
+    if not vendor_ids:
+        return []
+
     r = await db_client.get(
         _url("/rest/v1/vendors"),
-        params={"select": "id,name", "order": "name.asc"},
+        params={
+            "id":     f"in.({','.join(vendor_ids)})",
+            "select": "id,name,handle",
+            "order":  "name.asc",
+        },
         headers=_headers(),
     )
     return r.json()
@@ -224,6 +242,133 @@ async def delete_template(template_id: str, user: CurrentUser = Depends(require_
     return {"ok": True}
 
 
+# ── link mapping setup (vendor: payload fields + source schema for post-accept mapping) ──
+
+@router.get("/link-mapping/{link_id}")
+async def get_link_mapping(link_id: str, user: CurrentUser = Depends(require_vendor)):
+    """Union of payload fields from the link's acceptance snapshot + vendor source schema."""
+    r_link = await db_client.get(
+        _url("/rest/v1/studio_vendor_links"),
+        params={
+            "id":        f"eq.{link_id}",
+            "vendor_id": f"eq.{user.vendor_id}",
+            "status":    "eq.active",
+            "select":    "id,studio_id,payload_format_snapshot",
+        },
+        headers=_headers(),
+    )
+    link_rows = r_link.json()
+    if not link_rows:
+        raise HTTPException(status_code=404, detail="Link not found")
+    link      = link_rows[0]
+    studio_id = link["studio_id"]
+
+    snap_templates = (link.get("payload_format_snapshot") or {}).get("templates") or []
+
+    seen_keys: set[str] = set()
+    payload_fields: list[dict] = []
+    for tmpl in snap_templates:
+        for field in (tmpl.get("field_schema") or []):
+            key = field.get("key")
+            if key and key not in seen_keys:
+                seen_keys.add(key)
+                payload_fields.append({
+                    "key":   field["key"],
+                    "label": field.get("label", field["key"]),
+                    "type":  field.get("type", "text"),
+                })
+    if "name" not in seen_keys:
+        payload_fields.insert(0, {"key": "name", "label": "Name", "type": "text"})
+
+    source_type   = None
+    source_schema = []
+    auto_target   = None
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            source_type, connector = await _get_vendor_connector(user.vendor_id, client)
+            source_schema = await connector.fetch_base_schema()
+
+            r_entity = await db_client.get(
+                _url("/rest/v1/source_entity_definitions"),
+                params={
+                    "owner_type":  "eq.vendor",
+                    "owner_id":    f"eq.{user.vendor_id}",
+                    "entity_type": "eq.asset",
+                    "select":      "table_id,table_name,jql_filter",
+                },
+                headers=_headers(),
+            )
+            entity_rows = r_entity.json()
+            if entity_rows:
+                entity     = entity_rows[0]
+                issue_type = None
+                if source_type == "jira":
+                    jql = entity.get("jql_filter") or ""
+                    m   = re.search(r'issuetype\s*=\s*["\']?([^"\')\s,]+)["\']?', jql, re.IGNORECASE)
+                    if m:
+                        issue_type = m.group(1)
+                auto_target = {
+                    "table_id":   entity["table_id"],
+                    "table_name": entity["table_name"],
+                    "issue_type": issue_type,
+                }
+        except HTTPException:
+            pass  # vendor has no source tool yet — frontend shows graceful skip option
+
+    from lib.handshake import get_ingest_template
+    existing = await get_ingest_template(user.vendor_id, studio_id)
+
+    return {
+        "studio_id":        studio_id,
+        "has_templates":    len(snap_templates) > 0,
+        "payload_fields":   payload_fields,
+        "source_type":      source_type,
+        "source_schema":    source_schema,
+        "auto_target":      auto_target,
+        "existing_mapping": existing.get("field_mappings") if existing else None,
+    }
+
+
+# ── field preview (studio: sample field keys from their assets for template building) ──
+
+@router.get("/field-preview")
+async def get_field_preview(user: CurrentUser = Depends(require_studio)):
+    """Sample up to 20 recent assets and return the union of all field keys found."""
+    r = await db_client.get(
+        _url("/rest/v1/replicated_assets"),
+        params={
+            "owner_type": "eq.studio",
+            "owner_id":   f"eq.{user.studio_id}",
+            "select":     "meta,name",
+            "limit":      "20",
+            "order":      "created_at.desc",
+        },
+        headers=_headers(),
+    )
+    rows = r.json() if r.is_success else []
+
+    seen: dict[str, dict] = {}
+    # Always include "name" first
+    seen["name"] = {"key": "name", "label": "Name", "sample": None}
+
+    for row in rows:
+        if "name" in seen and seen["name"]["sample"] is None and row.get("name"):
+            seen["name"]["sample"] = str(row["name"])[:60]
+        for k, v in (row.get("meta") or {}).items():
+            if k in seen:
+                continue
+            sample = None
+            if isinstance(v, list) and v:
+                first = v[0]
+                sample = (first.get("display_name") or first.get("name") or str(first))[:60] if isinstance(first, dict) else str(first)[:60]
+            elif v is not None and not isinstance(v, (dict, list)):
+                sample = str(v)[:60]
+            seen[k] = {"key": k, "label": k, "sample": sample}
+
+    return list(seen.values())
+
+
 # ── bulk dispatch (studio → vendor, multiple assets) ──────────────────────────
 
 class BulkAsset(BaseModel):
@@ -234,6 +379,7 @@ class BulkAsset(BaseModel):
 class BulkDispatchBody(BaseModel):
     vendor_id: str
     assets: list[BulkAsset]
+    template_id: Optional[str] = None
     expires_in_days: int = _DEFAULT_EXPIRY_DAYS
 
 
@@ -241,7 +387,7 @@ class BulkDispatchBody(BaseModel):
 async def dispatch_bulk(body: BulkDispatchBody, user: CurrentUser = Depends(require_studio)):
     studio_id = user.studio_id
 
-    # Verify vendor exists
+    # Verify vendor exists and an active link is in place
     r_vendor = await db_client.get(
         _url("/rest/v1/vendors"),
         params={"id": f"eq.{body.vendor_id}", "select": "id,name"},
@@ -251,6 +397,9 @@ async def dispatch_bulk(body: BulkDispatchBody, user: CurrentUser = Depends(requ
     if not vendors:
         raise HTTPException(status_code=404, detail="Vendor not found")
 
+    from lib.handshake import require_active_link
+    await require_active_link(studio_id, body.vendor_id)
+
     # Embed sender studio name so payload is self-describing without a DB join
     r_studio = await db_client.get(
         _url("/rest/v1/studios"),
@@ -258,6 +407,23 @@ async def dispatch_bulk(body: BulkDispatchBody, user: CurrentUser = Depends(requ
         headers=_headers(),
     )
     studio_name = r_studio.json()[0]["name"] if r_studio.json() else "Unknown Studio"
+
+    # Resolve template field filter (optional)
+    allowed_keys: set[str] | None = None
+    template_field_schema: list[dict] | None = None
+    template_id: str | None = None
+    if body.template_id:
+        r_tmpl = await db_client.get(
+            _url("/rest/v1/payload_templates"),
+            params={"id": f"eq.{body.template_id}", "studio_id": f"eq.{studio_id}", "select": "id,field_schema"},
+            headers=_headers(),
+        )
+        tmpl_rows = r_tmpl.json()
+        if not tmpl_rows:
+            raise HTTPException(status_code=404, detail="Template not found")
+        template_field_schema = tmpl_rows[0]["field_schema"]
+        allowed_keys = {f["key"] for f in template_field_schema}
+        template_id = body.template_id
 
     now = datetime.now(timezone.utc)
     expires_at = (now + timedelta(days=max(1, min(body.expires_in_days, _MAX_EXPIRY_DAYS)))).isoformat()
@@ -276,25 +442,38 @@ async def dispatch_bulk(body: BulkDispatchBody, user: CurrentUser = Depends(requ
         if not r_asset.json():
             continue
 
-        field_schema = [{"key": k, "label": k, "type": "text"} for k in asset.asset_data.keys()]
+        filtered_data = (
+            {k: v for k, v in asset.asset_data.items() if k in allowed_keys}
+            if allowed_keys is not None
+            else asset.asset_data
+        )
+        field_schema = (
+            template_field_schema
+            if template_field_schema is not None
+            else [{"key": k, "label": k, "type": "text"} for k in filtered_data.keys()]
+        )
         payload_data = {
             "asset_global_id": asset.asset_id,
             "sender_studio_name": studio_name,
             "schema": field_schema,
-            "data": asset.asset_data,
+            "data": filtered_data,
             "dispatched_at": now.isoformat(),
         }
+
+        dispatch_row = {
+            "asset_id": asset.asset_id,
+            "sender_studio_id": studio_id,
+            "recipient_vendor_id": body.vendor_id,
+            "payload_data": payload_data,
+            "expires_at": expires_at,
+        }
+        if template_id:
+            dispatch_row["template_id"] = template_id
 
         r_dispatch = await db_client.post(
             _url("/rest/v1/payload_dispatches"),
             headers=_headers({"Prefer": "return=representation"}),
-            json={
-                "asset_id": asset.asset_id,
-                "sender_studio_id": studio_id,
-                "recipient_vendor_id": body.vendor_id,
-                "payload_data": payload_data,
-                "expires_at": expires_at,
-            },
+            json=dispatch_row,
         )
         dispatch_id = r_dispatch.json()[0]["id"]
         await _log(dispatch_id, "dispatched", actor_studio_id=studio_id)
@@ -328,6 +507,10 @@ async def dispatch_payload(body: DispatchBody, user: CurrentUser = Depends(requi
     )
     if not r_asset.json():
         raise HTTPException(status_code=404, detail="Asset not found")
+
+    if body.recipient_vendor_id:
+        from lib.handshake import require_active_link
+        await require_active_link(studio_id, body.recipient_vendor_id)
 
     r_tmpl = await db_client.get(
         _url("/rest/v1/payload_templates"),
@@ -657,12 +840,59 @@ async def get_ingest_schema(dispatch_id: str, user: CurrentUser = Depends(requir
         for key, value in data.items()
     ]
 
+    # Load the vendor's saved ingest template for this studio (if any) and detect drift.
+    # Drift check is unconditional — new fields AND removed fields both surface here.
+    from lib.handshake import get_ingest_template, compare_payload_snapshots
+
+    # Resolve sender studio from the dispatch
+    r_dispatch_studio = await db_client.get(
+        _url("/rest/v1/payload_dispatches"),
+        params={"id": f"eq.{dispatch_id}", "select": "sender_studio_id"},
+        headers=_headers(),
+    )
+    sender_studio_id = (r_dispatch_studio.json() or [{}])[0].get("sender_studio_id")
+
+    default_template = None
+    active_link_id   = None
+    drift            = None
+
+    if sender_studio_id:
+        r_link = await db_client.get(
+            _url("/rest/v1/studio_vendor_links"),
+            params={
+                "studio_id": f"eq.{sender_studio_id}",
+                "vendor_id": f"eq.{user.vendor_id}",
+                "status":    "eq.active",
+                "select":    "id,payload_format_snapshot",
+            },
+            headers=_headers(),
+        )
+        link_rows = r_link.json()
+        if link_rows:
+            active_link_id = link_rows[0]["id"]
+
+        template = await get_ingest_template(user.vendor_id, sender_studio_id)
+        if template:
+            default_template = template
+            # Drift is always checked when a template exists.
+            # Use the dispatch's own field keys as the current payload snapshot —
+            # this catches new fields added and old fields removed since the template was saved.
+            dispatch_snapshot = {"field_schema": [{"key": k} for k in data.keys()]}
+            drift = compare_payload_snapshots(
+                dispatch_snapshot,
+                template.get("field_mappings") or {},
+            )
+
     return {
-        "source_type":    source_type,
-        "payload_fields": payload_fields,
-        "source_schema":  source_schema,
-        "auto_target":    auto_target,
+        "source_type":      source_type,
+        "payload_fields":   payload_fields,
+        "source_schema":    source_schema,
+        "auto_target":      auto_target,
         "existing_mapping": existing_mapping,
+        "default_template": default_template,
+        "drift":            drift,
+        "sender_studio_id": sender_studio_id,
+        "active_link_id":   active_link_id,
     }
 
 
@@ -697,6 +927,35 @@ async def do_ingest(dispatch_id: str, user: CurrentUser = Depends(require_vendor
 
     data = (dispatch.get("payload_data") or {}).get("data") or {}
 
+    # If this canonical asset was already ingested by this vendor (e.g. prior dispatch),
+    # reuse the existing source record instead of creating a duplicate.
+    r_existing = await db_client.get(
+        _url("/rest/v1/payload_export_records"),
+        params={
+            "canonical_asset_id": f"eq.{dispatch['asset_id']}",
+            "vendor_id":          f"eq.{user.vendor_id}",
+            "select":             "vendor_tool_record_id,vendor_source_type",
+            "limit":              "1",
+        },
+        headers=_headers(),
+    )
+    existing_export = (r_existing.json() or [None])[0]
+    if existing_export:
+        source_record_id = existing_export["vendor_tool_record_id"]
+        source_type      = existing_export["vendor_source_type"]
+        await db_client.patch(
+            _url("/rest/v1/payload_field_mappings"),
+            params={"dispatch_id": f"eq.{dispatch_id}", "recipient_vendor_id": f"eq.{user.vendor_id}"},
+            headers=_headers({"Prefer": "return=minimal"}),
+            json={
+                "ingested_at":                _now_iso(),
+                "ingested_source_record_id":  source_record_id,
+                "ingested_by_user_id":        user.id,
+            },
+        )
+        await _log(dispatch_id, "ingested", detail={"source_record_id": source_record_id, "reused": True})
+        return {"ok": True, "source_record_id": source_record_id, "reused": True}
+
     # Extract meta-summary config before iterating direct mappings.
     _RESERVED = {"_meta_summary_target", "_meta_summary_fields"}
     meta_target      = mappings.get("_meta_summary_target")
@@ -711,7 +970,9 @@ async def do_ingest(dispatch_id: str, user: CurrentUser = Depends(require_vendor
         raw = data.get(payload_key)
         if raw is None:
             continue
-        target_fields[source_field_id] = raw if isinstance(raw, (dict, list)) else str(raw)
+        # Preserve native types — Airtable rejects numbers/booleans sent as strings.
+        # Jira-specific coercion is handled in the block below.
+        target_fields[source_field_id] = raw if isinstance(raw, (dict, list, bool, int, float)) else str(raw)
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         source_type, connector = await _get_vendor_connector(user.vendor_id, client)
@@ -807,7 +1068,37 @@ async def do_ingest(dispatch_id: str, user: CurrentUser = Depends(require_vendor
             target_fields["issuetype"] = {"name": resolved_issue_type}
             source_record_id = await connector.create_issue(target_fields)
         else:
-            source_record_id = await connector.create_record(target_table_id, target_fields)
+            # Strip fields that Airtable will reject before posting.
+            _AT_READ_ONLY = {
+                "formula", "lookup", "rollup", "count", "autoNumber",
+                "createdTime", "lastModifiedTime", "createdBy", "lastModifiedBy", "button",
+            }
+            target_schema = await connector.fetch_asset_schema(target_table_id)
+            schema_by_id = {f.id: f for f in target_schema}
+            for fid in list(target_fields.keys()):
+                field = schema_by_id.get(fid)
+                if field is None:
+                    continue
+                if field.type in _AT_READ_ONLY:
+                    target_fields.pop(fid)
+                elif field.type == "multipleRecordLinks":
+                    val = target_fields[fid]
+                    # Airtable write API needs ["recXXX", ...]; skip display-name strings.
+                    if not (isinstance(val, list) and all(
+                        isinstance(v, str) and v.startswith("rec") for v in val
+                    )):
+                        target_fields.pop(fid)
+                elif field.type == "multipleSelect":
+                    val = target_fields[fid]
+                    if not isinstance(val, list):
+                        target_fields[fid] = [val]
+            try:
+                source_record_id = await connector.create_record(target_table_id, target_fields)
+            except httpx.HTTPStatusError as exc:
+                raise HTTPException(
+                    status_code=exc.response.status_code,
+                    detail=f"Source tool rejected the record: {exc.response.text}",
+                ) from exc
 
     # Write canonical link + replicated_assets stub. External record exists from this
     # point regardless of what follows — patch payload_field_mappings unconditionally.

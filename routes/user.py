@@ -1,12 +1,16 @@
 import asyncio
 import logging
+import re
 from datetime import datetime, timezone
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from lib.auth import CurrentUser, get_current_user, require_admin
 from lib.db import db_client, _url, _headers
+
+_HANDLE_RE = re.compile(r'^[a-z0-9][a-z0-9_-]{2,31}$')
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -37,7 +41,7 @@ async def get_me(user: CurrentUser = Depends(get_current_user)):
     elif user.role == "vendor" and user.vendor_id:
         r = await db_client.get(
             _url("/rest/v1/vendors"),
-            params={"id": f"eq.{user.vendor_id}", "select": "id,name,initialized_at"},
+            params={"id": f"eq.{user.vendor_id}", "select": "id,name,handle,initialized_at"},
             headers=_headers(),
         )
         r.raise_for_status()
@@ -102,6 +106,32 @@ async def assign_org(body: AssignBody, user: CurrentUser = Depends(get_current_u
     )
     if r.status_code not in (200, 201):
         raise HTTPException(status_code=500, detail="Failed to save assignment")
+    return {"ok": True}
+
+
+# ── Vendor handle ────────────────────────────────────────────────────────────
+
+class HandleBody(BaseModel):
+    handle: str
+
+
+@router.patch("/handle")
+async def update_handle(body: HandleBody, user: CurrentUser = Depends(get_current_user)):
+    if user.role != "vendor" or not user.vendor_id:
+        raise HTTPException(status_code=403, detail="Vendor access required")
+    if not _HANDLE_RE.match(body.handle):
+        raise HTTPException(status_code=422, detail="HANDLE_INVALID")
+
+    r = await db_client.patch(
+        _url(f"/rest/v1/vendors"),
+        params={"id": f"eq.{user.vendor_id}"},
+        headers=_headers({"Prefer": "return=minimal"}),
+        json={"handle": body.handle},
+    )
+    if r.status_code == 409 or (not r.is_success and "23505" in r.text):
+        raise HTTPException(status_code=422, detail="HANDLE_TAKEN")
+    if not r.is_success:
+        raise HTTPException(status_code=500, detail="Failed to update handle")
     return {"ok": True}
 
 

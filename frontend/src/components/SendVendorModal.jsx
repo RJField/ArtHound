@@ -42,9 +42,11 @@ function StepBar({ active }) {
 export default function SendVendorModal({ selectedAssets, onClose, onSent }) {
   const [step, setStep]           = useState(1)
   const [vendors, setVendors]     = useState([])
+  const [templates, setTemplates] = useState([])
   const [existingShares, setExisting] = useState([])
   const [vendorId, setVendorId]   = useState('')
   const [vendorName, setVendorName] = useState('')
+  const [templateId, setTemplateId] = useState('')
   const [loading, setLoading]     = useState(true)
   const [sending, setSending]     = useState(false)
   const [dispatched, setDispatched] = useState(0)
@@ -55,12 +57,14 @@ export default function SendVendorModal({ selectedAssets, onClose, onSent }) {
   useEffect(() => {
     async function init() {
       try {
-        const [vs, outbox] = await Promise.all([
+        const [vs, outbox, tmpl] = await Promise.all([
           apiFetch('/api/payloads/vendors'),
           apiFetch('/api/payloads/outbox'),
+          apiFetch('/api/payloads/templates'),
         ])
         setVendors(vs)
         setExisting(outbox.filter(d => canonicalIds.has(d.asset_id) && !d.revoked_at))
+        setTemplates(tmpl)
       } catch (err) {
         toast.error(err.message)
       } finally {
@@ -97,7 +101,7 @@ export default function SendVendorModal({ selectedAssets, onClose, onSent }) {
     try {
       const result = await apiFetch('/api/payloads/dispatch-bulk', {
         method: 'POST',
-        body: JSON.stringify({ vendor_id: vendorId, assets }),
+        body: JSON.stringify({ vendor_id: vendorId, assets, ...(templateId ? { template_id: templateId } : {}) }),
       })
       setDispatched(result.dispatched)
       setStep(3)
@@ -147,6 +151,24 @@ export default function SendVendorModal({ selectedAssets, onClose, onSent }) {
                     </select>
                   </div>
 
+                  {templates.length > 0 && (
+                    <div className="flex flex-col gap-1">
+                      <label className="text-muted text-xs">Payload template <span className="opacity-60">(optional)</span></label>
+                      <select
+                        value={templateId}
+                        onChange={e => setTemplateId(e.target.value)}
+                        className="bg-surface-2 border border-border rounded-lg px-3 py-2 text-foreground text-sm outline-none focus:border-accent"
+                      >
+                        <option value="">— Send all fields —</option>
+                        {templates.map(t => (
+                          <option key={t.id} value={t.id}>
+                            {t.name} ({t.field_schema?.length ?? 0} fields)
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+
                   <p className="text-muted text-xs">
                     {selectedAssets.length} asset{selectedAssets.length !== 1 ? 's' : ''} selected
                   </p>
@@ -194,9 +216,18 @@ export default function SendVendorModal({ selectedAssets, onClose, onSent }) {
           {/* Step 2 — Review */}
           {step === 2 && (
             <>
-              <p className="text-muted text-sm">
-                Sending to <span className="text-foreground font-medium">{vendorName}</span>:
-              </p>
+              <div className="flex flex-col gap-0.5">
+                <p className="text-muted text-sm">
+                  Sending to <span className="text-foreground font-medium">{vendorName}</span>
+                </p>
+                {templateId ? (
+                  <p className="text-muted text-xs">
+                    Template: <span className="text-foreground">{templates.find(t => t.id === templateId)?.name}</span>
+                  </p>
+                ) : (
+                  <p className="text-muted text-xs">All fields included</p>
+                )}
+              </div>
               <div className="flex flex-col gap-1 max-h-64 overflow-y-auto">
                 {selectedAssets.map(a => (
                   <div key={a.id} className="flex items-center gap-2 px-3 py-2 rounded-lg bg-surface-2">

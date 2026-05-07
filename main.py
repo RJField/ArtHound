@@ -34,6 +34,7 @@ from routes.synthetic import router as synthetic_router
 from routes.connectors.jira_oauth import router as jira_oauth_router
 from routes.attachments import router as attachments_router
 from routes.lorebot import router as lorebot_router
+from routes.handshake import router as handshake_router
 
 log = logging.getLogger(__name__)
 
@@ -257,6 +258,7 @@ app.include_router(jira_oauth_router,     prefix="/api/connectors/jira/oauth")
 # Attachment proxy: /asset/* requires studio JWT; /payload/* accepts studio or vendor JWT
 app.include_router(attachments_router,    prefix="/api/attachments", dependencies=_auth)
 app.include_router(lorebot_router,        prefix="/api/lorebot",     dependencies=_auth)
+app.include_router(handshake_router,      prefix="/api/handshake",   dependencies=_auth)
 
 
 _REPLICATED_TABLE: dict[str, str] = {
@@ -365,6 +367,7 @@ async def health_check():
     except Exception as exc:
         log.error("Health check failed: %s", exc)
         return JSONResponse(status_code=503, content={"status": "unavailable"})
+
 
 
 @app.exception_handler(HTTPException)
