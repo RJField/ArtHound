@@ -38,27 +38,56 @@ def _extract_str(v) -> str | None:
     return str(v)
 
 
-async def _get_slot_field_names(studio_id: str) -> dict[str, str]:
+async def _get_mapping_data(studio_id: str) -> tuple[dict, dict, dict]:
+    """
+    Return (slot_to_field, field_to_bucket, field_to_tier) from source_field_mappings.
+
+    slot_to_field:   {arthound_slot: source_field_name}
+    field_to_bucket: {source_field_name: meta_bucket}
+    field_to_tier:   {source_field_name: display_tier}
+    """
     r = await db_client.get(
         _url("/rest/v1/source_field_mappings"),
         params={"owner_type": "eq.studio", "owner_id": f"eq.{studio_id}", "select": "mappings"},
         headers=_headers(),
     )
     if not r.is_success or not r.json():
-        return {}
+        return {}, {}, {}
     mappings = r.json()[0].get("mappings") or []
-    return {
+    slot_to_field = {
         m["arthound_slot"]: m["source_field_name"]
         for m in mappings
         if m.get("arthound_slot") and m.get("source_field_name")
     }
+    field_to_bucket = {
+        m["source_field_name"]: m.get("meta_bucket", "custom")
+        for m in mappings if m.get("source_field_name")
+    }
+    field_to_tier = {
+        m["source_field_name"]: m.get("display_tier", "secondary")
+        for m in mappings if m.get("source_field_name")
+    }
+    return slot_to_field, field_to_bucket, field_to_tier
+
+
+async def _get_slot_field_names(studio_id: str) -> dict[str, str]:
+    slot_to_field, _, _ = await _get_mapping_data(studio_id)
+    return slot_to_field
 
 
 @router.get("/fields")
-async def get_fields(current_user: CurrentUser = Depends(require_studio)):
-    """Return source field names available on replicated_assets for this studio."""
+async def get_fields(
+    bucket: str | None = Query(None, description="Filter by meta_bucket (e.g. production, technical)"),
+    include_native: bool = Query(False, description="Include source_native fields (hidden by default)"),
+    current_user: CurrentUser = Depends(require_studio),
+):
+    """Return source field names available on replicated_assets for this studio.
+
+    source_native fields are excluded by default. Use include_native=true to see them.
+    Use bucket= to filter to a specific category.
+    """
     studio_id = current_user.studio_id
-    slot_fields = await _get_slot_field_names(studio_id)
+    slot_to_field, field_to_bucket, field_to_tier = await _get_mapping_data(studio_id)
 
     r_assets = await db_client.get(
         _url("/rest/v1/replicated_assets"),
@@ -69,8 +98,25 @@ async def get_fields(current_user: CurrentUser = Depends(require_studio)):
     for row in (r_assets.json() if r_assets.is_success else []):
         meta_keys.update((row.get("meta") or {}).keys())
 
-    all_names = set(slot_fields.values()) | meta_keys
-    fields = [{"id": name, "name": name, "type": "text"} for name in sorted(all_names)]
+    all_names = set(slot_to_field.values()) | meta_keys
+
+    fields = []
+    for name in sorted(all_names):
+        field_bucket = field_to_bucket.get(name, "custom")
+        field_tier   = field_to_tier.get(name, "secondary")
+        if not include_native and field_bucket == "source_native":
+            continue
+        if not include_native and field_tier == "hidden":
+            continue
+        if bucket and field_bucket != bucket:
+            continue
+        fields.append({
+            "id":     name,
+            "name":   name,
+            "type":   "text",
+            "bucket": field_bucket,
+            "tier":   field_tier,
+        })
     return {"fields": fields}
 
 

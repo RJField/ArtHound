@@ -79,7 +79,10 @@ class AirtableConnector(BaseConnector):
         return records
 
     async def fetch_single_asset(
-        self, source_record_id: str, table_id: str | None = None
+        self,
+        source_record_id: str,
+        table_id: str | None = None,
+        excluded_field_ids: set[str] | None = None,
     ) -> RawRecord | None:
         table = table_id or config.tables["assets"]
         table_enc = quote(table, safe="")
@@ -91,9 +94,12 @@ class AirtableConnector(BaseConnector):
             return None
         r.raise_for_status()
         rec = r.json()
+        fields = rec.get("fields", {})
+        if excluded_field_ids:
+            fields = {k: v for k, v in fields.items() if k not in excluded_field_ids}
         return RawRecord(
             source_record_id=rec["id"],
-            fields=rec.get("fields", {}),
+            fields=fields,
             source_last_modified_at=rec.get("createdTime"),
         )
 
@@ -128,11 +134,15 @@ class AirtableConnector(BaseConnector):
         filter_formula: str | None = None,
         since: str | None = None,
         max_records: int | None = None,
+        excluded_field_ids: set[str] | None = None,
     ) -> list[RawRecord]:
         """
         Fetch records from any table by ID, with optional formula filter and
         delta-sync cursor. Airtable's records API accepts table IDs in the URL
         interchangeably with table names.
+
+        excluded_field_ids: field names to strip from returned records (v1: client-side
+        filter; v2 will use Airtable's fields[] param as a whitelist instead).
         """
         table_enc = quote(table_id, safe="")
         records: list[dict] = []
@@ -170,7 +180,8 @@ class AirtableConnector(BaseConnector):
         return [
             RawRecord(
                 source_record_id=r["id"],
-                fields=r.get("fields", {}),
+                fields={k: v for k, v in r.get("fields", {}).items()
+                        if not excluded_field_ids or k not in excluded_field_ids},
                 source_last_modified_at=r.get("createdTime"),
             )
             for r in records

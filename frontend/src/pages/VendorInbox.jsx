@@ -132,9 +132,18 @@ export default function VendorInbox() {
                     )}
                   </div>
                 </div>
-                <div className="flex flex-col items-end gap-1 shrink-0 text-xs text-muted">
-                  <span>{studio}</span>
-                  <span>{date}</span>
+                <div className="flex items-center gap-3 shrink-0">
+                  <div className="flex flex-col items-end gap-1 text-xs text-muted">
+                    <span>{studio}</span>
+                    <span>{date}</span>
+                  </div>
+                  <button
+                    disabled
+                    onClick={e => e.stopPropagation()}
+                    className="px-3 py-1 rounded-md text-xs text-muted border border-border bg-surface opacity-40 cursor-not-allowed"
+                  >
+                    Request Refresh
+                  </button>
                 </div>
               </div>
             )

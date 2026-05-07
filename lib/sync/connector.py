@@ -31,8 +31,26 @@ class BaseConnector(ABC):
     @abstractmethod
     async def fetch_asset_schema(self) -> list[SchemaField]: ...
 
+    async def fetch_entity(
+        self,
+        table_id: str,
+        filter_formula: str | None = None,
+        since: str | None = None,
+        max_records: int | None = None,
+        excluded_field_ids: set[str] | None = None,
+    ) -> list[RawRecord]:
+        """Fetch records from a named entity table with optional filter and delta cursor.
+
+        excluded_field_ids: field names or IDs to strip from returned records (v1:
+        client-side; v2 will push this to the API request layer).
+        """
+        return []
+
     async def fetch_single_asset(
-        self, source_record_id: str, table_id: str | None = None
+        self,
+        source_record_id: str,
+        table_id: str | None = None,
+        excluded_field_ids: set[str] | None = None,
     ) -> RawRecord | None:
         """Fetch one asset record by ID. Returns None if not found. Override in subclasses."""
         return None

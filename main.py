@@ -43,7 +43,7 @@ async def _poll_loop() -> None:
     Background polling task. Disabled when SYNC_POLL_INTERVAL_SECONDS is unset or 0.
     When enabled, triggers a delta sync for every owner that has source credentials stored.
     """
-    interval = int(os.environ.get("SYNC_POLL_INTERVAL_SECONDS", "0"))
+    interval = int(os.environ.get("SYNC_POLL_INTERVAL_SECONDS", "3600"))
     if not interval:
         return
     log.info("Polling sync enabled — interval: %ds", interval)
@@ -105,6 +105,28 @@ async def _attachment_purge_loop() -> None:
             log.info("Attachment purge complete: %s", result)
         except Exception as exc:
             log.error("Attachment purge error: %s", exc)
+        await asyncio.sleep(interval_secs)
+
+
+async def _schema_drift_loop() -> None:
+    """
+    Periodic schema drift detection. Compares live source schemas against stored
+    field mappings and flags studios that need to review new/removed/changed fields.
+    Configurable via SCHEMA_DRIFT_INTERVAL_HOURS (default 24, set 0 to disable).
+    """
+    interval_hours = float(os.environ.get("SCHEMA_DRIFT_INTERVAL_HOURS", "24"))
+    if not interval_hours:
+        return
+    interval_secs = interval_hours * 3600
+    log.info("Schema drift detection enabled — interval: %.1fh", interval_hours)
+    # Stagger first run so it doesn't fire immediately on startup alongside sync.
+    await asyncio.sleep(3600)
+    while True:
+        try:
+            from lib.sync.schema_drift import run_schema_drift_check
+            await run_schema_drift_check()
+        except Exception as exc:
+            log.warning("Schema drift check error: %s", exc)
         await asyncio.sleep(interval_secs)
 
 
@@ -177,11 +199,13 @@ async def lifespan(app: FastAPI):
     nightly_task     = asyncio.create_task(_nightly_full_sync_loop())
     drain_task       = asyncio.create_task(_attachment_drain_loop())
     purge_task       = asyncio.create_task(_attachment_purge_loop())
+    drift_task       = asyncio.create_task(_schema_drift_loop())
     yield
     poll_task.cancel()
     nightly_task.cancel()
     drain_task.cancel()
     purge_task.cancel()
+    drift_task.cancel()
     await http_client.aclose()
     await db_client.aclose()
 

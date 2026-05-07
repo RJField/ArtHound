@@ -182,22 +182,30 @@ class JiraConnector(BaseConnector):
             issues = issues[:max_records]
         return issues
 
-    def _to_raw_record(self, issue: dict) -> RawRecord:
+    def _to_raw_record(
+        self, issue: dict, excluded_field_ids: set[str] | None = None
+    ) -> RawRecord:
         fields = issue.get("fields") or {}
+        merged = {
+            **fields,
+            "_jira_key":  issue.get("key"),
+            "_jira_self": issue.get("self"),
+        }
+        if excluded_field_ids:
+            merged = {k: v for k, v in merged.items() if k not in excluded_field_ids}
         return RawRecord(
             source_record_id=str(issue["id"]),
-            fields={
-                **fields,
-                "_jira_key":  issue.get("key"),
-                "_jira_self": issue.get("self"),
-            },
+            fields=merged,
             source_last_modified_at=fields.get("updated"),
         )
 
     # ── BaseConnector interface ────────────────────────────────────────────────
 
     async def fetch_single_asset(
-        self, source_record_id: str, table_id: str | None = None
+        self,
+        source_record_id: str,
+        table_id: str | None = None,
+        excluded_field_ids: set[str] | None = None,
     ) -> RawRecord | None:
         r = await self._get_with_retry(
             f"{self._base}/issue/{source_record_id}",
@@ -206,7 +214,7 @@ class JiraConnector(BaseConnector):
         if r.status_code == 404:
             return None
         r.raise_for_status()
-        return self._to_raw_record(r.json())
+        return self._to_raw_record(r.json(), excluded_field_ids)
 
     async def fetch_assets(self, since: str | None = None) -> list[RawRecord]:
         """Fallback: fetch all issues across all projects. Use fetch_entity when entity defs exist."""
@@ -258,14 +266,18 @@ class JiraConnector(BaseConnector):
         filter_formula: str | None = None,
         since: str | None = None,
         max_records: int | None = None,
+        excluded_field_ids: set[str] | None = None,
     ) -> list[RawRecord]:
         """
         Fetch issues by JQL. filter_formula is treated as a JQL expression.
         table_id is used only as a fallback project filter when filter_formula is absent.
+
+        excluded_field_ids: field IDs/names to strip from returned records (v1: client-side
+        filter; v2 will push these to the Jira fields= request parameter instead).
         """
         jql = filter_formula or f'project = "{table_id}"'
         issues = await self._search(jql, since, max_records)
-        return [self._to_raw_record(i) for i in issues]
+        return [self._to_raw_record(i, excluded_field_ids) for i in issues]
 
     async def fetch_base_schema(self) -> list[dict]:
         """

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import re
 from datetime import datetime, timezone, timedelta
@@ -304,7 +305,7 @@ async def get_outbox(user: CurrentUser = Depends(require_studio)):
         _url("/rest/v1/payload_dispatches"),
         params={
             "sender_studio_id": f"eq.{user.studio_id}",
-            "select": "id,asset_id,recipient_vendor_id,template_id,expires_at,revoked_at,created_at,payload_data",
+            "select": "id,asset_id,recipient_vendor_id,template_id,expires_at,revoked_at,created_at,payload_data,payload_field_mappings(ingested_at,ingested_source_record_id,ingested_by_user_id)",
             "order": "created_at.desc",
         },
         headers=_headers(),
@@ -330,6 +331,44 @@ async def get_outbox(user: CurrentUser = Depends(require_studio)):
 
     for d in dispatches:
         d["view_count"] = view_counts.get(d["id"], 0)
+
+    # Resolve ingested_by_user_id → display name for all dispatches that were ingested.
+    ingested_user_ids: set[str] = {
+        m[0]["ingested_by_user_id"]
+        for d in dispatches
+        if (m := d.get("payload_field_mappings")) and m and m[0].get("ingested_by_user_id")
+    }
+
+    if ingested_user_ids:
+        async def _resolve_user(uid: str) -> tuple[str, str]:
+            try:
+                ru = await db_client.get(
+                    _url(f"/auth/v1/admin/users/{uid}"),
+                    headers=_headers(),
+                )
+                if ru.is_success:
+                    data = ru.json()
+                    name = (
+                        data.get("user_metadata", {}).get("full_name")
+                        or data.get("user_metadata", {}).get("name")
+                        or data.get("email")
+                        or "Unknown"
+                    )
+                    return uid, name
+            except Exception:
+                pass
+            return uid, "Unknown"
+
+        user_name_map: dict[str, str] = dict(
+            await asyncio.gather(*[_resolve_user(uid) for uid in ingested_user_ids])
+        )
+
+        for d in dispatches:
+            mapping = (d.get("payload_field_mappings") or [None])[0]
+            if mapping and mapping.get("ingested_by_user_id"):
+                mapping["ingested_by_name"] = user_name_map.get(
+                    mapping["ingested_by_user_id"], "Unknown"
+                )
 
     return dispatches
 

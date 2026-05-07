@@ -26,7 +26,7 @@ from lib.crypto import decrypt_credentials, encrypt_credentials
 from lib.db import db_client, _url, _headers
 from lib.sync.connectors.airtable import AirtableConnector, build_filter_formula
 from lib.sync.init_runner import REQUIRED_SLOTS, run_init_sync
-from lib.sync.normalizer import default_mappings_from_schema
+from lib.sync.normalizer import classify_field, default_mappings_from_schema
 
 log = logging.getLogger(__name__)
 
@@ -414,7 +414,11 @@ async def save_entity_definition(
                     ]
                     await save_default_mappings(
                         owner_type, owner_id, body.source_type,
-                        default_mappings_from_schema(schema_objs),
+                        default_mappings_from_schema(
+                            schema_objs,
+                            source_type=body.source_type,
+                            paw_level="asset",
+                        ),
                     )
 
     return {"ok": True}
@@ -521,17 +525,70 @@ async def save_field_mappings(
             detail=f"Required fields not mapped: {', '.join(sorted(missing))}",
         )
 
+    # Load existing mappings before overwriting so we can diff bucket changes.
+    existing_r = await db_client.get(
+        _url("/rest/v1/source_field_mappings"),
+        params={
+            "owner_type":  f"eq.{owner_type}",
+            "owner_id":    f"eq.{owner_id}",
+            "source_type": f"eq.{body.source_type}",
+            "select":      "mappings",
+        },
+        headers=_headers(),
+    )
+    existing_rows = existing_r.json()
+    existing_by_id: dict[str, dict] = {}
+    if existing_rows:
+        for m in existing_rows[0].get("mappings") or []:
+            fid = m.get("source_field_id") or m.get("source_field_name")
+            if fid:
+                existing_by_id[fid] = m
+
+    # Collect bucket override events: new bucket differs from the stored bucket.
+    override_events = []
+    for m in body.mappings:
+        fid   = m.get("source_field_id") or m.get("source_field_name")
+        new_b = m.get("meta_bucket")
+        if not fid or not new_b:
+            continue
+        old   = existing_by_id.get(fid)
+        old_b = old.get("meta_bucket") if old else None
+        if new_b != old_b:
+            override_events.append({
+                "owner_id":        owner_id,
+                "source_type":     body.source_type,
+                "paw_level":       "asset",
+                "source_field_id": m.get("source_field_id", fid),
+                "field_name":      m.get("source_field_name", fid),
+                "field_type":      m.get("source_field_type"),
+                "from_bucket":     old_b,
+                "to_bucket":       new_b,
+            })
+
     r = await db_client.post(
         _url("/rest/v1/source_field_mappings?on_conflict=owner_type,owner_id,source_type"),
         headers=_headers({"Prefer": "resolution=merge-duplicates,return=minimal"}),
         json={
-            "owner_type":  owner_type,
-            "owner_id":    owner_id,
-            "source_type": body.source_type,
-            "mappings":    body.mappings,
+            "owner_type":              owner_type,
+            "owner_id":                owner_id,
+            "source_type":             body.source_type,
+            "mappings":                body.mappings,
+            "pending_schema_review":   False,
         },
     )
     r.raise_for_status()
+
+    # Write override events — best-effort; don't fail the save if this errors.
+    if override_events:
+        try:
+            await db_client.post(
+                _url("/rest/v1/field_bucket_override_log"),
+                headers=_headers({"Prefer": "return=minimal"}),
+                json=override_events,
+            )
+        except Exception:
+            log.warning("Failed to write bucket override log for %s/%s", owner_type, owner_id)
+
     return {"ok": True, "mapped_slots": sorted(mapped_slots)}
 
 
@@ -631,6 +688,91 @@ async def get_job(
     if not rows:
         raise HTTPException(status_code=404, detail="Job not found")
     return rows[0]
+
+
+# ── Backfill bucket classification ───────────────────────────────────────────
+
+class BackfillBucketsBody(BaseModel):
+    source_type: str = "airtable"
+
+
+@router.post("/backfill-buckets")
+async def backfill_buckets(
+    body: BackfillBucketsBody,
+    user: CurrentUser = Depends(get_current_user),
+):
+    """
+    Stamp meta_bucket, display_tier, and ingest_suppressed onto existing mapping
+    entries that were created before the bucket classification system.
+
+    Only entries missing meta_bucket are updated — explicit studio overrides are
+    never overwritten. Safe to call multiple times (idempotent).
+    """
+    owner_type, owner_id = _owner(user)
+
+    r = await db_client.get(
+        _url("/rest/v1/source_field_mappings"),
+        params={
+            "owner_type":  f"eq.{owner_type}",
+            "owner_id":    f"eq.{owner_id}",
+            "source_type": f"eq.{body.source_type}",
+            "select":      "mappings",
+        },
+        headers=_headers(),
+    )
+    rows = r.json()
+    if not rows:
+        return {"ok": True, "stamped": 0, "already_classified": 0, "message": "No mappings found"}
+
+    mappings: list[dict] = rows[0].get("mappings") or []
+
+    stamped = 0
+    already_classified = 0
+    updated: list[dict] = []
+
+    for m in mappings:
+        if m.get("meta_bucket"):
+            already_classified += 1
+            updated.append(m)
+            continue
+
+        bucket, tier, suppressed = classify_field(
+            field_name=m.get("source_field_name", ""),
+            field_type=m.get("source_field_type", "unknown"),
+            source_type=body.source_type,
+            paw_level="asset",
+        )
+        updated.append({
+            **m,
+            "meta_bucket":       bucket,
+            "display_tier":      tier,
+            "ingest_suppressed": suppressed,
+        })
+        stamped += 1
+
+    if stamped:
+        patch_r = await db_client.post(
+            _url("/rest/v1/source_field_mappings?on_conflict=owner_type,owner_id,source_type"),
+            headers=_headers({"Prefer": "resolution=merge-duplicates,return=minimal"}),
+            json={
+                "owner_type":  owner_type,
+                "owner_id":    owner_id,
+                "source_type": body.source_type,
+                "mappings":    updated,
+            },
+        )
+        patch_r.raise_for_status()
+        log.info(
+            "backfill_buckets: stamped %d entries for %s/%s",
+            stamped, owner_type, owner_id,
+        )
+
+    return {
+        "ok":                True,
+        "stamped":           stamped,
+        "already_classified": already_classified,
+        "total":             len(mappings),
+    }
 
 
 # ── Reset ─────────────────────────────────────────────────────────────────────

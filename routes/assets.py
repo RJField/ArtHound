@@ -59,6 +59,7 @@ def _build_asset_response(
     product_name_to_id: dict,
     item_type_id_to_name: dict,
     slot_to_field_name: dict,
+    field_to_tier: dict | None = None,
 ) -> dict:
     meta = row.get("meta") or {}
 
@@ -107,9 +108,12 @@ def _build_asset_response(
     # Fields to surface with a friendlier label.
     _RENAME = {"_jira_key": "Jira Key"}
 
+    _field_to_tier = field_to_tier or {}
     raw_fields = {}
     for k, v in meta.items():
-        if k in _HIDDEN or k in _HIDDEN_VALUES:
+        # Tier-based suppression (new studios): hidden fields never reach the UI.
+        # Fallback: hardcoded _HIDDEN list for studios without bucket data yet.
+        if _field_to_tier.get(k) == "hidden" or k in _HIDDEN or k in _HIDDEN_VALUES:
             continue
         display = _fmt(v)
         if display is not None:
@@ -164,8 +168,14 @@ async def _fetch_item_types_map(owner_type: str, owner_id: str) -> dict:
     return {r["source_record_id"]: r["name"] for r in rows}
 
 
-async def _fetch_slot_field_names(owner_type: str, owner_id: str) -> dict[str, str]:
-    """Return {arthound_slot: source_field_name} from this owner's source_field_mappings."""
+async def _fetch_mapping_data(owner_type: str, owner_id: str) -> tuple[dict, dict]:
+    """
+    Return (slot_to_field_name, field_to_tier) from this owner's source_field_mappings.
+
+    slot_to_field_name: {arthound_slot: source_field_name}
+    field_to_tier:      {source_field_name: display_tier} — used to suppress hidden fields
+                        in _build_asset_response. Missing keys treated as 'secondary'.
+    """
     r = await db_client.get(
         _url("/rest/v1/source_field_mappings"),
         params={
@@ -177,13 +187,25 @@ async def _fetch_slot_field_names(owner_type: str, owner_id: str) -> dict[str, s
         headers=_headers(),
     )
     if not r.is_success or not r.json():
-        return {}
+        return {}, {}
     mappings = r.json()[0].get("mappings") or []
-    return {
+    slot_to_field = {
         m["arthound_slot"]: m["source_field_name"]
         for m in mappings
         if m.get("arthound_slot") and m.get("source_field_name")
     }
+    field_to_tier = {
+        m["source_field_name"]: m.get("display_tier", "secondary")
+        for m in mappings
+        if m.get("source_field_name") and m.get("display_tier")
+    }
+    return slot_to_field, field_to_tier
+
+
+async def _fetch_slot_field_names(owner_type: str, owner_id: str) -> dict[str, str]:
+    """Compatibility shim — returns only slot_to_field_name."""
+    slot_to_field, _ = await _fetch_mapping_data(owner_type, owner_id)
+    return slot_to_field
 
 
 # ── Products ──────────────────────────────────────────────────────────────────
@@ -239,10 +261,10 @@ async def get_assets(
     owner_type, owner_id = _owner(current_user)
 
     # Fetch reference maps first — needed to resolve the product filter value.
-    (prod_id_to_name, prod_name_to_id), it_id_to_name, slot_field_names = await asyncio.gather(
+    (prod_id_to_name, prod_name_to_id), it_id_to_name, (slot_field_names, field_to_tier) = await asyncio.gather(
         _fetch_products_map(owner_type, owner_id),
         _fetch_item_types_map(owner_type, owner_id),
-        _fetch_slot_field_names(owner_type, owner_id),
+        _fetch_mapping_data(owner_type, owner_id),
     )
 
     asset_params = {
@@ -274,7 +296,7 @@ async def get_assets(
     asset_r.raise_for_status()
     rows = asset_r.json()
 
-    return [_build_asset_response(r, prod_id_to_name, prod_name_to_id, it_id_to_name, slot_field_names) for r in rows]
+    return [_build_asset_response(r, prod_id_to_name, prod_name_to_id, it_id_to_name, slot_field_names, field_to_tier) for r in rows]
 
 
 _SLOT_LABELS: dict[str, str] = {
@@ -325,6 +347,9 @@ async def get_view_schema(user: CurrentUser = Depends(get_current_user)):
                 "slotKey":        slot,
                 "fieldType":      m.get("source_field_type", "singleLineText"),
                 "defaultVisible": slot in _DEFAULT_VISIBLE_SLOTS,
+                "metaBucket":     None,
+                "displayTier":    "primary",
+                "ingestSuppressed": False,
             })
 
     for slot, label in _SLOT_LABELS.items():
@@ -336,18 +361,31 @@ async def get_view_schema(user: CurrentUser = Depends(get_current_user)):
                 "slotKey":        slot,
                 "fieldType":      "singleLineText",
                 "defaultVisible": slot in _DEFAULT_VISIBLE_SLOTS,
+                "metaBucket":     None,
+                "displayTier":    "primary",
+                "ingestSuppressed": False,
             })
 
     for m in mappings:
-        if m.get("arthound_slot") is None:
-            columns.append({
-                "id":             f"meta:{m['source_field_name']}",
-                "label":          m["source_field_name"],
-                "source":         "meta",
-                "fieldName":      m["source_field_name"],
-                "fieldType":      m.get("source_field_type", "singleLineText"),
-                "defaultVisible": False,
-            })
+        if m.get("arthound_slot") is not None:
+            continue
+        tier      = m.get("display_tier", "secondary")
+        bucket    = m.get("meta_bucket", "custom")
+        suppressed = m.get("ingest_suppressed", False)
+        # Hidden fields are never surfaced in the grid or column picker.
+        if tier == "hidden":
+            continue
+        columns.append({
+            "id":               f"meta:{m['source_field_name']}",
+            "label":            m["source_field_name"],
+            "source":           "meta",
+            "fieldName":        m["source_field_name"],
+            "fieldType":        m.get("source_field_type", "singleLineText"),
+            "defaultVisible":   tier == "primary",
+            "metaBucket":       bucket,
+            "displayTier":      tier,
+            "ingestSuppressed": suppressed,
+        })
 
     return {"columns": columns}
 
@@ -382,7 +420,7 @@ async def get_asset_fields(user: CurrentUser = Depends(get_current_user)):
 async def get_asset(asset_id: str, current_user: CurrentUser = Depends(get_current_user)):
     owner_type, owner_id = _owner(current_user)
 
-    asset_r, (prod_id_to_name, prod_name_to_id), it_id_to_name, slot_field_names = await asyncio.gather(
+    asset_r, (prod_id_to_name, prod_name_to_id), it_id_to_name, (slot_field_names, field_to_tier) = await asyncio.gather(
         db_client.get(
             _url("/rest/v1/replicated_assets"),
             params={
@@ -394,13 +432,13 @@ async def get_asset(asset_id: str, current_user: CurrentUser = Depends(get_curre
         ),
         _fetch_products_map(owner_type, owner_id),
         _fetch_item_types_map(owner_type, owner_id),
-        _fetch_slot_field_names(owner_type, owner_id),
+        _fetch_mapping_data(owner_type, owner_id),
     )
     asset_r.raise_for_status()
     rows = asset_r.json()
     if not rows:
         raise HTTPException(status_code=404, detail="Asset not found")
-    return _build_asset_response(rows[0], prod_id_to_name, prod_name_to_id, it_id_to_name, slot_field_names)
+    return _build_asset_response(rows[0], prod_id_to_name, prod_name_to_id, it_id_to_name, slot_field_names, field_to_tier)
 
 
 # ── Name update (write-back to source) ───────────────────────────────────────

@@ -246,7 +246,9 @@ async def sync_single_asset(
 
             mappings = await _get_mappings(owner_type, owner_id, source_type)
             if mappings is None:
-                mappings = default_mappings_from_schema(schema_fields)
+                mappings = default_mappings_from_schema(
+                    schema_fields, source_type=source_type, paw_level="asset"
+                )
 
         # Build reference resolver from already-replicated reference data — no extra source API calls.
         r_prods = await db_client.get(
@@ -289,12 +291,20 @@ async def sync_single_asset(
         elif source_type == "jira" and entity_defs.get("product"):
             product_rel_field_id = (asset_def.get("rel_field_id") or "parent") if asset_def else "parent"
 
+        _excluded: set[str] = {
+            key
+            for m in mappings if m.get("ingest_suppressed")
+            for key in (m.get("source_field_id"), m.get("source_field_name"))
+            if key
+        }
+
         norm = normalize_asset(
             raw, mappings,
             field_type_map=field_type_map,
             reference_resolver=reference_resolver,
             adapter=field_adapter,
             product_rel_field_id=product_rel_field_id,
+            suppressed_names=_excluded or None,
         )
 
         canonical_map: dict[str, str] = {}
@@ -367,9 +377,20 @@ async def run_sync(
 
             mappings = await _get_mappings(owner_type, owner_id, source_type)
             if mappings is None:
-                mappings = default_mappings_from_schema(schema_fields)
+                mappings = default_mappings_from_schema(
+                    schema_fields, source_type=source_type, paw_level="asset"
+                )
                 await save_default_mappings(owner_type, owner_id, source_type, mappings)
                 log.info("Generated default field mappings for %s/%s", owner_type, owner_id)
+
+            # Build excluded field set from suppressed mappings so connectors can
+            # strip them at record construction time (v1 client-side; v2 API-level).
+            excluded_field_ids: set[str] = {
+                key
+                for m in mappings if m.get("ingest_suppressed")
+                for key in (m.get("source_field_id"), m.get("source_field_name"))
+                if key
+            }
 
             # ── Fetch — use entity definitions when available, else config.tables
             if asset_def:
@@ -377,6 +398,7 @@ async def run_sync(
                     table_id=asset_def["table_id"],
                     filter_formula=connector.build_entity_filter(asset_def),
                     since=cursor if is_delta else None,
+                    excluded_field_ids=excluded_field_ids or None,
                 )
             else:
                 raw_assets = await connector.fetch_assets(since=cursor if is_delta else None)
@@ -409,6 +431,7 @@ async def run_sync(
                 raw_work = await connector.fetch_entity(
                     table_id=work_def["table_id"],
                     filter_formula=connector.build_entity_filter(work_def),
+                    excluded_field_ids=excluded_field_ids or None,
                 )
             else:
                 raw_work = []
@@ -490,6 +513,7 @@ async def run_sync(
                     reference_resolver=reference_resolver,
                     adapter=field_adapter,
                     product_rel_field_id=product_rel_field_id,
+                    suppressed_names=excluded_field_ids or None,
                 )
                 for r in raw_assets
             ]

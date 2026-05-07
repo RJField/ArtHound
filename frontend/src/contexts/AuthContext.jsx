@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect, useRef } from 'react'
+import { createContext, useContext, useState, useEffect } from 'react'
 import { getSupabase } from '../lib/supabase'
 import { apiFetch } from '../lib/api'
 
@@ -8,7 +8,6 @@ export function AuthProvider({ children }) {
   const [session, setSession]       = useState(undefined) // undefined = loading
   const [profile, setProfile]       = useState(null)      // from /api/user/me
   const [profileLoading, setProfileLoading] = useState(false)
-  const syncFired                   = useRef(false)
 
   useEffect(() => {
     getSupabase().then(sb => {
@@ -37,16 +36,9 @@ export function AuthProvider({ children }) {
       })
   }, [session])
 
-  // Trigger background sync once per login
-  useEffect(() => {
-    if (!session || syncFired.current) return
-    syncFired.current = true
-    apiFetch('/api/sync/run', { method: 'POST', body: JSON.stringify({}) }).catch(console.warn)
-  }, [session])
 
   async function signOut() {
     const sb = await getSupabase()
-    syncFired.current = false
     await sb.auth.signOut()
   }
 
