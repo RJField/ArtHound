@@ -12,7 +12,7 @@ _WORK_ESTIMATE_ALIASES = ["estimate", "duration", "hours", "days", "frames", "ti
 
 ARTHOUND_SLOTS = {
     "name", "dev_name", "item_type", "priority",
-    "product", "project_date", "status", "asset_number",
+    "product", "project_date", "status", "asset_number", "team",
 }
 
 _SLOT_ALIASES: dict[str, list[str]] = {
@@ -24,6 +24,7 @@ _SLOT_ALIASES: dict[str, list[str]] = {
     "project_date": ["project date", "due date", "delivery date", "target date", "date"],
     "status":       ["status", "state", "phase", "production status"],
     "asset_number": ["asset number", "asset #", "asset no", "number", "asset id"],
+    "team":         ["team", "team (from product)", "art team", "production team", "assigned team"],
 }
 
 _NAME_TO_SLOT: dict[str, str] = {
@@ -270,6 +271,12 @@ def _coerce_slot(slot: str, canonical: Any, adapter=None) -> object:
     _adp = adapter or _airtable_adapter
 
     if slot == "product":
+        # Bare integers/floats are never valid product names — they indicate a
+        # numeric field (autoNumber, formula, priority, etc.) is wrongly resolving
+        # to this slot. Reject them so a correctly-mapped linked-record field
+        # (which may have iterated first) is not overwritten.
+        if isinstance(canonical, (int, float)):
+            return None
         # Prefer the display name; fall back to source_id so the slot is never
         # null for a linked asset (critical for DB-level product filtering).
         if isinstance(canonical, list) and canonical:

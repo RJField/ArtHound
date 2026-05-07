@@ -195,43 +195,49 @@ export default function AssetGrid({
         )}
       </div>
 
-      {/* Selection actions */}
-      <div className="border-t border-border px-3 py-2 flex flex-col gap-2 shrink-0">
-        <div className="flex items-center gap-1.5">
-          <span className="text-muted text-xs flex-1">
-            {selectedIds.size === 0 ? 'None selected' : `${selectedIds.size} selected`}
-          </span>
-        </div>
-        <div className="flex gap-1.5">
-          <button
-            onClick={onGenerate}
-            disabled={genBusy || selectedIds.size === 0}
-            className="flex-1 px-2 py-1.5 rounded-md bg-surface-2 text-foreground text-xs hover:bg-surface-3 cursor-pointer disabled:opacity-40 transition-colors"
-          >
-            {genBusy ? 'Generating…' : 'Generate Work'}
-          </button>
-          <button
-            onClick={onSend}
-            disabled={selectedIds.size === 0}
-            className="px-2 py-1.5 rounded-md bg-accent text-white text-xs hover:bg-accent-hover cursor-pointer disabled:opacity-40 transition-colors"
-          >
-            Send
-          </button>
-        </div>
-        {genResult && (
-          <div className="text-xs flex flex-col gap-1">
-            {genResult.created > 0 && (
-              <span className="text-success">✓ {genResult.created} tasks written</span>
-            )}
-            {genResult.failed?.map((f, i) => (
-              <div key={i} className="text-error">✕ {f.error}</div>
-            ))}
-            {genResult.warnings?.map((w, i) => (
-              <div key={i} className="text-muted">· {w}</div>
-            ))}
+      {/* Selection actions — studio only */}
+      {(onGenerate || onSend) && (
+        <div className="border-t border-border px-3 py-2 flex flex-col gap-2 shrink-0">
+          <div className="flex items-center gap-1.5">
+            <span className="text-muted text-xs flex-1">
+              {selectedIds.size === 0 ? 'None selected' : `${selectedIds.size} selected`}
+            </span>
           </div>
-        )}
-      </div>
+          <div className="flex gap-1.5">
+            {onGenerate && (
+              <button
+                onClick={onGenerate}
+                disabled={genBusy || selectedIds.size === 0}
+                className="flex-1 px-2 py-1.5 rounded-md bg-surface-2 text-foreground text-xs hover:bg-surface-3 cursor-pointer disabled:opacity-40 transition-colors"
+              >
+                {genBusy ? 'Generating…' : 'Generate Work'}
+              </button>
+            )}
+            {onSend && (
+              <button
+                onClick={onSend}
+                disabled={selectedIds.size === 0}
+                className="px-2 py-1.5 rounded-md bg-accent text-white text-xs hover:bg-accent-hover cursor-pointer disabled:opacity-40 transition-colors"
+              >
+                Send
+              </button>
+            )}
+          </div>
+          {genResult && (
+            <div className="text-xs flex flex-col gap-1">
+              {genResult.created > 0 && (
+                <span className="text-success">✓ {genResult.created} tasks written</span>
+              )}
+              {genResult.failed?.map((f, i) => (
+                <div key={i} className="text-error">✕ {f.error}</div>
+              ))}
+              {genResult.warnings?.map((w, i) => (
+                <div key={i} className="text-muted">· {w}</div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }

@@ -35,10 +35,9 @@ function AuthGuard() {
   )
 }
 
-// Redirect studio users who haven't completed init to the wizard.
-// Vendors are not gated — they don't manage a source tool.
+// Redirect users who haven't completed source init to the wizard.
 function InitGuard() {
-  const { session, loading, profile, profileLoading, role, initialized } = useAuth()
+  const { session, loading, profile, profileLoading, initialized } = useAuth()
 
   if (loading || !session) return null
 
@@ -50,7 +49,7 @@ function InitGuard() {
     )
   }
 
-  if (role === 'studio' && !initialized) {
+  if (!initialized) {
     return <Navigate to="/init" replace />
   }
   return <Outlet />

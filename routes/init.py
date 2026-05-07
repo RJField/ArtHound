@@ -21,7 +21,7 @@ import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 
-from lib.auth import CurrentUser, get_current_user, require_studio
+from lib.auth import CurrentUser, get_current_user
 from lib.crypto import decrypt_credentials, encrypt_credentials
 from lib.db import db_client, _url, _headers
 from lib.sync.connectors.airtable import AirtableConnector, build_filter_formula
@@ -575,7 +575,7 @@ class StartBody(BaseModel):
 async def start_init(
     body: StartBody,
     background_tasks: BackgroundTasks,
-    user: CurrentUser = Depends(require_studio),
+    user: CurrentUser = Depends(get_current_user),
 ):
     """Gate-check credentials + mappings, then enqueue an init sync job."""
     owner_type, owner_id = _owner(user)
@@ -643,7 +643,7 @@ class ResetBody(BaseModel):
 async def reset_project(
     body: ResetBody,
     background_tasks: BackgroundTasks,
-    user: CurrentUser = Depends(require_studio),
+    user: CurrentUser = Depends(get_current_user),
 ):
     """Wipe replicated data, soft-delete tasks, clear cursor, then re-enqueue."""
     owner_type, owner_id = _owner(user)
@@ -680,12 +680,12 @@ async def reset_project(
         headers=_headers({"Prefer": "return=minimal"}),
     )
 
-    if owner_type == "studio":
-        await db_client.patch(
-            _url(f"/rest/v1/studios?id=eq.{owner_id}"),
-            json={"initialized_at": None},
-            headers=_headers({"Prefer": "return=minimal"}),
-        )
+    org_table = "studios" if owner_type == "studio" else "vendors"
+    await db_client.patch(
+        _url(f"/rest/v1/{org_table}?id=eq.{owner_id}"),
+        json={"initialized_at": None},
+        headers=_headers({"Prefer": "return=minimal"}),
+    )
 
     r = await db_client.post(
         _url("/rest/v1/init_jobs"),

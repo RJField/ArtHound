@@ -1,6 +1,9 @@
 import logging
+import re
 from datetime import datetime, timezone, timedelta
 from typing import Optional
+
+import httpx
 
 log = logging.getLogger(__name__)
 
@@ -339,7 +342,7 @@ async def get_vendor_inbox(user: CurrentUser = Depends(require_vendor)):
         _url("/rest/v1/payload_dispatches"),
         params={
             "recipient_vendor_id": f"eq.{user.vendor_id}",
-            "select": "id,asset_id,sender_studio_id,expires_at,revoked_at,created_at,payload_data",
+            "select": "id,asset_id,sender_studio_id,expires_at,revoked_at,created_at,payload_data,payload_field_mappings(ingested_at,ingested_source_record_id)",
             "order": "created_at.desc",
         },
         headers=_headers(),
@@ -461,6 +464,304 @@ async def apply_mapping(dispatch_id: str, user: CurrentUser = Depends(require_ve
     )
     await _log(dispatch_id, "applied")
     return {"ok": True, "mappings": rows[0]["mappings"]}
+
+
+# ── ingest schema (vendor: payload fields + their source schema for mapping UI) ──
+
+@router.get("/{dispatch_id}/ingest-schema")
+async def get_ingest_schema(dispatch_id: str, user: CurrentUser = Depends(require_vendor)):
+    dispatch = await _get_dispatch(
+        dispatch_id, select="id,recipient_vendor_id,revoked_at,expires_at,payload_data"
+    )
+    if not dispatch or dispatch.get("recipient_vendor_id") != user.vendor_id:
+        raise HTTPException(status_code=404, detail="Dispatch not found")
+    _assert_valid(dispatch)
+
+    # Fetch any existing saved mapping to pre-populate the UI
+    r_mapping = await db_client.get(
+        _url("/rest/v1/payload_field_mappings"),
+        params={
+            "dispatch_id": f"eq.{dispatch_id}",
+            "recipient_vendor_id": f"eq.{user.vendor_id}",
+            "select": "target_table_id,target_issue_type,mappings,ingested_at,ingested_source_record_id",
+        },
+        headers=_headers(),
+    )
+    existing_mapping = r_mapping.json()[0] if r_mapping.json() else None
+
+    # Resolve the vendor's asset entity definition before opening the HTTP client
+    # so we can make connector calls (fetch_project_issue_types) while it's still open.
+    r_entity = await db_client.get(
+        _url("/rest/v1/source_entity_definitions"),
+        params={
+            "owner_type":  "eq.vendor",
+            "owner_id":    f"eq.{user.vendor_id}",
+            "entity_type": "eq.asset",
+            "select":      "table_id,table_name,filters,jql_filter,source_type",
+        },
+        headers=_headers(),
+    )
+    entity_rows = r_entity.json()
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        source_type, connector = await _get_vendor_connector(user.vendor_id, client)
+        source_schema = await connector.fetch_base_schema()
+
+        auto_target = None
+        if entity_rows:
+            entity = entity_rows[0]
+            issue_type = None
+            if source_type == "jira":
+                # Jira stores the issue type in jql_filter (e.g. issuetype = "Feature").
+                # The init wizard never populates filters[] for Jira — parse JQL directly.
+                jql = entity.get("jql_filter") or ""
+                m = re.search(r'issuetype\s*=\s*["\']?([^"\')\s,]+)["\']?', jql, re.IGNORECASE)
+                if m:
+                    issue_type = m.group(1)
+                else:
+                    # Fall back to structured filters (future-proofing)
+                    for f in (entity.get("filters") or []):
+                        field_ref = (f.get("field_name") or f.get("field_id") or "").lower()
+                        if f.get("operator") == "eq" and "issuetype" in field_ref:
+                            issue_type = f.get("value")
+                            break
+            auto_target = {
+                "table_id":   entity["table_id"],
+                "table_name": entity["table_name"],
+                "issue_type": issue_type,
+            }
+
+    payload_data = dispatch.get("payload_data") or {}
+    data = payload_data.get("data") or {}
+    schema_list = payload_data.get("schema") or []
+    schema_by_key = {f["key"]: f for f in schema_list}
+
+    payload_fields = [
+        {
+            "key": key,
+            "label": schema_by_key.get(key, {}).get("label", key),
+            "type": schema_by_key.get(key, {}).get("type", "text"),
+            "value": value,
+        }
+        for key, value in data.items()
+    ]
+
+    return {
+        "source_type":    source_type,
+        "payload_fields": payload_fields,
+        "source_schema":  source_schema,
+        "auto_target":    auto_target,
+        "existing_mapping": existing_mapping,
+    }
+
+
+# ── ingest (vendor: write payload to their source tool using the saved mapping) ──
+
+@router.post("/{dispatch_id}/ingest")
+async def do_ingest(dispatch_id: str, user: CurrentUser = Depends(require_vendor)):
+    r_mapping = await db_client.get(
+        _url("/rest/v1/payload_field_mappings"),
+        params={
+            "dispatch_id": f"eq.{dispatch_id}",
+            "recipient_vendor_id": f"eq.{user.vendor_id}",
+            "select": "*",
+        },
+        headers=_headers(),
+    )
+    rows = r_mapping.json()
+    if not rows:
+        raise HTTPException(status_code=404, detail="No mapping saved — save your field mapping first")
+    mapping_row = rows[0]
+    if mapping_row.get("ingested_at"):
+        raise HTTPException(status_code=409, detail="Already ingested")
+
+    mappings = mapping_row.get("mappings") or {}
+
+    dispatch = await _get_dispatch(
+        dispatch_id, select="id,recipient_vendor_id,revoked_at,expires_at,payload_data"
+    )
+    if not dispatch or dispatch.get("recipient_vendor_id") != user.vendor_id:
+        raise HTTPException(status_code=404, detail="Dispatch not found")
+    _assert_valid(dispatch)
+
+    data = (dispatch.get("payload_data") or {}).get("data") or {}
+
+    # Extract meta-summary config before iterating direct mappings.
+    _RESERVED = {"_meta_summary_target", "_meta_summary_fields"}
+    meta_target      = mappings.get("_meta_summary_target")
+    meta_field_keys  = mappings.get("_meta_summary_fields") or []
+
+    # Build the target record fields from the saved mapping.
+    # Skip blank source_field_id (user left "— skip —") and reserved meta keys.
+    target_fields: dict = {}
+    for payload_key, source_field_id in mappings.items():
+        if payload_key in _RESERVED or not source_field_id:
+            continue
+        raw = data.get(payload_key)
+        if raw is None:
+            continue
+        target_fields[source_field_id] = raw if isinstance(raw, (dict, list)) else str(raw)
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        source_type, connector = await _get_vendor_connector(user.vendor_id, client)
+
+        # Resolve the target from the entity definition — always the authoritative source.
+        # Must be inside the async with block so we can filter by source_type.
+        r_entity = await db_client.get(
+            _url("/rest/v1/source_entity_definitions"),
+            params={
+                "owner_type":  "eq.vendor",
+                "owner_id":    f"eq.{user.vendor_id}",
+                "source_type": f"eq.{source_type}",
+                "entity_type": "eq.asset",
+                "select":      "table_id,table_name,jql_filter,filters",
+            },
+            headers=_headers(),
+        )
+        entity_rows = r_entity.json()
+        if not entity_rows:
+            raise HTTPException(status_code=400, detail="No asset entity defined — complete your source setup first")
+        entity = entity_rows[0]
+        target_table_id = entity["table_id"]
+
+        # Build and attach the meta summary block if the vendor configured one.
+        if meta_target and meta_field_keys:
+            payload_schema = (dispatch.get("payload_data") or {}).get("schema") or []
+            label_by_key   = {f["key"]: f.get("label", f["key"]) for f in payload_schema}
+            lines = []
+            for key in meta_field_keys:
+                val = data.get(key)
+                if val is None:
+                    continue
+                label = label_by_key.get(key, key)
+                lines.append(f"{label}: {_format_meta_value(val)}")
+            if lines:
+                text = "\n".join(lines)
+                if source_type == "jira" and getattr(connector, "_deployment", "cloud") == "cloud" and meta_target == "description":
+                    target_fields[meta_target] = _to_adf(text)
+                else:
+                    target_fields[meta_target] = text
+
+        if source_type == "jira":
+            # Jira text fields must be strings. Coerce lists and plain dicts.
+            # ADF objects (type=doc) are only valid for the description field.
+            for k, v in list(target_fields.items()):
+                if isinstance(v, list):
+                    target_fields[k] = ", ".join(str(i) for i in v)
+                elif isinstance(v, dict):
+                    is_adf = v.get("type") == "doc" and "version" in v
+                    if is_adf and k != "description":
+                        lines = []
+                        for block in v.get("content", []):
+                            for inline in block.get("content", []):
+                                if inline.get("type") == "text":
+                                    lines.append(inline.get("text", ""))
+                        target_fields[k] = "\n".join(lines)
+                    elif not is_adf:
+                        target_fields[k] = _format_meta_value(v)
+
+            # Parse issue type from the entity's jql_filter — the single source of truth.
+            jql = entity.get("jql_filter") or ""
+            m = re.search(r'issuetype\s*=\s*["\']?([^"\')\s,]+)["\']?', jql, re.IGNORECASE)
+            resolved_issue_type = m.group(1) if m else None
+            if not resolved_issue_type:
+                for f in (entity.get("filters") or []):
+                    field_ref = (f.get("field_name") or f.get("field_id") or "").lower()
+                    if f.get("operator") == "eq" and "issuetype" in field_ref:
+                        resolved_issue_type = f.get("value")
+                        break
+            if not resolved_issue_type:
+                raise HTTPException(status_code=400, detail="Asset issue type not defined — check your source setup")
+
+            # Named-object fields: Jira Cloud v3 requires {"name": value} not a plain string.
+            _JIRA_NAMED_OBJ = {"priority", "assignee", "reporter", "resolution", "status", "parent"}
+            for k, v in list(target_fields.items()):
+                if k in _JIRA_NAMED_OBJ and isinstance(v, str) and v:
+                    target_fields[k] = {"name": v}
+
+            # Description must be ADF on Cloud v3 — wrap any plain string.
+            if getattr(connector, "_deployment", "cloud") == "cloud":
+                desc = target_fields.get("description")
+                if isinstance(desc, str):
+                    target_fields["description"] = _to_adf(desc)
+
+            project_ref = {"id": target_table_id} if target_table_id.isdigit() else {"key": target_table_id}
+            # summary is a single-line Jira field — collapse any newlines.
+            if isinstance(target_fields.get("summary"), str):
+                target_fields["summary"] = target_fields["summary"].replace("\n", " | ")
+
+            target_fields.pop("project", None)
+            target_fields.pop("issuetype", None)
+            target_fields["project"]   = project_ref
+            target_fields["issuetype"] = {"name": resolved_issue_type}
+            source_record_id = await connector.create_issue(target_fields)
+        else:
+            source_record_id = await connector.create_record(target_table_id, target_fields)
+
+    await db_client.patch(
+        _url("/rest/v1/payload_field_mappings"),
+        params={"dispatch_id": f"eq.{dispatch_id}", "recipient_vendor_id": f"eq.{user.vendor_id}"},
+        headers=_headers({"Prefer": "return=minimal"}),
+        json={
+            "ingested_at": _now_iso(),
+            "ingested_source_record_id": source_record_id,
+            "ingested_by_user_id": user.id,
+        },
+    )
+    await _log(dispatch_id, "ingested", detail={"source_record_id": source_record_id})
+    return {"ok": True, "source_record_id": source_record_id}
+
+
+# ── internal: build a connector for a vendor's connected source tool ──────────
+
+async def _get_vendor_connector(vendor_id: str, client: httpx.AsyncClient):
+    r = await db_client.get(
+        _url("/rest/v1/source_credentials"),
+        params={
+            "owner_type": "eq.vendor",
+            "owner_id": f"eq.{vendor_id}",
+            "select": "source_type,credentials",
+        },
+        headers=_headers(),
+    )
+    rows = r.json()
+    if not rows:
+        raise HTTPException(
+            status_code=400,
+            detail="No source connection found — connect your source tool first",
+        )
+
+    source_type = rows[0]["source_type"]
+
+    if source_type == "jira":
+        from lib.token_refresh import get_jira_token
+        creds = await get_jira_token("vendor", vendor_id, client)
+    else:
+        from lib.crypto import decrypt_credentials
+        creds = decrypt_credentials(rows[0]["credentials"])
+
+    from lib.sync.runner import _build_connector
+    connector = _build_connector(source_type, creds, client)
+    return source_type, connector
+
+
+def _format_meta_value(v) -> str:
+    if isinstance(v, list):
+        return ", ".join(str(i) for i in v)
+    if isinstance(v, dict):
+        return ", ".join(f"{k}: {val}" for k, val in v.items())
+    return str(v)
+
+
+def _to_adf(text: str) -> dict:
+    """Wrap plain text in Atlassian Document Format for Jira Cloud v3."""
+    content = []
+    for line in (text.split("\n") or [""]):
+        content.append({
+            "type": "paragraph",
+            "content": [{"type": "text", "text": line or " "}],
+        })
+    return {"type": "doc", "version": 1, "content": content}
 
 
 # ── audit log (sender or recipient) ───────────────────────────────────────────

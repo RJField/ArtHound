@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { apiFetch } from '../lib/api'
 import NumbersBotModal from '../components/NumbersBotModal'
+import LoreBotModal from '../components/LoreBotModal'
 
 function timeAgo(iso) {
   if (!iso) return null
@@ -30,7 +31,7 @@ function StatCard({ label, value, sub, onClick, loading }) {
 
 const BOTS = [
   { icon: '◈', name: 'NumberBot', desc: 'Estimation audits + variance flags', live: true },
-  { icon: '✦', name: 'LoreBot',   desc: 'Narrative & lore consistency',        live: false },
+  { icon: '✦', name: 'LoreBot',   desc: 'In dev - proceed with caution.',      live: true },
   { icon: '⇄', name: 'OpsBot',    desc: 'Pipeline handoff automation',          live: false },
   { icon: '⊕', name: 'ATCBot',    desc: 'Asset traffic control',                live: false },
 ]
@@ -40,7 +41,7 @@ export default function StudioHome() {
   const navigate = useNavigate()
   const [summary, setSummary]   = useState(null)
   const [error, setError]       = useState(null)
-  const [botOpen, setBotOpen]   = useState(false)
+  const [openBot, setOpenBot]   = useState(null)
 
   useEffect(() => {
     apiFetch('/api/user/studio-summary')
@@ -122,7 +123,7 @@ export default function StudioHome() {
             <div
               key={bot.name}
               className={`flex flex-col gap-1 px-3 py-2.5 rounded-lg border border-border ${bot.live ? 'cursor-pointer hover:border-accent/50 transition-colors' : 'opacity-50'}`}
-              onClick={bot.live ? () => setBotOpen(true) : undefined}
+              onClick={bot.live ? () => setOpenBot(bot.name) : undefined}
             >
               <div className="flex items-center justify-between">
                 <span className="text-accent text-base">{bot.icon}</span>
@@ -137,7 +138,8 @@ export default function StudioHome() {
         </div>
       </div>
 
-      {botOpen && <NumbersBotModal onClose={() => setBotOpen(false)} />}
+      {openBot === 'NumberBot' && <NumbersBotModal onClose={() => setOpenBot(null)} />}
+      {openBot === 'LoreBot'   && <LoreBotModal    onClose={() => setOpenBot(null)} />}
     </main>
   )
 }

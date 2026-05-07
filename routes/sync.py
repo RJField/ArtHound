@@ -74,7 +74,7 @@ async def get_credential_status(
 # ── Manual sync trigger ───────────────────────────────────────────────────────
 
 class SyncBody(BaseModel):
-    source_type: str = "airtable"
+    source_type: str | None = None  # None = auto-detect from stored credentials
     full: bool = False  # True = ignore cursor, re-fetch everything
 
 
@@ -84,17 +84,35 @@ async def trigger_sync(
     background_tasks: BackgroundTasks,
     user: CurrentUser = Depends(get_current_user),
 ):
-    """Manually trigger a sync. Runs in the background — returns immediately."""
+    """Manually trigger a sync. Runs in the background — returns immediately.
+    If source_type is omitted, it is resolved from the owner's stored credentials."""
     owner_type = user.role
     owner_id   = user.studio_id if user.role == "studio" else user.vendor_id
     if not owner_id:
         raise HTTPException(status_code=403, detail="No studio/vendor linked to account")
 
+    source_type = body.source_type
+    if not source_type:
+        r = await db_client.get(
+            _url("/rest/v1/source_credentials"),
+            params={
+                "owner_type": f"eq.{owner_type}",
+                "owner_id":   f"eq.{owner_id}",
+                "select":     "source_type",
+                "limit":      "1",
+            },
+            headers=_headers(),
+        )
+        rows = r.json()
+        if not rows:
+            raise HTTPException(status_code=400, detail="No source credentials configured")
+        source_type = rows[0]["source_type"]
+
     background_tasks.add_task(
         run_sync,
         owner_type=owner_type,
         owner_id=owner_id,
-        source_type=body.source_type,
+        source_type=source_type,
         trigger="manual",
         full=body.full,
     )

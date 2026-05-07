@@ -73,6 +73,7 @@ class JiraConnector(BaseConnector):
     ):
         self._token = access_token
         self._client = client
+        self._deployment = deployment
 
         if deployment == "datacenter":
             if not instance_url:
@@ -194,6 +195,18 @@ class JiraConnector(BaseConnector):
         )
 
     # ── BaseConnector interface ────────────────────────────────────────────────
+
+    async def fetch_single_asset(
+        self, source_record_id: str, table_id: str | None = None
+    ) -> RawRecord | None:
+        r = await self._get_with_retry(
+            f"{self._base}/issue/{source_record_id}",
+            params={"fields": "*all"},
+        )
+        if r.status_code == 404:
+            return None
+        r.raise_for_status()
+        return self._to_raw_record(r.json())
 
     async def fetch_assets(self, since: str | None = None) -> list[RawRecord]:
         """Fallback: fetch all issues across all projects. Use fetch_entity when entity defs exist."""

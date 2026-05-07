@@ -55,6 +55,29 @@ export function payloadAttachmentUrl(dispatchId, canonicalAssetId, fieldKey, idx
   return `/api/attachments/payload/${dispatchId}/${canonicalAssetId}/${encodeURIComponent(fieldKey)}/${idx}`
 }
 
+// Multipart upload with JWT — no Content-Type header (browser sets boundary).
+export async function apiUpload(path, formData) {
+  const sb = await getSupabase()
+  const { data: { session } } = await sb.auth.getSession()
+  const token = session?.access_token
+  const res = await fetch(path, {
+    method: 'POST',
+    body: formData,
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail ?? body.error ?? res.statusText)
+  }
+  if (res.status === 204 || res.headers.get('content-length') === '0') return null
+  return res.json()
+}
+
+// Proxy URL for a review attachment stored in Supabase Storage.
+export function reviewAttachmentUrl(reviewId, attachmentId) {
+  return `/api/reviews/${reviewId}/attachments/${attachmentId}/content`
+}
+
 // Builds a resolve() fn for DetailModal linked-record fields.
 export function makeRecordResolver(tableKey, recordId, fallbackTitle) {
   return async () => {

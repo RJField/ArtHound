@@ -33,6 +33,7 @@ from routes.work import router as work_router
 from routes.synthetic import router as synthetic_router
 from routes.connectors.jira_oauth import router as jira_oauth_router
 from routes.attachments import router as attachments_router
+from routes.lorebot import router as lorebot_router
 
 log = logging.getLogger(__name__)
 
@@ -231,6 +232,7 @@ app.include_router(auth_router,           prefix="/api/auth")
 app.include_router(jira_oauth_router,     prefix="/api/connectors/jira/oauth")
 # Attachment proxy: /asset/* requires studio JWT; /payload/* accepts studio or vendor JWT
 app.include_router(attachments_router,    prefix="/api/attachments", dependencies=_auth)
+app.include_router(lorebot_router,        prefix="/api/lorebot",     dependencies=_auth)
 
 
 _REPLICATED_TABLE: dict[str, str] = {

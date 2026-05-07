@@ -64,10 +64,9 @@ async def _update_job(job_id: str, **kwargs) -> None:
 
 
 async def _set_initialized_at(owner_type: str, owner_id: str) -> None:
-    if owner_type != "studio":
-        return
+    table = "studios" if owner_type == "studio" else "vendors"
     await db_client.patch(
-        _url(f"/rest/v1/studios?id=eq.{owner_id}"),
+        _url(f"/rest/v1/{table}?id=eq.{owner_id}"),
         headers=_headers({"Prefer": "return=minimal"}),
         json={"initialized_at": datetime.now(timezone.utc).isoformat()},
     )

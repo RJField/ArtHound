@@ -37,7 +37,7 @@ async def get_me(user: CurrentUser = Depends(get_current_user)):
     elif user.role == "vendor" and user.vendor_id:
         r = await db_client.get(
             _url("/rest/v1/vendors"),
-            params={"id": f"eq.{user.vendor_id}", "select": "id,name"},
+            params={"id": f"eq.{user.vendor_id}", "select": "id,name,initialized_at"},
             headers=_headers(),
         )
         r.raise_for_status()
