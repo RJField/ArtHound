@@ -115,25 +115,40 @@ async def get_asset_attachment(
     filename = item.get("filename", "attachment")
     content_hash = item.get("content_hash")
 
-    # Fast path: already copied — stream directly from Supabase Storage.
+    # Fast path: already copied — serve directly from Supabase Storage.
     if content_hash:
         storage_url = _storage_api_url(f"/object/{_BUCKET}/{_storage_object_path(content_hash)}")
+        async with httpx.AsyncClient(timeout=60.0) as _sc:
+            r_s = await _sc.get(storage_url, headers=_storage_headers())
 
-        async def _stream_storage():
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                async with client.stream("GET", storage_url, headers=_storage_headers()) as resp:
-                    resp.raise_for_status()
-                    async for chunk in resp.aiter_bytes(65536):
-                        yield chunk
+        if r_s.is_success:
+            return Response(
+                content=r_s.content,
+                media_type=mimetype,
+                headers={
+                    "Cache-Control": "private, max-age=3600",
+                    "Content-Disposition": f'inline; filename="{filename}"',
+                },
+            )
 
-        return StreamingResponse(
-            _stream_storage(),
-            media_type=mimetype,
-            headers={
-                "Cache-Control": "private, max-age=3600",
-                "Content-Disposition": f'inline; filename="{filename}"',
+        if r_s.status_code != 404:
+            raise HTTPException(502, detail=f"Storage returned {r_s.status_code}")
+
+        # 404 — blob was purged while content_hash was still in meta.
+        # Clear the stale hash so the next view also re-downloads from source.
+        cleaned = list(field_data)
+        cleaned[idx] = {k: v for k, v in item.items() if k != "content_hash"}
+        await db_client.patch(
+            _url("/rest/v1/replicated_assets"),
+            params={
+                "canonical_asset_id": f"eq.{canonical_asset_id}",
+                "owner_type": "eq.studio",
+                "owner_id": f"eq.{caller.studio_id}",
             },
+            headers=_headers({"Prefer": "return=minimal"}),
+            json={"meta": {**meta, field_key: cleaned}},
         )
+        # Fall through to first-view path to re-download from source.
 
     # First-view: download from source, copy to Storage, patch meta, return bytes.
     source_url = item.get("url")
@@ -150,8 +165,13 @@ async def get_asset_attachment(
             # then re-read the asset meta so subsequent operations use the updated values.
             from lib.sync.runner import sync_single_asset
             source_record_id = rows[0].get("source_record_id")
+            log.warning(
+                "attachment 410 on first fetch: asset=%s field=%s idx=%d source_record_id=%s",
+                canonical_asset_id, field_key, idx, source_record_id,
+            )
             if source_record_id:
-                await sync_single_asset("studio", caller.studio_id, source_record_id, source_type)
+                sync_result = await sync_single_asset("studio", caller.studio_id, source_record_id, source_type)
+                log.warning("sync_single_asset result: %s", sync_result)
             else:
                 from lib.sync.runner import run_sync
                 await run_sync("studio", caller.studio_id, source_type, trigger="attachment_refresh")
@@ -167,6 +187,7 @@ async def get_asset_attachment(
                 headers=_headers(),
             )
             fresh_rows = r_fresh.json()
+            old_url = source_url
             if fresh_rows:
                 meta = fresh_rows[0].get("meta") or meta
                 fresh_field = meta.get(field_key)
@@ -175,6 +196,10 @@ async def get_asset_attachment(
                     item = field_data[idx]
                     source_url = item.get("url") or source_url
 
+            log.warning(
+                "attachment 410 retry: url_changed=%s url=%.80s",
+                source_url != old_url, source_url,
+            )
             r_file = await client.get(source_url, headers=fetch_headers, follow_redirects=True)
 
         try:
@@ -182,7 +207,7 @@ async def get_asset_attachment(
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
             if status == 410:
-                raise HTTPException(410, detail="Attachment URL expired and could not be refreshed after sync")
+                raise HTTPException(502, detail="Attachment URL expired and could not be refreshed after sync")
             raise HTTPException(502, detail=f"Source returned {status} fetching attachment")
 
         file_bytes = r_file.content
