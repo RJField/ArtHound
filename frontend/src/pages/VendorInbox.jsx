@@ -3,10 +3,11 @@ import { toast } from 'sonner'
 import { apiFetch, payloadAttachmentUrl } from '../lib/api'
 import { formatRawFields, fieldDisplayString } from '../lib/fields'
 import DetailModal from '../components/DetailModal'
+import IngestModal from '../components/IngestModal'
 
 const SKIP = new Set(['Name', 'name'])
 
-function buildModalProps(d) {
+function buildModalProps(d, onIngest) {
   const data          = d.payload_data?.data ?? {}
   const assetGlobalId = d.payload_data?.asset_global_id
   const name          = data['Name'] || data['name'] || '—'
@@ -21,6 +22,8 @@ function buildModalProps(d) {
     ? (fieldKey, idx) => payloadAttachmentUrl(d.id, assetGlobalId, fieldKey, idx)
     : null
 
+  const isIngested = !!d.payload_field_mappings?.[0]?.ingested_at
+
   return {
     title:  name,
     badge:  badge || undefined,
@@ -29,13 +32,24 @@ function buildModalProps(d) {
       { label: 'Received', value: date },
       ...formatRawFields(raw, proxyUrlFn),
     ],
+    actions: [
+      {
+        label: isIngested ? 'Ingested ✓' : 'Ingest to Source',
+        style: isIngested ? undefined : 'primary',
+        onClick: closeFn => {
+          closeFn()
+          onIngest()
+        },
+      },
+    ],
   }
 }
 
 export default function VendorInbox() {
-  const [dispatches, setDispatches] = useState([])
-  const [loading, setLoading]       = useState(true)
-  const [activeModal, setActiveModal] = useState(null) // modal props
+  const [dispatches, setDispatches]   = useState([])
+  const [loading, setLoading]         = useState(true)
+  const [activeModal, setActiveModal] = useState(null)   // DetailModal props
+  const [ingestId, setIngestId]       = useState(null)   // dispatch ID for IngestModal
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -53,7 +67,20 @@ export default function VendorInbox() {
 
   function openDispatch(d) {
     apiFetch(`/api/payloads/${encodeURIComponent(d.id)}/viewed`, { method: 'POST' }).catch(() => {})
-    setActiveModal(buildModalProps(d))
+    setActiveModal(buildModalProps(d, () => setIngestId(d.id)))
+  }
+
+  function handleIngested(dispatchId, sourceRecordId) {
+    // Mark the dispatch as ingested in local state so the badge updates immediately
+    setDispatches(prev => prev.map(d => {
+      if (d.id !== dispatchId) return d
+      return {
+        ...d,
+        payload_field_mappings: [
+          { ingested_at: new Date().toISOString(), ingested_source_record_id: sourceRecordId },
+        ],
+      }
+    }))
   }
 
   return (
@@ -83,6 +110,7 @@ export default function VendorInbox() {
             const priority  = d.payload_data?.priority
             const studio    = d.payload_data?.sender_studio_name || 'Unknown Studio'
             const date      = d.created_at ? new Date(d.created_at).toLocaleDateString() : '—'
+            const isIngested = !!d.payload_field_mappings?.[0]?.ingested_at
 
             return (
               <div
@@ -99,6 +127,9 @@ export default function VendorInbox() {
                     {priority != null && (
                       <span className="px-2 py-0.5 rounded-full bg-surface-3 text-muted text-xs">P{priority}</span>
                     )}
+                    {isIngested && (
+                      <span className="px-2 py-0.5 rounded-full bg-accent/10 text-accent text-xs">Ingested</span>
+                    )}
                   </div>
                 </div>
                 <div className="flex flex-col items-end gap-1 shrink-0 text-xs text-muted">
@@ -113,6 +144,14 @@ export default function VendorInbox() {
 
       {activeModal && (
         <DetailModal {...activeModal} onClose={() => setActiveModal(null)} />
+      )}
+
+      {ingestId && (
+        <IngestModal
+          dispatchId={ingestId}
+          onClose={() => setIngestId(null)}
+          onIngested={handleIngested}
+        />
       )}
     </main>
   )

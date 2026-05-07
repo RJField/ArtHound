@@ -236,3 +236,13 @@ class AirtableConnector(BaseConnector):
             )
             for f in target.get("fields", [])
         ]
+
+    async def create_record(self, table_id: str, fields: dict) -> str:
+        """Create a record in the given table. Returns the new record ID."""
+        r = await self._client.post(
+            f"{_AT_BASE}/v0/{self._base_id}/{quote(table_id, safe='')}",
+            headers={**self._headers(), "Content-Type": "application/json"},
+            json={"fields": fields},
+        )
+        r.raise_for_status()
+        return r.json()["id"]

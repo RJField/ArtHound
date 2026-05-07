@@ -73,6 +73,7 @@ class JiraConnector(BaseConnector):
     ):
         self._token = access_token
         self._client = client
+        self._deployment = deployment
 
         if deployment == "datacenter":
             if not instance_url:
