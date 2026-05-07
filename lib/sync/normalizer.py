@@ -12,7 +12,7 @@ _WORK_ESTIMATE_ALIASES = ["estimate", "duration", "hours", "days", "frames", "ti
 
 ARTHOUND_SLOTS = {
     "name", "dev_name", "item_type", "priority",
-    "product", "project_date", "status", "asset_number",
+    "product", "project_date", "status", "asset_number", "team",
 }
 
 _SLOT_ALIASES: dict[str, list[str]] = {
@@ -24,6 +24,7 @@ _SLOT_ALIASES: dict[str, list[str]] = {
     "project_date": ["project date", "due date", "delivery date", "target date", "date"],
     "status":       ["status", "state", "phase", "production status"],
     "asset_number": ["asset number", "asset #", "asset no", "number", "asset id"],
+    "team":         ["team", "team (from product)", "art team", "production team", "assigned team"],
 }
 
 _NAME_TO_SLOT: dict[str, str] = {

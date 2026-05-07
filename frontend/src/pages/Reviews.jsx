@@ -1,9 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Paperclip, Trash2, Upload, X } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Paperclip, Trash2, Upload, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { apiFetch, apiUpload, reviewAttachmentUrl } from '../lib/api'
 import { cn } from '../lib/utils'
-import AttachmentGallery from '../components/media/AttachmentGallery'
+import ImageViewer from '../components/media/ImageViewer'
+import VideoViewer from '../components/media/VideoViewer'
+import PdfViewer from '../components/media/PdfViewer'
+import DocumentCard from '../components/media/DocumentCard'
+import { viewerType } from '../components/media/mediaUtils'
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -170,11 +174,13 @@ function AssetMeta({ asset }) {
   )
 }
 
-// ── Attachment panel ───────────────────────────────────────────────────────────
+// ── Inline attachment viewer ───────────────────────────────────────────────────
 
 function AttachmentPanel({ reviewId }) {
   const [attachments, setAttachments] = useState([])
+  const [activeIdx, setActiveIdx]     = useState(0)
   const [uploading, setUploading]     = useState(false)
+  const [dropActive, setDropActive]   = useState(false)
   const inputRef = useRef(null)
 
   const load = useCallback(async () => {
@@ -188,9 +194,15 @@ function AttachmentPanel({ reviewId }) {
 
   useEffect(() => { load() }, [load])
 
+  // Keep activeIdx in bounds when attachments change
+  useEffect(() => {
+    setActiveIdx(i => Math.min(i, Math.max(0, attachments.length - 1)))
+  }, [attachments.length])
+
   async function handleFiles(files) {
     if (!files?.length) return
     setUploading(true)
+    const prevLen = attachments.length
     for (const file of Array.from(files)) {
       const fd = new FormData()
       fd.append('file', file)
@@ -201,6 +213,8 @@ function AttachmentPanel({ reviewId }) {
       }
     }
     await load()
+    // Jump to first newly uploaded file
+    setActiveIdx(prevLen)
     setUploading(false)
   }
 
@@ -214,65 +228,104 @@ function AttachmentPanel({ reviewId }) {
     }
   }
 
-  const galleryItems = attachments.map(a => ({
-    filename:  a.filename,
-    mimetype:  a.content_type,
-    proxyUrl:  reviewAttachmentUrl(reviewId, a.id),
-    _id:       a.id,
-  }))
+  const active   = attachments[activeIdx] ?? null
+  const hasFiles = attachments.length > 0
+  const proxyUrl = active ? reviewAttachmentUrl(reviewId, active.id) : null
+  const type     = active ? viewerType(active.content_type, active.filename) : null
 
   return (
-    <div className="rounded-lg border border-border px-4 py-3 flex flex-col gap-3">
-      <div className="flex items-center justify-between">
-        <p className="text-foreground text-xs font-semibold uppercase tracking-wide flex items-center gap-1.5">
-          <Paperclip size={12} />
-          Attachments {attachments.length > 0 && `(${attachments.length})`}
-        </p>
-        <div className="flex items-center gap-2">
-          <input
-            ref={inputRef}
-            type="file"
-            multiple
-            className="hidden"
-            onChange={e => handleFiles(e.target.files)}
-          />
-          <button
-            onClick={() => inputRef.current?.click()}
-            disabled={uploading}
-            className="flex items-center gap-1 text-xs text-muted hover:text-foreground disabled:opacity-50 cursor-pointer"
-          >
-            <Upload size={12} />
-            {uploading ? 'Uploading…' : 'Upload'}
-          </button>
-        </div>
-      </div>
+    <div
+      className={cn(
+        'rounded-lg border overflow-hidden transition-colors',
+        dropActive ? 'border-accent' : 'border-border'
+      )}
+      onDragOver={e => { e.preventDefault(); setDropActive(true) }}
+      onDragLeave={() => setDropActive(false)}
+      onDrop={e => { e.preventDefault(); setDropActive(false); handleFiles(e.dataTransfer.files) }}
+    >
+      <input ref={inputRef} type="file" multiple className="hidden" onChange={e => handleFiles(e.target.files)} />
 
-      {/* Drop zone */}
-      <div
-        onDragOver={e => e.preventDefault()}
-        onDrop={e => { e.preventDefault(); handleFiles(e.dataTransfer.files) }}
-        onClick={() => inputRef.current?.click()}
-        className="border border-dashed border-border/50 rounded-md py-4 flex items-center justify-center text-muted text-xs hover:border-border hover:text-foreground transition-colors cursor-pointer"
-      >
-        Drop files here or click to browse
-      </div>
+      {/* ── Header bar ── */}
+      <div className="flex items-center gap-2 px-3 py-2 border-b border-border/40 bg-surface-2/30">
+        <Paperclip size={12} className="text-muted shrink-0" />
 
-      {galleryItems.length > 0 && (
-        <div className="flex flex-col gap-2">
-          <AttachmentGallery attachments={galleryItems} />
-          <div className="flex flex-col gap-1 mt-1">
-            {attachments.map(a => (
-              <div key={a.id} className="flex items-center justify-between text-xs">
-                <span className="text-muted truncate max-w-xs">{a.filename}</span>
-                <button
-                  onClick={() => handleDelete(a.id)}
-                  className="text-muted hover:text-red-400 ml-2 shrink-0 cursor-pointer"
-                >
-                  <Trash2 size={12} />
-                </button>
-              </div>
-            ))}
+        {hasFiles ? (
+          <span className="text-foreground text-xs font-medium truncate flex-1 min-w-0">
+            {active?.filename}
+          </span>
+        ) : (
+          <span className="text-foreground text-xs font-semibold uppercase tracking-wide flex-1">
+            Attachments
+          </span>
+        )}
+
+        {/* Prev / counter / next */}
+        {attachments.length > 1 && (
+          <div className="flex items-center gap-1 shrink-0">
+            <button
+              onClick={() => setActiveIdx(i => Math.max(0, i - 1))}
+              disabled={activeIdx === 0}
+              className="p-0.5 rounded hover:bg-surface-2 text-muted disabled:opacity-30 cursor-pointer"
+            >
+              <ChevronLeft size={14} />
+            </button>
+            <span className="text-muted text-xs tabular-nums w-10 text-center">
+              {activeIdx + 1} / {attachments.length}
+            </span>
+            <button
+              onClick={() => setActiveIdx(i => Math.min(attachments.length - 1, i + 1))}
+              disabled={activeIdx >= attachments.length - 1}
+              className="p-0.5 rounded hover:bg-surface-2 text-muted disabled:opacity-30 cursor-pointer"
+            >
+              <ChevronRight size={14} />
+            </button>
           </div>
+        )}
+
+        {/* Delete current */}
+        {active && (
+          <button
+            onClick={() => handleDelete(active.id)}
+            className="text-muted hover:text-red-400 cursor-pointer shrink-0"
+          >
+            <Trash2 size={13} />
+          </button>
+        )}
+
+        {/* Upload */}
+        <button
+          onClick={() => inputRef.current?.click()}
+          disabled={uploading}
+          className="flex items-center gap-1 text-xs text-muted hover:text-foreground disabled:opacity-50 cursor-pointer shrink-0"
+        >
+          <Upload size={12} />
+          {uploading ? 'Uploading…' : hasFiles ? 'Add' : 'Upload'}
+        </button>
+      </div>
+
+      {/* ── Content area ── */}
+      {hasFiles ? (
+        <div className="h-[520px]">
+          {type === 'image'    && <ImageViewer    proxyUrl={proxyUrl} filename={active.filename} />}
+          {type === 'video'    && <VideoViewer    proxyUrl={proxyUrl} filename={active.filename} />}
+          {type === 'pdf'      && <PdfViewer      proxyUrl={proxyUrl} fitWidth />}
+          {type === 'document' && (
+            <div className="flex items-center justify-center h-full p-8">
+              <DocumentCard filename={active.filename} mimetype={active.content_type} proxyUrl={proxyUrl} compact={false} />
+            </div>
+          )}
+        </div>
+      ) : (
+        <div
+          onClick={() => inputRef.current?.click()}
+          className={cn(
+            'py-8 flex items-center justify-center text-xs transition-colors cursor-pointer',
+            dropActive
+              ? 'text-accent bg-accent/5'
+              : 'text-muted hover:text-foreground'
+          )}
+        >
+          Drop files here or click to browse
         </div>
       )}
     </div>
@@ -560,7 +613,7 @@ export default function Reviews() {
             <p className="text-muted text-sm">Select a review to see details.</p>
           </div>
         ) : (
-          <div className="p-6 flex flex-col gap-5 max-w-2xl">
+          <div className="p-6 flex flex-col gap-5">
 
             {/* Header */}
             <div className="flex items-start justify-between gap-4">
@@ -617,6 +670,9 @@ export default function Reviews() {
               </div>
             </div>
 
+            {/* Attachments — top of detail for quick access */}
+            <AttachmentPanel reviewId={selected.id} />
+
             {/* Asset metadata */}
             <AssetMeta asset={selected.asset} />
 
@@ -671,8 +727,6 @@ export default function Reviews() {
               </div>
             </div>
 
-            {/* Attachments */}
-            <AttachmentPanel reviewId={selected.id} />
 
           </div>
         )}

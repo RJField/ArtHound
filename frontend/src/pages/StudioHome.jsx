@@ -31,7 +31,7 @@ function StatCard({ label, value, sub, onClick, loading }) {
 
 const BOTS = [
   { icon: '◈', name: 'NumberBot', desc: 'Estimation audits + variance flags', live: true },
-  { icon: '✦', name: 'LoreBot',   desc: 'Narrative & lore consistency',        live: true },
+  { icon: '✦', name: 'LoreBot',   desc: 'In dev - proceed with caution.',      live: true },
   { icon: '⇄', name: 'OpsBot',    desc: 'Pipeline handoff automation',          live: false },
   { icon: '⊕', name: 'ATCBot',    desc: 'Asset traffic control',                live: false },
 ]

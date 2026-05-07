@@ -58,6 +58,7 @@ def _build_asset_response(
     product_id_to_name: dict,
     product_name_to_id: dict,
     item_type_id_to_name: dict,
+    slot_to_field_name: dict,
 ) -> dict:
     meta = row.get("meta") or {}
 
@@ -66,7 +67,7 @@ def _build_asset_response(
     product_id   = product_name_to_id.get(product_name) if product_name else None
     if not product_id:
         # Canonical format: [{source_id, display_name}]; legacy: ["recXXX"]
-        for entry in (meta.get("Product") or []):
+        for entry in (meta.get(slot_to_field_name.get("product", "")) or []):
             pid = entry.get("source_id") if isinstance(entry, dict) else entry
             if pid and pid in product_id_to_name:
                 product_name = product_id_to_name[pid]
@@ -77,27 +78,15 @@ def _build_asset_response(
     # Fall back to meta for records synced before that fix.
     item_type = row.get("item_type")
     if not item_type:
-        for entry in (meta.get("Item Type") or []):
+        for entry in (meta.get(slot_to_field_name.get("item_type", "")) or []):
             if isinstance(entry, dict):
-                # Canonical: display_name is already resolved; source_id as fallback via ref map
                 item_type = entry.get("display_name") or item_type_id_to_name.get(entry.get("source_id", ""))
             elif isinstance(entry, str):
                 item_type = item_type_id_to_name.get(entry)
             if item_type:
                 break
 
-    # Team from meta (multipleLookupValues returns plain strings; handle canonical dicts too)
-    team_raw = meta.get("Team (from Product)")
-    if isinstance(team_raw, list):
-        parts = []
-        for x in team_raw:
-            if isinstance(x, dict):
-                parts.append(x.get("display_name") or x.get("name") or "")
-            elif x:
-                parts.append(str(x))
-        team = ", ".join(p for p in parts if p) or None
-    else:
-        team = str(team_raw) if team_raw else None
+    team = row.get("team") or None
 
     # Fields that are internal Jira plumbing — hide from the detail panel.
     # Includes both the raw API IDs (pre-re-sync) and display names (post-re-sync).
@@ -175,6 +164,28 @@ async def _fetch_item_types_map(owner_type: str, owner_id: str) -> dict:
     return {r["source_record_id"]: r["name"] for r in rows}
 
 
+async def _fetch_slot_field_names(owner_type: str, owner_id: str) -> dict[str, str]:
+    """Return {arthound_slot: source_field_name} from this owner's source_field_mappings."""
+    r = await db_client.get(
+        _url("/rest/v1/source_field_mappings"),
+        params={
+            "owner_type": f"eq.{owner_type}",
+            "owner_id":   f"eq.{owner_id}",
+            "select":     "mappings",
+            "limit":      "1",
+        },
+        headers=_headers(),
+    )
+    if not r.is_success or not r.json():
+        return {}
+    mappings = r.json()[0].get("mappings") or []
+    return {
+        m["arthound_slot"]: m["source_field_name"]
+        for m in mappings
+        if m.get("arthound_slot") and m.get("source_field_name")
+    }
+
+
 # ── Products ──────────────────────────────────────────────────────────────────
 
 @router.get("/products")
@@ -228,9 +239,10 @@ async def get_assets(
     owner_type, owner_id = _owner(current_user)
 
     # Fetch reference maps first — needed to resolve the product filter value.
-    (prod_id_to_name, prod_name_to_id), it_id_to_name = await asyncio.gather(
+    (prod_id_to_name, prod_name_to_id), it_id_to_name, slot_field_names = await asyncio.gather(
         _fetch_products_map(owner_type, owner_id),
         _fetch_item_types_map(owner_type, owner_id),
+        _fetch_slot_field_names(owner_type, owner_id),
     )
 
     asset_params = {
@@ -262,7 +274,7 @@ async def get_assets(
     asset_r.raise_for_status()
     rows = asset_r.json()
 
-    return [_build_asset_response(r, prod_id_to_name, prod_name_to_id, it_id_to_name) for r in rows]
+    return [_build_asset_response(r, prod_id_to_name, prod_name_to_id, it_id_to_name, slot_field_names) for r in rows]
 
 
 _SLOT_LABELS: dict[str, str] = {
@@ -370,7 +382,7 @@ async def get_asset_fields(user: CurrentUser = Depends(get_current_user)):
 async def get_asset(asset_id: str, current_user: CurrentUser = Depends(get_current_user)):
     owner_type, owner_id = _owner(current_user)
 
-    asset_r, (prod_id_to_name, prod_name_to_id), it_id_to_name = await asyncio.gather(
+    asset_r, (prod_id_to_name, prod_name_to_id), it_id_to_name, slot_field_names = await asyncio.gather(
         db_client.get(
             _url("/rest/v1/replicated_assets"),
             params={
@@ -382,12 +394,13 @@ async def get_asset(asset_id: str, current_user: CurrentUser = Depends(get_curre
         ),
         _fetch_products_map(owner_type, owner_id),
         _fetch_item_types_map(owner_type, owner_id),
+        _fetch_slot_field_names(owner_type, owner_id),
     )
     asset_r.raise_for_status()
     rows = asset_r.json()
     if not rows:
         raise HTTPException(status_code=404, detail="Asset not found")
-    return _build_asset_response(rows[0], prod_id_to_name, prod_name_to_id, it_id_to_name)
+    return _build_asset_response(rows[0], prod_id_to_name, prod_name_to_id, it_id_to_name, slot_field_names)
 
 
 # ── Name update (write-back to source) ───────────────────────────────────────
