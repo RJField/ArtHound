@@ -32,28 +32,40 @@ async def get_studio_id() -> str:
     return _studio_id
 
 
-async def get_or_create_studio_airtable_canonical_ids(airtable_ids: list[str], studio_id: str | None = None) -> dict[str, str]:
-    """Returns {airtable_record_id: canonical_uuid} for the given Airtable IDs.
-    Mints new UUIDs for any that don't exist yet. Studio-side only — vendor canonical
-    IDs are linked via payload_export_records, not minted here.
-    studio_id comes from the authenticated user; falls back to env-based lookup."""
-    if not airtable_ids:
+async def get_or_create_canonical_ids(
+    source_record_ids: list[str],
+    studio_id: str | None = None,
+    source_type: str = "airtable",
+) -> dict[str, str]:
+    """Returns {source_record_id: canonical_uuid} for the given source IDs.
+    Mints new UUIDs for any that don't exist yet. Studio-side only — vendor
+    canonical IDs are linked via payload_export_records, not minted here."""
+    if not source_record_ids:
         return {}
 
     if studio_id is None:
         studio_id = await get_studio_id()
-    ids_csv = ",".join(airtable_ids)
+    ids_csv = ",".join(source_record_ids)
 
-    # Upsert: inserts new rows, silently ignores conflicts on existing ones.
+    # Upsert: insert new rows, silently skip conflicts on existing ones.
     await db_client.post(
-        _url(f"/rest/v1/canonical_assets?on_conflict=studio_id,airtable_record_id"),
-        json=[{"studio_id": studio_id, "airtable_record_id": aid} for aid in airtable_ids],
+        _url("/rest/v1/canonical_assets?on_conflict=studio_id,source_record_id,source_type"),
+        json=[
+            {"studio_id": studio_id, "source_record_id": rid, "source_type": source_type}
+            for rid in source_record_ids
+        ],
         headers=_headers({"Prefer": "resolution=ignore-duplicates,return=minimal"}),
     )
 
-    # Fetch all (new + pre-existing) in one query, scoped to this studio.
+    # Fetch all (new + pre-existing) in one query, scoped to this studio + source_type.
     r = await db_client.get(
-        _url(f"/rest/v1/canonical_assets?select=id,airtable_record_id&studio_id=eq.{studio_id}&airtable_record_id=in.({ids_csv})"),
+        _url("/rest/v1/canonical_assets"),
+        params={
+            "select":            "id,source_record_id",
+            "studio_id":         f"eq.{studio_id}",
+            "source_type":       f"eq.{source_type}",
+            "source_record_id":  f"in.({ids_csv})",
+        },
         headers=_headers(),
     )
-    return {row["airtable_record_id"]: row["id"] for row in r.json()}
+    return {row["source_record_id"]: row["id"] for row in r.json()}

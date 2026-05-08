@@ -81,6 +81,27 @@ async def _get_studio_source_type(studio_id: str) -> str | None:
 _ISSUETYPE_RE = re.compile(r'issuetype\s*=\s*["\']?([^"\'\s),]+)', re.IGNORECASE)
 
 
+def _to_adf(text: str) -> dict:
+    """Wrap plain text in Atlassian Document Format for Jira Cloud v3."""
+    content = [
+        {"type": "paragraph", "content": [{"type": "text", "text": line or " "}]}
+        for line in text.split("\n")
+    ]
+    return {"version": 1, "type": "doc", "content": content}
+
+
+def _build_asset_description(asset: dict) -> str:
+    pairs = [
+        ("Asset",        asset.get("name")),
+        ("Type",         asset.get("itemType")),
+        ("Team",         asset.get("team")),
+        ("Priority",     asset.get("priority")),
+        ("Project date", asset.get("projectDate")),
+        ("Variables",    asset.get("estimateCol")),
+    ]
+    return "\n".join(f"{label}: {val}" for label, val in pairs if val)
+
+
 def _parse_issue_type(jql_filter: str | None) -> str | None:
     """Extract the issue type name from a JQL string, e.g. 'issuetype = "Sub-task"' → 'Sub-task'."""
     if not jql_filter:
@@ -196,9 +217,14 @@ async def _write_back_to_source(result: dict, snapshot_map: dict[str, str]) -> i
 
         source_id_updates: list[dict] = []
         created = 0
-        # Link type used when the asset and work item are at the same hierarchy level.
-        # "Relates" is a standard Jira link type present in all installations.
         _LINK_TYPE = "Relates"
+
+        _desc_text = _build_asset_description(result["asset"])
+        _desc_field = (
+            _to_adf(_desc_text)
+            if _desc_text and connector._deployment == "cloud"
+            else _desc_text or None
+        )
 
         for item in work_items:
             fields: dict = {
@@ -206,6 +232,8 @@ async def _write_back_to_source(result: dict, snapshot_map: dict[str, str]) -> i
                 "issuetype": {"name": issue_type},
                 "summary":   item["workName"],
             }
+            if _desc_field:
+                fields["description"] = _desc_field
 
             if start_field_id and item.get("startDate"):
                 fields[start_field_id] = item["startDate"]

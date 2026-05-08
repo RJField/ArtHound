@@ -175,7 +175,7 @@ async def _studio_assets(user: CurrentUser) -> list[dict]:
     r = await db_client.get(
         _url("/rest/v1/canonical_assets"),
         params={
-            "select": "id,airtable_record_id",
+            "select": "id,source_record_id",
             "studio_id": f"eq.{studio_id}",
             "order": "created_at.asc",
         },
@@ -217,8 +217,8 @@ async def _studio_assets(user: CurrentUser) -> list[dict]:
     return [
         {
             "id": a["id"],
-            "name": name_map.get(a["id"]) or a.get("airtable_record_id", a["id"]),
-            "source_key": source_key_map.get(a["id"]) or a.get("airtable_record_id"),
+            "name": name_map.get(a["id"]) or a.get("source_record_id", a["id"]),
+            "source_key": source_key_map.get(a["id"]) or a.get("source_record_id"),
         }
         for a in canonical
     ]

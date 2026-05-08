@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 
 import httpx
 
-from lib.canonical import get_or_create_studio_airtable_canonical_ids
+from lib.canonical import get_or_create_canonical_ids
 from lib.crypto import decrypt_credentials
 from lib.db import db_client, drain_pages, _url, _headers
 from lib.sync.connector import BaseConnector
@@ -365,8 +365,8 @@ async def sync_single_asset(
 
         canonical_map: dict[str, str] = {}
         if owner_type == "studio" and source_type in ("airtable", "jira"):
-            canonical_map = await get_or_create_studio_airtable_canonical_ids(
-                [source_record_id], owner_id
+            canonical_map = await get_or_create_canonical_ids(
+                [source_record_id], owner_id, source_type
             )
         elif owner_type == "vendor":
             canonical_map = await _get_ingest_canonical_map(
@@ -609,8 +609,8 @@ async def _run_sync_locked(
             source_ids = [r["source_record_id"] for r in assets_to_write]
             if owner_type == "studio" and source_type in ("airtable", "jira"):
                 if source_ids:
-                    canonical_map = await get_or_create_studio_airtable_canonical_ids(
-                        source_ids, owner_id
+                    canonical_map = await get_or_create_canonical_ids(
+                        source_ids, owner_id, source_type
                     )
             elif owner_type == "vendor" and source_ids:
                 # Attach canonical IDs for records created via payload ingest.

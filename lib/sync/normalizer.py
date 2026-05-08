@@ -422,12 +422,13 @@ def _coerce_slot(slot: str, canonical: Any, adapter=None) -> object:
 
     if slot == "priority":
         if isinstance(canonical, (int, float)):
-            return int(canonical)
+            return str(int(canonical))
         if isinstance(canonical, str):
+            s = canonical.strip()
             try:
-                return int(canonical.strip().upper().lstrip("P"))
+                return str(int(s.upper().lstrip("P")))
             except ValueError:
-                return None
+                return s or None
         # SelectValue — Jira priority objects (Highest/High/Medium/Low/Lowest)
         if hasattr(canonical, "label"):
             _pmap = {"highest": 1, "critical": 1, "high": 2, "medium": 3, "low": 4, "lowest": 5}
@@ -440,12 +441,13 @@ def _coerce_slot(slot: str, canonical: Any, adapter=None) -> object:
         if isinstance(canonical, list) and canonical:
             first = canonical[0]
             if isinstance(first, (int, float)):
-                return int(first)
+                return str(int(first))
             if isinstance(first, str):
+                s = first.strip()
                 try:
-                    return int(first.strip().upper().lstrip("P"))
+                    return str(int(s.upper().lstrip("P")))
                 except ValueError:
-                    return None
+                    return s or None
         return None
 
     if slot == "project_date":
