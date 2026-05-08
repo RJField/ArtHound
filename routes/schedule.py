@@ -13,6 +13,7 @@ from lib.scheduler import build_schedule
 from lib.token_refresh import get_jira_token
 from lib.sync.connectors.jira import JiraConnector
 from lib.sync.connectors.airtable import AirtableConnector
+from lib.sync.qualifiers import airtable_write_defaults, airtable_qualifier_gaps, jira_write_defaults
 from lib.source_creds import get_studio_airtable_creds
 
 log = logging.getLogger(__name__)
@@ -80,9 +81,6 @@ async def _get_studio_source_type(studio_id: str) -> str | None:
     return rows[0]["source_type"] if rows else None
 
 
-_ISSUETYPE_RE = re.compile(r'issuetype\s*=\s*["\']?([^"\'\s),]+)', re.IGNORECASE)
-
-
 def _to_adf(text: str) -> dict:
     """Wrap plain text in Atlassian Document Format for Jira Cloud v3."""
     content = [
@@ -102,14 +100,6 @@ def _build_asset_description(asset: dict) -> str:
         ("Variables",    asset.get("estimateCol")),
     ]
     return "\n".join(f"{label}: {val}" for label, val in pairs if val)
-
-
-def _parse_issue_type(jql_filter: str | None) -> str | None:
-    """Extract the issue type name from a JQL string, e.g. 'issuetype = "Sub-task"' → 'Sub-task'."""
-    if not jql_filter:
-        return None
-    m = _ISSUETYPE_RE.search(jql_filter)
-    return m.group(1) if m else None
 
 
 async def _get_asset_table_id(studio_id: str) -> str | None:
@@ -136,7 +126,7 @@ async def _get_work_entity_def(studio_id: str) -> dict | None:
             "owner_id":    f"eq.{studio_id}",
             "entity_type": "eq.work",
             "select": (
-                "table_id,jql_filter,rel_field_id,rel_field_name,"
+                "table_id,jql_filter,filters,rel_field_id,rel_field_name,"
                 "work_name_field_id,work_start_date_field_id,"
                 "work_end_date_field_id,work_estimate_field_id"
             ),
@@ -166,19 +156,23 @@ async def _get_asset_jira_key(studio_id: str, source_record_id: str) -> str | No
     return (rows[0].get("meta") or {}).get("_jira_key")
 
 
-async def _write_back_to_source(result: dict, snapshot_map: dict[str, str]) -> int:
+async def _write_back_to_source(
+    result: dict,
+    snapshot_map: dict[str, str],
+) -> tuple[int, list[str]]:
     """Push generated work items to the studio's source tool.
-    Returns the count of items successfully created. Non-fatal — errors are logged.
+    Returns (created_count, qualifier_warnings). Non-fatal — errors are logged.
+    qualifier_warnings lists any entity filters that could not be auto-injected.
     """
     studio_id  = result["_studioId"]
     work_items = result["work"]
 
     if not snapshot_map or not work_items:
-        return 0
+        return 0, []
 
     source_type = await _get_studio_source_type(studio_id)
     if source_type not in ("jira", "airtable"):
-        return 0
+        return 0, []
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         if source_type == "jira":
@@ -186,12 +180,12 @@ async def _write_back_to_source(result: dict, snapshot_map: dict[str, str]) -> i
                 jira_creds = await get_jira_token("studio", studio_id, client)
             except RuntimeError as exc:
                 log.warning("Jira write-back: cannot get token for studio %s — %s", studio_id, exc)
-                return 0
+                return 0, []
 
             work_def = await _get_work_entity_def(studio_id)
             if not work_def:
                 log.warning("Jira write-back: no work entity def for studio %s", studio_id)
-                return 0
+                return 0, []
 
             asset_jira_key = await _get_asset_jira_key(studio_id, result["asset"]["id"])
             if not asset_jira_key:
@@ -200,7 +194,7 @@ async def _write_back_to_source(result: dict, snapshot_map: dict[str, str]) -> i
                     "re-sync the asset then retry",
                     result["asset"]["id"],
                 )
-                return 0
+                return 0, []
 
             connector = JiraConnector(
                 access_token=jira_creds["access_token"],
@@ -217,14 +211,16 @@ async def _write_back_to_source(result: dict, snapshot_map: dict[str, str]) -> i
             end_field_id   = work_def.get("work_end_date_field_id")
             est_field_id   = work_def.get("work_estimate_field_id")
 
-            jql_issue_type = _parse_issue_type(work_def.get("jql_filter"))
-            if jql_issue_type:
-                issue_type = jql_issue_type
-            else:
+            jira_q_defaults = jira_write_defaults(
+                work_def.get("jql_filter"), work_def.get("filters") or []
+            )
+            issue_type = (jira_q_defaults.get("issuetype") or {}).get("name")
+            if not issue_type:
                 available = await connector.fetch_project_issue_types(project_key)
                 issue_type = available[0] if available else "Task"
+                jira_q_defaults = {"issuetype": {"name": issue_type}}
                 log.info(
-                    "Jira write-back: no issuetype in JQL — using '%s' from project %s (available: %s)",
+                    "Jira write-back: no issuetype in JQL or filters — using '%s' from project %s (available: %s)",
                     issue_type, project_key, available,
                 )
 
@@ -246,9 +242,9 @@ async def _write_back_to_source(result: dict, snapshot_map: dict[str, str]) -> i
 
             for item in work_items:
                 fields: dict = {
-                    "project":   {"key": project_key},
-                    "issuetype": {"name": issue_type},
-                    "summary":   item["workName"],
+                    "project": {"key": project_key},
+                    "summary": item["workName"],
+                    # issuetype supplied by jira_q_defaults via connector merge
                 }
                 if _desc_field:
                     fields["description"] = _desc_field
@@ -261,7 +257,7 @@ async def _write_back_to_source(result: dict, snapshot_map: dict[str, str]) -> i
                     fields[est_field_id] = item["estimate"]
 
                 try:
-                    issue_key = await connector.create_issue(fields)
+                    issue_key = await connector.create_issue(fields, jira_q_defaults)
                     created += 1
                     gw_id = snapshot_map.get(item.get("workflowStepId") or "")
                     if gw_id:
@@ -295,19 +291,19 @@ async def _write_back_to_source(result: dict, snapshot_map: dict[str, str]) -> i
                 "Jira write-back: %d/%d issues created for asset %s (studio %s)",
                 created, len(work_items), result["asset"]["id"], studio_id,
             )
-            return created
+            return created, []
 
         else:  # airtable
             try:
                 api_token, base_id = await get_studio_airtable_creds(studio_id)
             except Exception as exc:
                 log.warning("Airtable write-back: cannot get creds for studio %s — %s", studio_id, exc)
-                return 0
+                return 0, []
 
             work_def = await _get_work_entity_def(studio_id)
             if not work_def:
                 log.warning("Airtable write-back: no work entity def for studio %s", studio_id)
-                return 0
+                return 0, []
 
             table_id       = work_def.get("table_id")
             name_field_id  = work_def.get("work_name_field_id")
@@ -321,7 +317,10 @@ async def _write_back_to_source(result: dict, snapshot_map: dict[str, str]) -> i
                     "Airtable write-back: work entity def missing table_id or name field for studio %s",
                     studio_id,
                 )
-                return 0
+                return 0, []
+
+            at_q_defaults = airtable_write_defaults(work_def.get("filters") or [])
+            at_q_gaps     = airtable_qualifier_gaps(work_def.get("filters") or [], source_tool="Airtable")
 
             connector = AirtableConnector(api_token=api_token, base_id=base_id, client=client)
             # For Airtable, source_record_id IS the record ID (rec...)
@@ -360,12 +359,12 @@ async def _write_back_to_source(result: dict, snapshot_map: dict[str, str]) -> i
                                 "aborting to prevent orphaned records",
                                 rel_field_id, table_id, asset_table_id,
                             )
-                            return 0
+                            return 0, at_q_gaps
                 except Exception as exc:
                     log.error(
                         "Airtable write-back: schema fetch failed — aborting to prevent orphaned records: %s", exc,
                     )
-                    return 0
+                    return 0, at_q_gaps
 
             log.info(
                 "Airtable write-back: table=%s name_field=%s rel_field=%s asset=%s",
@@ -376,6 +375,7 @@ async def _write_back_to_source(result: dict, snapshot_map: dict[str, str]) -> i
             created = 0
 
             for item in work_items:
+                # Connector is the sole merge site for qualifier defaults — do not pre-spread.
                 fields: dict = {name_field_id: item["workName"]}
                 if start_field_id and item.get("startDate"):
                     fields[start_field_id] = item["startDate"]
@@ -389,7 +389,7 @@ async def _write_back_to_source(result: dict, snapshot_map: dict[str, str]) -> i
                     fields[work_def["work_notes_field_id"]] = desc_text
 
                 try:
-                    record_id = await connector.create_record(table_id, fields)
+                    record_id = await connector.create_record(table_id, fields, at_q_defaults)
                     created += 1
                     gw_id = snapshot_map.get(item.get("workflowStepId") or "")
                     if gw_id:
@@ -414,7 +414,7 @@ async def _write_back_to_source(result: dict, snapshot_map: dict[str, str]) -> i
                 "Airtable write-back: %d/%d records created for asset %s (studio %s)",
                 created, len(work_items), result["asset"]["id"], studio_id,
             )
-            return created
+            return created, at_q_gaps
 
 
 # ── Route models ──────────────────────────────────────────────────────────────
@@ -533,8 +533,11 @@ async def generate_schedule(body: AssetIdBody, user: CurrentUser = Depends(requi
 
     result       = await build_schedule(body.assetId, user.studio_id)
     snapshot_map = await _write_work_snapshots(result)
-    source_created = await _write_back_to_source(result, snapshot_map)
-    return {**result, "created": len(result["work"]), "sourceCreated": source_created}
+    source_created, qualifier_warnings = await _write_back_to_source(result, snapshot_map)
+    resp = {**result, "created": len(result["work"]), "sourceCreated": source_created}
+    if qualifier_warnings:
+        resp["qualifierWarnings"] = qualifier_warnings
+    return resp
 
 
 @router.post("/generate-bulk")
@@ -571,7 +574,7 @@ async def generate_bulk(body: AssetIdsBody, user: CurrentUser = Depends(require_
         return_exceptions=True,
     )
 
-    source_counts = await asyncio.gather(
+    source_results = await asyncio.gather(
         *[
             _write_back_to_source(
                 valid_results[i],
@@ -581,11 +584,19 @@ async def generate_bulk(body: AssetIdsBody, user: CurrentUser = Depends(require_
         ],
         return_exceptions=True,
     )
-    source_created = sum(c for c in source_counts if isinstance(c, int))
+    source_created = sum(
+        r[0] for r in source_results if isinstance(r, tuple)
+    )
+    qualifier_warnings = list({
+        w
+        for r in source_results if isinstance(r, tuple)
+        for w in r[1]
+    })
 
     return {
         "created":       created_count,
         "sourceCreated": source_created,
         "failed":        failed,
         "warnings":      all_warnings,
+        **({"qualifierWarnings": qualifier_warnings} if qualifier_warnings else {}),
     }

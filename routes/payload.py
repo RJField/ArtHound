@@ -13,6 +13,7 @@ from pydantic import BaseModel
 
 from lib.auth import CurrentUser, get_current_user, require_studio, require_vendor
 from lib.db import db_client, _url, _headers
+from lib.sync.qualifiers import airtable_write_defaults, airtable_qualifier_gaps, jira_write_defaults
 
 router = APIRouter()
 
@@ -984,6 +985,8 @@ async def do_ingest(dispatch_id: str, user: CurrentUser = Depends(require_vendor
         # Jira-specific coercion is handled in the block below.
         target_fields[source_field_id] = raw if isinstance(raw, (dict, list, bool, int, float)) else str(raw)
 
+    at_q_gaps: list[str] = []  # populated in Airtable branch; surfaced in success response
+
     async with httpx.AsyncClient(timeout=30.0) as client:
         source_type, connector = await _get_vendor_connector(user.vendor_id, client)
 
@@ -1042,16 +1045,9 @@ async def do_ingest(dispatch_id: str, user: CurrentUser = Depends(require_vendor
                     elif not is_adf:
                         target_fields[k] = _format_meta_value(v)
 
-            # Parse issue type from the entity's jql_filter — the single source of truth.
-            jql = entity.get("jql_filter") or ""
-            m = re.search(r'issuetype\s*=\s*["\']?([^"\')\s,]+)["\']?', jql, re.IGNORECASE)
-            resolved_issue_type = m.group(1) if m else None
-            if not resolved_issue_type:
-                for f in (entity.get("filters") or []):
-                    field_ref = (f.get("field_name") or f.get("field_id") or "").lower()
-                    if f.get("operator") == "eq" and "issuetype" in field_ref:
-                        resolved_issue_type = f.get("value")
-                        break
+            # Resolve issuetype via the canonical extractor (JQL first, JSONB filters fallback).
+            jira_q_defaults = jira_write_defaults(entity.get("jql_filter"), entity.get("filters") or [])
+            resolved_issue_type = (jira_q_defaults.get("issuetype") or {}).get("name")
             if not resolved_issue_type:
                 raise HTTPException(status_code=400, detail="Asset issue type not defined — check your source setup")
 
@@ -1076,8 +1072,12 @@ async def do_ingest(dispatch_id: str, user: CurrentUser = Depends(require_vendor
             target_fields.pop("issuetype", None)
             target_fields["project"]   = project_ref
             target_fields["issuetype"] = {"name": resolved_issue_type}
-            source_record_id = await connector.create_issue(target_fields)
+            source_record_id = await connector.create_issue(target_fields, jira_q_defaults)
         else:
+            # Derive qualifier defaults from entity filters — connector is the sole merge site.
+            at_q_defaults = airtable_write_defaults(entity.get("filters") or [])
+            at_q_gaps     = airtable_qualifier_gaps(entity.get("filters") or [], source_tool="Airtable")
+
             # Strip fields that Airtable will reject before posting.
             _AT_READ_ONLY = {
                 "formula", "lookup", "rollup", "count", "autoNumber",
@@ -1103,7 +1103,7 @@ async def do_ingest(dispatch_id: str, user: CurrentUser = Depends(require_vendor
                     if not isinstance(val, list):
                         target_fields[fid] = [val]
             try:
-                source_record_id = await connector.create_record(target_table_id, target_fields)
+                source_record_id = await connector.create_record(target_table_id, target_fields, at_q_defaults)
             except httpx.HTTPStatusError as exc:
                 raise HTTPException(
                     status_code=exc.response.status_code,
@@ -1133,7 +1133,10 @@ async def do_ingest(dispatch_id: str, user: CurrentUser = Depends(require_vendor
             json={"ingested_at": _now_iso()},
         )
         await _log(dispatch_id, "ingested", detail={"source_record_id": source_record_id})
-        return {"ok": True, "source_record_id": source_record_id}
+        resp = {"ok": True, "source_record_id": source_record_id}
+        if at_q_gaps:
+            resp["qualifierWarnings"] = at_q_gaps
+        return resp
 
     # ORPHAN: prefix is the alerting hook for log aggregators.
     reason = (
