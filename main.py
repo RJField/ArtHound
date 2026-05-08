@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
 from fastapi.responses import FileResponse, JSONResponse
 
-from lib.airtable import http_client
+import httpx
 from lib.crypto import decrypt_credentials
 from lib.db import db_client, _url, _headers
 from lib.auth import CurrentUser, get_current_user
@@ -225,7 +225,6 @@ async def lifespan(app: FastAPI):
     drain_task.cancel()
     purge_task.cancel()
     drift_task.cancel()
-    await http_client.aclose()
     await db_client.aclose()
 
 
@@ -350,10 +349,11 @@ async def get_record_by_id(
         raise HTTPException(status_code=404, detail="Entity definition not found")
     table_id = entity_rows[0]["table_id"]
 
-    r = await http_client.get(
-        f"https://api.airtable.com/v0/{creds['base_id']}/{table_id}/{record_id}",
-        headers={"Authorization": f"Bearer {creds['api_token']}"},
-    )
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        r = await client.get(
+            f"https://api.airtable.com/v0/{creds['base_id']}/{table_id}/{record_id}",
+            headers={"Authorization": f"Bearer {creds['api_token']}"},
+        )
     if not r.is_success:
         raise HTTPException(status_code=404, detail="Record not found")
     rec = r.json()

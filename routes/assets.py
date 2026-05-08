@@ -1,13 +1,13 @@
 import asyncio
 from typing import Optional
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
-from lib.airtable import update_records
 from lib.auth import CurrentUser, get_current_user, require_studio
+from lib.crypto import decrypt_credentials
 from lib.db import db_client, _url, _headers
-import config
 
 router = APIRouter()
 
@@ -451,21 +451,113 @@ class NameUpdate(BaseModel):
 async def update_asset_name(
     asset_id: str, body: NameUpdate, current_user: CurrentUser = Depends(require_studio)
 ):
-    if not body.name:
+    if not body.name.strip():
         raise HTTPException(status_code=400, detail="name is required")
     owner_type, owner_id = _owner(current_user)
+
+    # Verify ownership and capture source_type in one query
     r = await db_client.get(
         _url("/rest/v1/replicated_assets"),
         params={
             "owner_type":       f"eq.{owner_type}",
             "owner_id":         f"eq.{owner_id}",
             "source_record_id": f"eq.{asset_id}",
-            "select":           "source_record_id",
+            "select":           "source_record_id,source_type",
         },
         headers=_headers(),
     )
     r.raise_for_status()
     if not r.json():
         raise HTTPException(status_code=404, detail="Asset not found")
-    await update_records(config.tables["assets"], [{"id": asset_id, "fields": {"Name": body.name}}])
+    source_type = r.json()[0]["source_type"]
+
+    # Parallel: credentials + entity definition + field mappings
+    creds_r, entity_r, mappings_r = await asyncio.gather(
+        db_client.get(
+            _url("/rest/v1/source_credentials"),
+            params={
+                "owner_type":  f"eq.{owner_type}",
+                "owner_id":    f"eq.{owner_id}",
+                "source_type": f"eq.{source_type}",
+                "select":      "credentials",
+            },
+            headers=_headers(),
+        ),
+        db_client.get(
+            _url("/rest/v1/source_entity_definitions"),
+            params={
+                "owner_type":  f"eq.{owner_type}",
+                "owner_id":    f"eq.{owner_id}",
+                "source_type": f"eq.{source_type}",
+                "entity_type": "eq.asset",
+                "select":      "table_id",
+            },
+            headers=_headers(),
+        ),
+        db_client.get(
+            _url("/rest/v1/source_field_mappings"),
+            params={
+                "owner_type":  f"eq.{owner_type}",
+                "owner_id":    f"eq.{owner_id}",
+                "source_type": f"eq.{source_type}",
+                "select":      "mappings",
+            },
+            headers=_headers(),
+        ),
+    )
+
+    creds_rows = creds_r.json()
+    if not creds_rows:
+        raise HTTPException(status_code=503, detail="No source credentials configured")
+    creds = decrypt_credentials(creds_rows[0]["credentials"])
+
+    entity_rows = entity_r.json()
+    if not entity_rows or not entity_rows[0].get("table_id"):
+        raise HTTPException(status_code=503, detail="Asset entity not configured")
+    table_id = entity_rows[0]["table_id"]
+
+    raw_mappings = mappings_r.json()
+    field_mappings = raw_mappings[0]["mappings"] if raw_mappings else []
+    name_m = next((m for m in field_mappings if m.get("arthound_slot") == "name"), None)
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        if source_type == "airtable":
+            field_key = (
+                name_m["source_field_id"]
+                if name_m and name_m.get("source_field_id")
+                else "Name"
+            )
+            resp = await client.patch(
+                f"https://api.airtable.com/v0/{creds['base_id']}/{table_id}",
+                headers={
+                    "Authorization": f"Bearer {creds['api_token']}",
+                    "Content-Type": "application/json",
+                },
+                json={"records": [{"id": asset_id, "fields": {field_key: body.name}}]},
+            )
+            if not resp.is_success:
+                raise HTTPException(status_code=502, detail="Airtable write-back failed")
+
+        elif source_type == "jira":
+            if creds.get("deployment", "cloud") == "cloud":
+                base = f"https://api.atlassian.com/ex/jira/{creds['cloud_id']}/rest/api/3"
+            else:
+                base = f"{creds['instance_url'].rstrip('/')}/rest/api/2"
+            resp = await client.put(
+                f"{base}/issue/{asset_id}",
+                headers={
+                    "Authorization": f"Bearer {creds['access_token']}",
+                    "Content-Type": "application/json",
+                },
+                json={"fields": {"summary": body.name}},
+            )
+            if not resp.is_success:
+                raise HTTPException(status_code=502, detail="Jira write-back failed")
+
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Name write-back not supported for source type: {source_type}",
+            )
+
     return {"ok": True}
