@@ -159,6 +159,12 @@ async def _save_cursor(owner_type: str, owner_id: str, source_type: str, ts: str
     )
 
 
+async def create_sync_log(owner_type, owner_id, source_type, trigger) -> str:
+    """Create a sync_log entry in 'running' state. Returns the log ID.
+    Call this before spawning a background sync so callers can track progress."""
+    return await _start_log(owner_type, owner_id, source_type, trigger)
+
+
 async def _start_log(owner_type, owner_id, source_type, trigger) -> str:
     r = await db_client.post(
         _url("/rest/v1/sync_log"),
@@ -389,19 +395,23 @@ async def run_sync(
     source_type: str = "airtable",
     trigger: str = "manual",
     full: bool = False,
+    log_id: str | None = None,
 ) -> dict:
     """
     Run a sync for one owner. Safe to call from any trigger — login, manual,
     webhook, or polling. Returns a summary dict.
 
     full=True forces a complete re-fetch regardless of cursor.
+    log_id: if provided, reuses an existing sync_log entry (created by the
+    caller before spawning this as a background task) rather than creating a
+    new one. Allows callers to return a trackable log_id immediately.
     """
     lock = _get_sync_lock(owner_type, owner_id)
     if lock.locked():
         log.info("Sync already in progress for %s/%s — skipping duplicate trigger", owner_type, owner_id)
         return {"status": "skipped", "reason": "sync already in progress"}
     async with lock:
-        return await _run_sync_locked(owner_type, owner_id, source_type, trigger, full)
+        return await _run_sync_locked(owner_type, owner_id, source_type, trigger, full, log_id)
 
 
 async def _run_sync_locked(
@@ -410,8 +420,9 @@ async def _run_sync_locked(
     source_type: str = "airtable",
     trigger: str = "manual",
     full: bool = False,
+    log_id: str | None = None,
 ) -> dict:
-    log_id = await _start_log(owner_type, owner_id, source_type, trigger)
+    log_id = log_id or await _start_log(owner_type, owner_id, source_type, trigger)
     sync_started = datetime.now(timezone.utc).isoformat()
     _phase = "init"
 

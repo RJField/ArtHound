@@ -67,13 +67,30 @@ export default function FieldMappingModal({ onClose }) {
 
   async function resync() {
     setSyncing(true)
-    setStatus(null)
+    setStatus('Sync started…')
     try {
-      await apiFetch('/api/sync/run', {
+      const { log_id } = await apiFetch('/api/sync/run', {
         method: 'POST',
         body: JSON.stringify({ source_type: sourceType, full: true }),
       })
-      setTimeout(() => window.location.reload(), 4000)
+      // Poll until the sync completes or fails
+      let delay = 1500
+      while (true) {
+        await new Promise(r => setTimeout(r, delay))
+        const run = await apiFetch(`/api/sync/status/${log_id}`)
+        if (run.status === 'running') {
+          delay = Math.min(delay * 1.5, 5000)
+          continue
+        }
+        if (run.status === 'success') {
+          setStatus(`Sync complete — ${run.records_synced ?? 0} assets updated`)
+          window.location.reload()
+        } else {
+          setStatus(`Sync failed: ${run.error_detail ?? 'unknown error'}`)
+          setSyncing(false)
+        }
+        break
+      }
     } catch (e) {
       setStatus(e.message)
       setSyncing(false)
