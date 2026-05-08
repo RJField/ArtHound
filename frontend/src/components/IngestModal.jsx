@@ -154,6 +154,7 @@ export default function IngestModal({ dispatchId, onClose, onIngested }) {
   const [saved, setSaved]         = useState(false)
   const [saving, setSaving]       = useState(false)
   const [ingesting, setIngesting] = useState(false)
+  const [retrying, setRetrying]   = useState(false)
 
   useEffect(() => {
     apiFetch(`/api/payloads/${encodeURIComponent(dispatchId)}/ingest-schema`)
@@ -190,6 +191,7 @@ export default function IngestModal({ dispatchId, onClose, onIngested }) {
 
   const isJira     = schema?.source_type === 'jira'
   const isIngested = !!schema?.existing_mapping?.ingested_at
+  const isFailed   = !isIngested && !!schema?.existing_mapping?.failed_at
   const autoTarget = schema?.auto_target
 
   const selectedTable = schema?.source_schema?.find(t => t.id === autoTarget?.table_id)
@@ -318,6 +320,22 @@ export default function IngestModal({ dispatchId, onClose, onIngested }) {
     }
   }
 
+  async function handleRetry() {
+    setRetrying(true)
+    try {
+      const result = await apiFetch(`/api/payloads/${encodeURIComponent(dispatchId)}/retry-canonical`, {
+        method: 'POST',
+      })
+      toast.success(`Link recovered — record ${result.source_record_id}`)
+      onIngested?.(dispatchId, result.source_record_id)
+      onClose()
+    } catch (err) {
+      toast.error(err.message)
+    } finally {
+      setRetrying(false)
+    }
+  }
+
   const title = step === 'drift' ? 'Resolve mapping changes' : 'Map fields'
   const subtitle = step === 'drift'
     ? 'Your template needs updating before this dispatch can be ingested'
@@ -364,6 +382,14 @@ export default function IngestModal({ dispatchId, onClose, onIngested }) {
                   <span className="font-mono text-foreground">
                     {schema.existing_mapping.ingested_source_record_id}
                   </span>
+                </div>
+              )}
+
+              {isFailed && (
+                <div className="mb-4 px-3 py-2.5 rounded-lg bg-error/10 border border-error/30 text-xs text-error flex flex-col gap-1">
+                  <span className="font-medium">Canonical link failed after ingest</span>
+                  <span className="text-error/70">{schema.existing_mapping.failure_reason}</span>
+                  <span className="text-error/70 mt-0.5">The record was created in your source tool. Use Retry Link to re-establish the ArtHound connection without creating a duplicate.</span>
                 </div>
               )}
 
@@ -455,30 +481,47 @@ export default function IngestModal({ dispatchId, onClose, onIngested }) {
         {/* Footer — only on mapping step */}
         {schema && step === 'mapping' && (
           <div className="flex items-center justify-end gap-2 px-5 py-4 border-t border-border shrink-0">
-            <button
-              onClick={handleSave}
-              disabled={saving || isIngested}
-              className={cn(
-                'px-3 py-1.5 rounded-md text-xs font-medium transition-colors',
-                saving || isIngested
-                  ? 'bg-surface-2 text-muted cursor-not-allowed'
-                  : 'bg-surface-2 text-foreground hover:bg-surface-3 cursor-pointer'
-              )}
-            >
-              {saving ? 'Saving…' : saved ? 'Saved ✓' : 'Save Mapping'}
-            </button>
-            <button
-              onClick={handleIngest}
-              disabled={!saved || ingesting || isIngested}
-              className={cn(
-                'px-3 py-1.5 rounded-md text-xs font-medium transition-colors',
-                (!saved || ingesting || isIngested)
-                  ? 'bg-surface-2 text-muted cursor-not-allowed'
-                  : 'bg-accent text-white hover:bg-accent-hover cursor-pointer'
-              )}
-            >
-              {isIngested ? 'Ingested' : ingesting ? 'Ingesting…' : 'Ingest'}
-            </button>
+            {isFailed ? (
+              <button
+                onClick={handleRetry}
+                disabled={retrying}
+                className={cn(
+                  'px-3 py-1.5 rounded-md text-xs font-medium transition-colors',
+                  retrying
+                    ? 'bg-surface-2 text-muted cursor-not-allowed'
+                    : 'bg-error text-white hover:bg-error/80 cursor-pointer'
+                )}
+              >
+                {retrying ? 'Retrying…' : 'Retry Link'}
+              </button>
+            ) : (
+              <>
+                <button
+                  onClick={handleSave}
+                  disabled={saving || isIngested}
+                  className={cn(
+                    'px-3 py-1.5 rounded-md text-xs font-medium transition-colors',
+                    saving || isIngested
+                      ? 'bg-surface-2 text-muted cursor-not-allowed'
+                      : 'bg-surface-2 text-foreground hover:bg-surface-3 cursor-pointer'
+                  )}
+                >
+                  {saving ? 'Saving…' : saved ? 'Saved ✓' : 'Save Mapping'}
+                </button>
+                <button
+                  onClick={handleIngest}
+                  disabled={!saved || ingesting || isIngested}
+                  className={cn(
+                    'px-3 py-1.5 rounded-md text-xs font-medium transition-colors',
+                    (!saved || ingesting || isIngested)
+                      ? 'bg-surface-2 text-muted cursor-not-allowed'
+                      : 'bg-accent text-white hover:bg-accent-hover cursor-pointer'
+                  )}
+                >
+                  {isIngested ? 'Ingested' : ingesting ? 'Ingesting…' : 'Ingest'}
+                </button>
+              </>
+            )}
           </div>
         )}
       </div>

@@ -23,6 +23,7 @@ function buildModalProps(d, onIngest) {
     : null
 
   const isIngested = !!d.payload_field_mappings?.[0]?.ingested_at
+  const isFailed   = !isIngested && !!d.payload_field_mappings?.[0]?.failed_at
 
   return {
     title:  name,
@@ -34,7 +35,7 @@ function buildModalProps(d, onIngest) {
     ],
     actions: [
       {
-        label: isIngested ? 'Ingested ✓' : 'Ingest to Source',
+        label: isIngested ? 'Ingested ✓' : isFailed ? 'Link Failed — Retry' : 'Ingest to Source',
         style: isIngested ? undefined : 'primary',
         onClick: closeFn => {
           closeFn()
@@ -111,6 +112,7 @@ export default function VendorInbox() {
             const studio    = d.payload_data?.sender_studio_name || 'Unknown Studio'
             const date      = d.created_at ? new Date(d.created_at).toLocaleDateString() : '—'
             const isIngested = !!d.payload_field_mappings?.[0]?.ingested_at
+            const isFailed   = !isIngested && !!d.payload_field_mappings?.[0]?.failed_at
 
             return (
               <div
@@ -129,6 +131,9 @@ export default function VendorInbox() {
                     )}
                     {isIngested && (
                       <span className="px-2 py-0.5 rounded-full bg-accent/10 text-accent text-xs">Ingested</span>
+                    )}
+                    {isFailed && (
+                      <span className="px-2 py-0.5 rounded-full bg-error/10 text-error text-xs">Link Failed</span>
                     )}
                   </div>
                 </div>

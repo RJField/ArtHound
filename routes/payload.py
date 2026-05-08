@@ -784,7 +784,7 @@ async def get_ingest_schema(dispatch_id: str, user: CurrentUser = Depends(requir
         params={
             "dispatch_id": f"eq.{dispatch_id}",
             "recipient_vendor_id": f"eq.{user.vendor_id}",
-            "select": "target_table_id,target_issue_type,mappings,ingested_at,ingested_source_record_id",
+            "select": "target_table_id,target_issue_type,mappings,ingested_at,ingested_source_record_id,failed_at,failure_reason",
         },
         headers=_headers(),
     )
