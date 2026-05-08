@@ -1,0 +1,116 @@
+<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="_card.css">
+<style>
+  .field { display: flex; flex-direction: column; gap: 6px; }
+  .field label {
+    font-size: 11px; font-weight: 600; color: var(--ah-fg-muted);
+    text-transform: uppercase; letter-spacing: 0.08em;
+  }
+
+  .input {
+    background: var(--ah-surface-2);
+    border: 1px solid var(--ah-border);
+    border-radius: var(--ah-radius-md);
+    color: var(--ah-fg);
+    font-family: inherit; font-size: 14px;
+    padding: 8px 12px;
+    height: 36px;
+    outline: none;
+    transition: border-color 120ms, box-shadow 120ms;
+    width: 100%;
+    box-sizing: border-box;
+  }
+  .input::placeholder { color: var(--ah-fg-disabled); }
+  .input.is-focused {
+    border-color: var(--ah-accent);
+    box-shadow: 0 0 0 2px rgba(124,106,244,0.25);
+  }
+  .input.is-error {
+    border-color: var(--ah-error);
+    box-shadow: 0 0 0 2px rgba(248,113,113,0.20);
+  }
+
+  textarea.input {
+    height: auto; min-height: 80px; resize: vertical;
+    line-height: 1.5;
+  }
+
+  .help { font-size: 11px; color: var(--ah-fg-muted); }
+  .help.accent { color: var(--ah-accent); }
+  .help.error  { color: var(--ah-error); }
+
+  .check {
+    display: inline-flex; align-items: center; gap: 10px;
+    font-size: 13px; color: var(--ah-fg); cursor: pointer;
+    user-select: none;
+  }
+  .check input { display: none; }
+  .check .box {
+    width: 16px; height: 16px;
+    border: 1px solid var(--ah-border);
+    border-radius: 4px;
+    background: var(--ah-surface-2);
+    display: grid; place-items: center;
+  }
+  .check input:checked + .box {
+    background: var(--ah-accent); border-color: var(--ah-accent);
+  }
+  .check input:checked + .box::after {
+    content: ""; width: 8px; height: 4px;
+    border: 2px solid #fff; border-top: 0; border-right: 0;
+    transform: rotate(-45deg) translateY(-1px);
+  }
+
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+</style>
+</head><body>
+  <div class="ds-head">
+    <h1>Inputs</h1>
+    <p>36px tall, 6px radius, 14&nbsp;/&nbsp;400 body. Default sits on <code style="font-family:var(--ah-font-mono);font-size:11px">--ah-surface-2</code>; focus lifts the border to <code style="font-family:var(--ah-font-mono);font-size:11px">--ah-accent</code> with a 2px soft ring.</p>
+  </div>
+
+  <div class="ds-stage">
+    <div class="grid2">
+      <div class="field">
+        <label>Email</label>
+        <input class="input" value="m@studio.gg" />
+        <span class="help">Default · resting</span>
+      </div>
+      <div class="field">
+        <label>Password</label>
+        <input class="input is-focused" type="password" value="••••••••" />
+        <span class="help accent">Focused · accent border + ring</span>
+      </div>
+      <div class="field">
+        <label>Studio code</label>
+        <input class="input is-error" value="acme " />
+        <span class="help error">Code can't contain spaces.</span>
+      </div>
+      <div class="field">
+        <label>Status</label>
+        <select class="input">
+          <option>In review</option>
+          <option>Approved</option>
+          <option>Blocked</option>
+        </select>
+        <span class="help">Native select, same chrome</span>
+      </div>
+    </div>
+
+    <div class="ds-divider"></div>
+
+    <div class="field">
+      <label>Description</label>
+      <textarea class="input" placeholder="Briefly describe what to review…"></textarea>
+    </div>
+
+    <label class="check">
+      <input type="checkbox" checked />
+      <span class="box"></span>
+      <span>Apply to all assets in this product</span>
+    </label>
+  </div>
+
+  <div class="ds-foot">
+    Tokens: <code>--ah-surface-2</code> · <code>--ah-border</code> · <code>--ah-accent</code> · <code>--ah-error</code> · <code>--ah-radius-md</code>.
+  </div>
+</body></html>

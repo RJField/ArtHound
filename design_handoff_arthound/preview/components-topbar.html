@@ -1,0 +1,123 @@
+<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="_card.css">
+<style>
+  .frame {
+    background: var(--ah-surface);
+    border: 1px solid var(--ah-border);
+    border-radius: var(--ah-radius-xl);
+    overflow: hidden;
+  }
+
+  .topbar {
+    height: 52px;
+    background: var(--ah-surface);
+    border-bottom: 1px solid var(--ah-border-soft);
+    display: flex; align-items: center;
+    padding: 0 18px;
+    gap: 22px;
+    color: var(--ah-fg);
+  }
+
+  .brand { display: flex; align-items: center; gap: 10px; }
+  .brand img {
+    width: 24px; height: 24px; object-fit: contain;
+    filter: drop-shadow(0 0 6px rgba(124,106,244,0.20));
+  }
+  .brand span {
+    font-size: 14px; font-weight: 600;
+    letter-spacing: -0.005em;
+  }
+
+  .nav { display: flex; align-items: center; gap: 2px; flex: 1; }
+  .nav a {
+    padding: 6px 12px;
+    border-radius: var(--ah-radius-md);
+    font-size: 13px; font-weight: 500;
+    letter-spacing: -0.005em;
+    color: var(--ah-fg-muted);
+    text-decoration: none;
+    transition: background-color 120ms, color 120ms;
+  }
+  .nav a:hover { color: var(--ah-fg); background: var(--ah-surface-2); }
+  .nav a.active { background: var(--ah-surface-2); color: var(--ah-fg); }
+
+  .right { display: flex; align-items: center; gap: 4px; }
+  .icon-btn {
+    width: 32px; height: 32px;
+    display: grid; place-items: center;
+    border-radius: var(--ah-radius-md);
+    color: var(--ah-fg-muted);
+    cursor: pointer; position: relative;
+  }
+  .icon-btn:hover { background: var(--ah-surface-2); color: var(--ah-fg); }
+  .icon-btn .dot {
+    position: absolute; top: 7px; right: 8px;
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--ah-accent);
+    box-shadow: 0 0 0 1.5px var(--ah-surface);
+  }
+  .avatar {
+    width: 28px; height: 28px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #4d3ad6, #9b8ef8);
+    color: #fff;
+    display: grid; place-items: center;
+    font-size: 12px; font-weight: 600;
+    margin-left: 6px;
+  }
+
+  .below {
+    background: var(--ah-bg);
+    padding: 16px 18px 22px;
+    color: var(--ah-fg-muted);
+    font-size: 12px;
+    line-height: 1.5;
+  }
+  .below .row {
+    display: inline-flex; gap: 8px; margin-top: 8px; flex-wrap: wrap;
+  }
+  .below .chip {
+    background: var(--ah-surface-2); color: var(--ah-fg);
+    font-family: var(--ah-font-mono); font-size: 10px;
+    padding: 2px 8px; border-radius: 9999px;
+  }
+</style>
+</head><body>
+  <div class="ds-head">
+    <h1>Topbar</h1>
+    <p>52px tall, shown over the page background to demonstrate the chrome boundary. NavLinks are 13&nbsp;/&nbsp;500 with tightened tracking; active state fills with <code style="font-family:var(--ah-font-mono);font-size:11px">--ah-surface-2</code>.</p>
+  </div>
+
+  <div class="frame">
+    <div class="topbar">
+      <div class="brand">
+        <img src="../assets/ArtHound_logo.png" alt="" />
+        <span>ArtHound</span>
+      </div>
+      <nav class="nav">
+        <a href="#" class="active">Home</a>
+        <a href="#">Assets</a>
+        <a href="#">Shares</a>
+        <a href="#">Reviews</a>
+        <a href="#">Vendors</a>
+      </nav>
+      <div class="right">
+        <div class="icon-btn" title="Search">⌕</div>
+        <div class="icon-btn" title="Notifications">◔<span class="dot"></span></div>
+        <div class="avatar">M</div>
+      </div>
+    </div>
+    <div class="below">
+      Page content sits below on <code style="font-family:var(--ah-font-mono);font-size:11px;background:var(--ah-surface-2);padding:1px 6px;border-radius:4px">--ah-bg</code>.
+      <div class="row">
+        <span class="chip">h-52</span>
+        <span class="chip">--ah-surface</span>
+        <span class="chip">border-soft bottom</span>
+        <span class="chip">notification dot · accent</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="ds-foot">
+    Tokens: <code>--ah-surface</code> · <code>--ah-border-soft</code> · <code>--ah-surface-2</code> (active fill) · <code>--ah-accent</code> (notification dot).
+  </div>
+</body></html>

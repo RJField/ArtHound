@@ -1,0 +1,82 @@
+/* UI Kit shared shell — pulls from ../../colors_and_type.css */
+@import url('https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; }
+body { margin: 0; background: var(--ah-bg); color: var(--ah-fg); font-family: var(--ah-font-sans); -webkit-font-smoothing: antialiased; }
+
+/* Tailwind-ish utility shorthand the kit uses */
+.row { display:flex; align-items:center; }
+.col { display:flex; flex-direction:column; }
+.flex1 { flex:1; }
+.shrink0 { flex-shrink:0; }
+.gap-1{gap:4px} .gap-2{gap:8px} .gap-3{gap:12px} .gap-4{gap:16px} .gap-5{gap:20px} .gap-6{gap:24px} .gap-8{gap:32px}
+
+/* Type */
+.t-xs{font-size:12px} .t-sm{font-size:14px} .t-base{font-size:16px} .t-lg{font-size:18px} .t-2xl{font-size:24px}
+.t-muted{color:var(--ah-fg-muted)} .t-fg{color:var(--ah-fg)} .t-accent{color:var(--ah-accent)}
+.t-error{color:var(--ah-error)} .t-warning{color:var(--ah-warning)}
+.tabular{font-variant-numeric:tabular-nums}
+.upper{text-transform:uppercase;letter-spacing:0.06em}
+.semib{font-weight:600} .med{font-weight:500}
+
+/* Surfaces */
+.bg-surface{background:var(--ah-surface)}
+.bg-surface-2{background:var(--ah-surface-2)}
+.bg-surface-3{background:var(--ah-surface-3)}
+.bg-bg{background:var(--ah-bg)}
+.bg-accent{background:var(--ah-accent)}
+.bg-accent-tint{background:var(--ah-accent-tint)}
+.border{border:1px solid var(--ah-border)}
+.border-b{border-bottom:1px solid var(--ah-border)}
+.border-r{border-right:1px solid var(--ah-border)}
+.border-soft{border:1px solid var(--ah-border-soft)}
+.border-accent{border-color:var(--ah-accent) !important}
+
+.r-md{border-radius:var(--ah-radius-md)}
+.r-lg{border-radius:var(--ah-radius-lg)}
+.r-xl{border-radius:var(--ah-radius-xl)}
+.r-pill{border-radius:9999px}
+
+.shadow-lg{box-shadow:var(--ah-shadow-lg)}
+
+/* Buttons */
+.btn{display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:var(--ah-radius-md);font-size:12px;font-weight:500;border:0;cursor:pointer;color:var(--ah-fg);background:transparent;transition:background-color .12s,color .12s,border-color .12s}
+.btn-primary{background:var(--ah-accent);color:#fff}
+.btn-primary:hover{background:var(--ah-accent-hover)}
+.btn-secondary{background:var(--ah-surface-2);color:var(--ah-fg)}
+.btn-secondary:hover{background:var(--ah-surface-3)}
+.btn-ghost{color:var(--ah-fg-muted)}
+.btn-ghost:hover{color:var(--ah-fg);background:var(--ah-surface-2)}
+.btn-danger{background:var(--ah-error);color:#fff}
+
+/* Inputs */
+.input{background:var(--ah-surface-2);border:1px solid var(--ah-border);color:var(--ah-fg);border-radius:var(--ah-radius-lg);padding:8px 12px;font-size:14px;outline:none;font-family:inherit;width:100%}
+.input:focus{border-color:var(--ah-accent)}
+
+/* Pills */
+.chip{display:inline-flex;align-items:center;padding:2px 10px;border-radius:9999px;background:var(--ah-surface-2);color:var(--ah-fg-muted);font-size:12px;line-height:1.4}
+.chip-accent{border:1px solid var(--ah-accent);color:var(--ah-accent);background:transparent}
+.pill-success{background:var(--ah-success-tint);color:var(--ah-success)}
+.pill-info{background:var(--ah-info-tint);color:var(--ah-info)}
+.pill-warning{background:var(--ah-warning-tint);color:var(--ah-warning)}
+.pill-error{background:var(--ah-error-tint);color:var(--ah-error)}
+.pill{padding:3px 10px;border-radius:9999px;font-size:12px;font-weight:500;display:inline-flex;align-items:center;gap:4px}
+
+/* NavLink active */
+.nav-link{padding:6px 12px;border-radius:var(--ah-radius-md);font-size:12px;font-weight:500;color:var(--ah-fg-muted);cursor:pointer;transition:background-color .12s,color .12s}
+.nav-link:hover{color:var(--ah-fg);background:var(--ah-surface-2)}
+.nav-link.active{background:var(--ah-surface-2);color:var(--ah-fg)}
+
+/* Card */
+.card{background:var(--ah-surface);border:1px solid var(--ah-border);border-radius:var(--ah-radius-xl)}
+.card-int:hover{border-color:var(--ah-border-on-accent);transition:border-color .12s}
+
+/* Skeleton */
+@keyframes ah-pulse { 0%,100%{opacity:1} 50%{opacity:.5} }
+.skeleton{background:var(--ah-surface-2);border-radius:4px;animation:ah-pulse 1.4s ease-in-out infinite}
+
+/* Scrollbar (subtle) */
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-thumb{background:var(--ah-surface-3);border-radius:4px}
+::-webkit-scrollbar-track{background:transparent}

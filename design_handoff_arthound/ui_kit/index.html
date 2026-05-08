@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>ArtHound — Studio app · UI Kit</title>
+<link rel="icon" href="../../assets/favicon.svg"/>
+<link rel="stylesheet" href="../../colors_and_type.css"/>
+<link rel="stylesheet" href="kit.css"/>
+<style>
+  html,body,#root{height:100%}
+  body{background:var(--ah-bg)}
+  .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--ah-surface);border:1px solid var(--ah-border);border-radius:8px;padding:8px 14px;font-size:12px;color:var(--ah-fg);box-shadow:var(--ah-shadow-md);z-index:60}
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel" src="Components.jsx"></script>
+<script type="text/babel" src="Login.jsx"></script>
+<script type="text/babel" src="StudioHome.jsx"></script>
+<script type="text/babel" src="AssetsScreen.jsx"></script>
+<script type="text/babel" src="NewReviewModal.jsx"></script>
+
+<script type="text/babel">
+const { useState, useEffect } = React;
+
+function App() {
+  const [auth, setAuth] = useState(null);     // {email}
+  const [page, setPage] = useState('Home');
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [toast, setToast] = useState(null);
+
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 1800);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  if (!auth) return <Login onSignIn={email => setAuth({email, org:'Riot Forge'})}/>;
+
+  return (
+    <div className="col" style={{height:'100%'}}>
+      <Topbar active={page} onNavigate={setPage} onSignOut={() => setAuth(null)}/>
+      <div className="row flex1" style={{minHeight:0}}>
+        {page === 'Home'   && <StudioHome org={auth.org} onNavigate={setPage}/>}
+        {page === 'Assets' && <AssetsScreen onOpenReviewModal={() => setReviewOpen(true)}/>}
+        {(page !== 'Home' && page !== 'Assets') && (
+          <div className="col flex1" style={{padding:32,alignItems:'center',justifyContent:'center'}}>
+            <span className="t-muted t-sm">{page} — placeholder for the UI kit. Implement against the same components.</span>
+          </div>
+        )}
+      </div>
+      {reviewOpen && <NewReviewModal onClose={() => setReviewOpen(false)} onCreate={(name) => {
+        setReviewOpen(false);
+        setToast('Review created — ' + name);
+      }}/>}
+      {toast && <div className="toast">{toast}</div>}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>

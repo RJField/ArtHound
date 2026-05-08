@@ -1,0 +1,95 @@
+/* Shared layout for design-system preview cards.
+   Each card is sized to render around 700×<varies> px on the Design System tab. */
+@import url('https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+@import url('../colors_and_type.css');
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--ah-bg);
+  color: var(--ah-fg);
+  font-family: var(--ah-font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+body {
+  padding: 24px 28px;
+  box-sizing: border-box;
+}
+
+/* Unified card shell — every preview gets a header with title + subtitle,
+   a stage where the component lives (on raised surface), and an optional
+   token caption strip at the bottom. */
+.ds-head { margin-bottom: 16px; }
+.ds-head h1 {
+  margin: 0;
+  font-family: var(--ah-font-display);
+  font-size: 16px; font-weight: 600;
+  color: var(--ah-fg);
+  letter-spacing: -0.005em;
+}
+.ds-head p {
+  margin: 4px 0 0;
+  font-size: 12px; color: var(--ah-fg-muted); line-height: 1.5;
+}
+.ds-stage {
+  background: var(--ah-surface);
+  border: 1px solid var(--ah-border);
+  border-radius: var(--ah-radius-xl);
+  padding: 22px 24px;
+  display: flex; flex-direction: column; gap: 16px;
+}
+.ds-stage--bare { background: var(--ah-bg); padding: 0; border-radius: var(--ah-radius-xl); overflow: hidden; }
+.ds-row {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+}
+.ds-divider {
+  height: 1px; background: var(--ah-border-soft); margin: 4px 0;
+}
+.ds-sub {
+  font-size: 10px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--ah-fg-muted);
+}
+.ds-foot {
+  margin-top: 14px;
+  font-size: 11px; color: var(--ah-fg-muted); line-height: 1.5;
+}
+.ds-foot code {
+  font-family: var(--ah-font-mono); font-size: 10px;
+  background: var(--ah-surface-2); color: var(--ah-fg);
+  padding: 1px 6px; border-radius: 4px;
+}
+.row { display: flex; gap: 12px; flex-wrap: wrap; align-items: stretch; }
+.col { display: flex; flex-direction: column; gap: 12px; }
+.swatch {
+  flex: 1 1 0;
+  min-width: 88px;
+  border-radius: var(--ah-radius-lg);
+  border: 1px solid var(--ah-border);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  min-height: 84px;
+  position: relative;
+  overflow: hidden;
+}
+.swatch .name { font-size: 12px; font-weight: 600; color: var(--ah-fg); }
+.swatch .hex  { font-family: var(--ah-font-mono); font-size: 11px; color: var(--ah-fg-muted); }
+.eyebrow {
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--ah-fg-muted);
+  margin: 0 0 8px 0;
+}
+.token-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--ah-border);
+  border-radius: var(--ah-radius-md);
+  background: var(--ah-surface);
+}
+.token-row .key { font-size: 11px; color: var(--ah-fg-muted); font-family: var(--ah-font-mono); }
+.token-row .val { font-size: 12px; color: var(--ah-fg); margin-left: auto; font-family: var(--ah-font-mono); }

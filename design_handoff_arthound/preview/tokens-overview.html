@@ -1,0 +1,123 @@
+<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="_card.css">
+<style>
+  .hdr { margin-bottom: 14px; }
+  .hdr h1 { font-size: 18px; font-weight: 600; color: var(--ah-fg); margin: 0 0 4px; letter-spacing: -0.01em; }
+  .hdr p { font-size: 12px; color: var(--ah-fg-muted); margin: 0; line-height: 1.5; max-width: 620px; }
+
+  .group { margin-bottom: 14px; }
+  .group-title {
+    font-size: 10px; font-weight: 600; color: var(--ah-fg-muted);
+    text-transform: uppercase; letter-spacing: 0.08em; margin: 0 0 6px;
+  }
+
+  .tokens {
+    display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px;
+  }
+  .tok {
+    display: grid; grid-template-columns: 28px 1fr auto; align-items: center;
+    gap: 10px; padding: 6px 10px;
+    border: 1px solid var(--ah-border); border-radius: var(--ah-radius-md);
+    background: var(--ah-surface);
+    font-size: 11px;
+  }
+  .tok .sw {
+    width: 28px; height: 22px; border-radius: 4px; border: 1px solid var(--ah-border);
+  }
+  .tok .name {
+    font-family: var(--ah-font-mono); font-size: 11px;
+    color: var(--ah-fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .tok .hex {
+    font-family: var(--ah-font-mono); font-size: 10px; color: var(--ah-fg-muted);
+  }
+
+  .type-row {
+    display: grid; grid-template-columns: 60px 1fr auto; align-items: baseline;
+    gap: 14px; padding: 6px 10px;
+    border-bottom: 1px solid var(--ah-border-soft);
+  }
+  .type-row:last-child { border-bottom: 0; }
+  .type-row .label { font-family: var(--ah-font-mono); font-size: 10px; color: var(--ah-fg-muted); }
+  .type-row .specimen { color: var(--ah-fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .type-row .px { font-family: var(--ah-font-mono); font-size: 10px; color: var(--ah-fg-muted); }
+
+  .file-tag {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-family: var(--ah-font-mono); font-size: 10px;
+    color: var(--ah-fg-muted); background: var(--ah-surface-2);
+    padding: 3px 8px; border-radius: 9999px;
+  }
+  .file-tag::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--ah-accent); }
+</style>
+</head><body>
+  <div class="hdr">
+    <h1>Colors &amp; Type — design tokens</h1>
+    <p>The canonical source of truth for ArtHound's palette, typography, spacing, radii, and elevation. These CSS custom properties (prefixed <code style="font-family:var(--ah-font-mono);font-size:11px;color:var(--ah-fg)">--ah-*</code>) are mirrored in the production Tailwind <code style="font-family:var(--ah-font-mono);font-size:11px;color:var(--ah-fg)">@theme</code> block — every other card in this design system reads from this file.</p>
+    <div style="margin-top:8px"><span class="file-tag">tokens/colors_and_type.css · 196 lines</span></div>
+  </div>
+
+  <div class="group">
+    <p class="group-title">Brand &amp; action — 4 of 7 shown</p>
+    <div class="tokens">
+      <div class="tok"><div class="sw" style="background:#7c6af4"></div><div class="name">--ah-accent</div><div class="hex">#7C6AF4</div></div>
+      <div class="tok"><div class="sw" style="background:#9b8ef8"></div><div class="name">--ah-accent-hover</div><div class="hex">#9B8EF8</div></div>
+      <div class="tok"><div class="sw" style="background:#b6a8ff"></div><div class="name">--ah-fg-link</div><div class="hex">#B6A8FF</div></div>
+      <div class="tok"><div class="sw" style="background:#4d3ad6"></div><div class="name">--ah-brand-purple-deep</div><div class="hex">#4D3AD6</div></div>
+    </div>
+  </div>
+
+  <div class="group">
+    <p class="group-title">Surface ramp — bg → cards → inputs</p>
+    <div class="tokens">
+      <div class="tok"><div class="sw" style="background:#0d0a1a"></div><div class="name">--ah-bg</div><div class="hex">#0D0A1A</div></div>
+      <div class="tok"><div class="sw" style="background:#161229"></div><div class="name">--ah-surface</div><div class="hex">#161229</div></div>
+      <div class="tok"><div class="sw" style="background:#1f1a3a"></div><div class="name">--ah-surface-2</div><div class="hex">#1F1A3A</div></div>
+      <div class="tok"><div class="sw" style="background:#3a2f6b"></div><div class="name">--ah-border</div><div class="hex">#3A2F6B</div></div>
+    </div>
+  </div>
+
+  <div class="group">
+    <p class="group-title">Status &amp; priority — semantic signals</p>
+    <div class="tokens">
+      <div class="tok"><div class="sw" style="background:#34d399"></div><div class="name">--ah-success / --ah-p1</div><div class="hex">#34D399</div></div>
+      <div class="tok"><div class="sw" style="background:#60a5fa"></div><div class="name">--ah-info / --ah-p2</div><div class="hex">#60A5FA</div></div>
+      <div class="tok"><div class="sw" style="background:#fbbf24"></div><div class="name">--ah-warning / --ah-p3</div><div class="hex">#FBBF24</div></div>
+      <div class="tok"><div class="sw" style="background:#f87171"></div><div class="name">--ah-error / --ah-p5</div><div class="hex">#F87171</div></div>
+    </div>
+  </div>
+
+  <div class="group">
+    <p class="group-title">Type scale — Inter (fallback: system-ui)</p>
+    <div style="border:1px solid var(--ah-border); border-radius: var(--ah-radius-md); background: var(--ah-surface); padding: 4px 4px;">
+      <div class="type-row">
+        <div class="label">2xl / 24</div>
+        <div class="specimen" style="font-size:24px;font-weight:600;letter-spacing:-0.01em">Welcome back</div>
+        <div class="px">--ah-text-2xl</div>
+      </div>
+      <div class="type-row">
+        <div class="label">lg / 18</div>
+        <div class="specimen" style="font-size:18px;font-weight:600">Page title</div>
+        <div class="px">--ah-text-lg</div>
+      </div>
+      <div class="type-row">
+        <div class="label">sm / 14</div>
+        <div class="specimen" style="font-size:14px">Body — default reading size</div>
+        <div class="px">--ah-text-sm</div>
+      </div>
+      <div class="type-row">
+        <div class="label">xs / 12</div>
+        <div class="specimen" style="font-size:12px;color:var(--ah-fg-muted)">Caption · table cell · chip</div>
+        <div class="px">--ah-text-xs</div>
+      </div>
+      <div class="type-row">
+        <div class="label">mono / 12</div>
+        <div class="specimen" style="font-family:var(--ah-font-mono);font-size:12px">CHAR_HERO_v0014</div>
+        <div class="px">--ah-font-mono</div>
+      </div>
+    </div>
+  </div>
+
+  <p style="font-size:11px;color:var(--ah-fg-muted);margin:0;line-height:1.5">
+    Also defined in this file: full priority scale (P1–P5), spacing scale (0–48px), radii (4–pill), elevation shadows (sm/md/lg/glow + focus ring), and motion timing (120/180/300ms with two easing curves). See sibling cards for individual catalogs.
+  </p>
+</body></html>
