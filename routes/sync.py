@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from lib.auth import CurrentUser, get_current_user, require_studio, require_vendor
 from lib.db import db_client, _url, _headers
-from lib.sync.runner import run_sync
+from lib.sync.runner import run_sync, create_sync_log
 
 log = logging.getLogger(__name__)
 
@@ -108,6 +108,7 @@ async def trigger_sync(
             raise HTTPException(status_code=400, detail="No source credentials configured")
         source_type = rows[0]["source_type"]
 
+    log_id = await create_sync_log(owner_type, owner_id, source_type, "manual")
     background_tasks.add_task(
         run_sync,
         owner_type=owner_type,
@@ -115,8 +116,9 @@ async def trigger_sync(
         source_type=source_type,
         trigger="manual",
         full=body.full,
+        log_id=log_id,
     )
-    return {"ok": True, "message": "Sync started in background"}
+    return {"ok": True, "log_id": log_id}
 
 
 # ── Sync status ───────────────────────────────────────────────────────────────
@@ -157,6 +159,35 @@ async def sync_status(
         "recent_runs": log_r.json(),
         "cursors":     cursor_r.json(),
     }
+
+
+@router.get("/status/{log_id}")
+async def sync_log_status(
+    log_id: str,
+    user: CurrentUser = Depends(get_current_user),
+):
+    """Poll the status of a specific sync run by log ID.
+    Returns the log entry; status is 'running', 'success', or 'error'."""
+    owner_type = user.role
+    owner_id   = user.studio_id if user.role == "studio" else user.vendor_id
+    if not owner_id:
+        raise HTTPException(status_code=403, detail="No studio/vendor linked to account")
+
+    r = await db_client.get(
+        _url("/rest/v1/sync_log"),
+        params={
+            "id":         f"eq.{log_id}",
+            "owner_type": f"eq.{owner_type}",
+            "owner_id":   f"eq.{owner_id}",
+            "select":     "id,status,trigger,started_at,completed_at,records_synced,error_detail",
+            "limit":      "1",
+        },
+        headers=_headers(),
+    )
+    rows = r.json()
+    if not rows:
+        raise HTTPException(status_code=404, detail="Sync log entry not found")
+    return rows[0]
 
 
 # ── Field mapping ─────────────────────────────────────────────────────────────
