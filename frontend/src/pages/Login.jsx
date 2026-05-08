@@ -35,8 +35,8 @@ export default function Login() {
   return (
     <div className="flex items-center justify-center min-h-screen p-8 relative overflow-hidden">
       <div
-        className="absolute inset-0 bg-cover bg-center opacity-10 pointer-events-none"
-        style={{ backgroundImage: 'url(/ArtHound_logo.png)' }}
+        className="absolute inset-0 bg-cover bg-center pointer-events-none -z-10"
+        style={{ backgroundImage: 'url(/login_background.png)' }}
       />
       <form
         onSubmit={handleLogin}
