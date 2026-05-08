@@ -43,13 +43,24 @@ async def _poll_loop() -> None:
     """
     Background polling task. Disabled when SYNC_POLL_INTERVAL_SECONDS is unset or 0.
     When enabled, triggers a delta sync for every owner that has source credentials stored.
+
+    Failure handling: exponential backoff up to 4× the base interval; escalates from
+    warning → error after 3 consecutive failures so log aggregators can alert on it.
     """
     interval = int(os.environ.get("SYNC_POLL_INTERVAL_SECONDS", "3600"))
     if not interval:
         return
     log.info("Polling sync enabled — interval: %ds", interval)
+    _MAX_BACKOFF = interval * 4
+    _ERROR_THRESHOLD = 3
+    consecutive_failures = 0
     while True:
-        await asyncio.sleep(interval)
+        if consecutive_failures == 0:
+            await asyncio.sleep(interval)
+        else:
+            backoff = min(interval * (2 ** (consecutive_failures - 1)), _MAX_BACKOFF)
+            log.warning("Poll backoff: %ds after %d consecutive failure(s)", backoff, consecutive_failures)
+            await asyncio.sleep(backoff)
         try:
             r = await db_client.get(
                 _url("/rest/v1/source_credentials"),
@@ -67,8 +78,15 @@ async def _poll_loop() -> None:
                             full=False,
                         )
                     )
+            if consecutive_failures:
+                log.info("Poll cycle recovered after %d consecutive failure(s)", consecutive_failures)
+            consecutive_failures = 0
         except Exception as exc:
-            log.warning("Poll cycle error: %s", exc)
+            consecutive_failures += 1
+            if consecutive_failures >= _ERROR_THRESHOLD:
+                log.error("Poll cycle error (%d consecutive): %s", consecutive_failures, exc)
+            else:
+                log.warning("Poll cycle error (%d consecutive): %s", consecutive_failures, exc)
 
 
 async def _attachment_drain_loop() -> None:

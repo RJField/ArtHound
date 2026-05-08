@@ -1044,8 +1044,23 @@ function suggestEntitiesFromAsset(assetTableId, tables) {
       const combined = (linkedTable.name + ' ' + field.name).toLowerCase()
       if (!s.product && _PRODUCT_HINTS.test(combined))
         s.product = { mode: 'table', table_id: linkedTableId, table_name: linkedTable.name, filters: [], rel_field_id: field.id, rel_field_name: field.name, rel_direction: 'child_holds_link' }
-      if (!s.work && _WORK_HINTS.test(combined))
-        s.work = { mode: 'table', table_id: linkedTableId, table_name: linkedTable.name, filters: [], rel_field_id: field.id, rel_field_name: field.name, rel_direction: 'child_holds_link' }
+      if (!s.work && _WORK_HINTS.test(combined)) {
+        // The link field we found is on the ASSET side. Find the symmetric field on
+        // the work table that points back to the asset table (child_holds_link direction).
+        // Airtable always creates a symmetric counterpart, so this almost always succeeds.
+        const symField = linkedTable.fields?.find(
+          f => f.type === 'multipleRecordLinks' && f.options?.linkedTableId === assetTableId
+        )
+        s.work = {
+          mode: 'table',
+          table_id:       linkedTableId,
+          table_name:     linkedTable.name,
+          filters:        [],
+          rel_field_id:   symField ? symField.id   : field.id,
+          rel_field_name: symField ? symField.name : field.name,
+          rel_direction:  symField ? 'child_holds_link' : 'parent_holds_link',
+        }
+      }
     }
     if (field.type === 'singleSelect') {
       const fl = field.name.toLowerCase()

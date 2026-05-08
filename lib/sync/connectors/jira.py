@@ -361,22 +361,37 @@ class JiraConnector(BaseConnector):
 
     async def create_issue(self, fields: dict) -> str:
         """Create a Jira issue and return the new issue ID (numeric string)."""
+        _SERVER_ERROR = {500, 502, 503, 504}
+        r = None
         for attempt in range(_MAX_RETRIES):
-            r = await self._client.post(
-                f"{self._base}/issue",
-                headers={**self._headers(), "Content-Type": "application/json"},
-                json={"fields": fields},
-            )
-            if r.status_code != 429:
-                break
-            wait = int(r.headers.get("Retry-After", _DEFAULT_RETRY_WAIT))
-            log.warning("Jira 429 on create_issue — retrying in %ds (attempt %d)", wait, attempt + 1)
-            await asyncio.sleep(wait)
+            try:
+                r = await self._client.post(
+                    f"{self._base}/issue",
+                    headers={**self._headers(), "Content-Type": "application/json"},
+                    json={"fields": fields},
+                )
+            except httpx.TransportError as exc:
+                log.warning("Jira create_issue network error (attempt %d/%d): %s", attempt + 1, _MAX_RETRIES, exc)
+                r = None
+                if attempt + 1 < _MAX_RETRIES:
+                    await asyncio.sleep(_DEFAULT_RETRY_WAIT)
+                continue
+            if r.status_code == 429:
+                wait = int(r.headers.get("Retry-After", _DEFAULT_RETRY_WAIT))
+                log.warning("Jira 429 on create_issue — retrying in %ds (attempt %d)", wait, attempt + 1)
+                await asyncio.sleep(wait)
+                continue
+            if r.status_code in _SERVER_ERROR:
+                log.warning("Jira %s on create_issue — retrying in %ds (attempt %d)", r.status_code, _DEFAULT_RETRY_WAIT, attempt + 1)
+                await asyncio.sleep(_DEFAULT_RETRY_WAIT)
+                continue
+            break
 
+        if r is None:
+            raise RuntimeError("Jira create_issue failed: exhausted retries on network error")
         if not r.is_success:
             raise RuntimeError(f"Jira create_issue failed ({r.status_code}): {r.text}")
-        data = r.json()
-        return data["id"]
+        return r.json()["id"]
 
     def build_entity_filter(self, entity_def: dict) -> str | None:
         """

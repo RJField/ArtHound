@@ -40,7 +40,6 @@ async def list_work(
     params: dict = {
         "owner_type":  f"eq.{owner_type}",
         "owner_id":    f"eq.{owner_id}",
-        "source_type": "eq.airtable",
         "select":      "id,source_record_id,source_asset_record_id,canonical_asset_id,name,status,estimate,meta,synced_at",
         "order":       "name.asc",
     }

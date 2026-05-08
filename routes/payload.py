@@ -560,7 +560,7 @@ async def get_outbox(user: CurrentUser = Depends(require_studio)):
         _url("/rest/v1/payload_dispatches"),
         params={
             "sender_studio_id": f"eq.{user.studio_id}",
-            "select": "id,asset_id,recipient_vendor_id,template_id,expires_at,revoked_at,created_at,payload_data,payload_field_mappings(ingested_at,ingested_source_record_id,ingested_by_user_id)",
+            "select": "id,asset_id,recipient_vendor_id,template_id,expires_at,revoked_at,created_at,payload_data,payload_field_mappings(ingested_at,failed_at,failure_reason,ingested_source_record_id,ingested_by_user_id)",
             "order": "created_at.desc",
         },
         headers=_headers(),
@@ -636,7 +636,7 @@ async def get_vendor_inbox(user: CurrentUser = Depends(require_vendor)):
         _url("/rest/v1/payload_dispatches"),
         params={
             "recipient_vendor_id": f"eq.{user.vendor_id}",
-            "select": "id,asset_id,sender_studio_id,expires_at,revoked_at,created_at,payload_data,payload_field_mappings(ingested_at,ingested_source_record_id)",
+            "select": "id,asset_id,sender_studio_id,expires_at,revoked_at,created_at,payload_data,payload_field_mappings(ingested_at,failed_at,failure_reason,ingested_source_record_id)",
             "order": "created_at.desc",
         },
         headers=_headers(),
@@ -915,6 +915,11 @@ async def do_ingest(dispatch_id: str, user: CurrentUser = Depends(require_vendor
     mapping_row = rows[0]
     if mapping_row.get("ingested_at"):
         raise HTTPException(status_code=409, detail="Already ingested")
+    if mapping_row.get("failed_at"):
+        raise HTTPException(
+            status_code=409,
+            detail="Previous ingest failed — use POST /retry-canonical to recover without re-creating the external record",
+        )
 
     mappings = mapping_row.get("mappings") or {}
 
@@ -1100,42 +1105,131 @@ async def do_ingest(dispatch_id: str, user: CurrentUser = Depends(require_vendor
                     detail=f"Source tool rejected the record: {exc.response.text}",
                 ) from exc
 
-    # Write canonical link + replicated_assets stub. External record exists from this
-    # point regardless of what follows — patch payload_field_mappings unconditionally.
-    export_ok, replicated_ok = await _write_canonical_link(
-        dispatch_id, user.vendor_id, source_type, source_record_id, dispatch["asset_id"]
-    )
-    if not export_ok or not replicated_ok:
-        # ORPHAN: prefix is the alerting hook — filter on this in your log aggregator.
-        # Manual remediation: check each table individually using the IDs below.
-        # payload_export_records missing if export_ok=False; replicated_assets missing if replicated_ok=False.
-        log.error(
-            "ORPHAN: canonical link failed after 3 attempts — "
-            "export_records=%s replicated_assets=%s — "
-            "dispatch=%s vendor=%s source_record=%s canonical_asset=%s",
-            "ok" if export_ok else "MISSING",
-            "ok" if replicated_ok else "MISSING",
-            dispatch_id, user.vendor_id, source_record_id, dispatch["asset_id"],
-        )
-
+    # Step 1 — record the new source record ID immediately. The external record exists
+    # from this point; the retry endpoint needs this ID regardless of what follows.
     await db_client.patch(
         _url("/rest/v1/payload_field_mappings"),
         params={"dispatch_id": f"eq.{dispatch_id}", "recipient_vendor_id": f"eq.{user.vendor_id}"},
         headers=_headers({"Prefer": "return=minimal"}),
-        json={
-            "ingested_at": _now_iso(),
-            "ingested_source_record_id": source_record_id,
-            "ingested_by_user_id": user.id,
-        },
+        json={"ingested_source_record_id": source_record_id, "ingested_by_user_id": user.id},
     )
-    await _log(dispatch_id, "ingested", detail={"source_record_id": source_record_id})
 
-    canonical_ok = export_ok and replicated_ok
+    # Step 2 — write canonical link. On success, mark ingested_at (complete).
+    # On failure, write failed_at + quarantine to failed_ingests (retryable).
+    export_ok, replicated_ok = await _write_canonical_link(
+        dispatch_id, user.vendor_id, source_type, source_record_id, dispatch["asset_id"]
+    )
+
+    if export_ok and replicated_ok:
+        await db_client.patch(
+            _url("/rest/v1/payload_field_mappings"),
+            params={"dispatch_id": f"eq.{dispatch_id}", "recipient_vendor_id": f"eq.{user.vendor_id}"},
+            headers=_headers({"Prefer": "return=minimal"}),
+            json={"ingested_at": _now_iso()},
+        )
+        await _log(dispatch_id, "ingested", detail={"source_record_id": source_record_id})
+        return {"ok": True, "source_record_id": source_record_id}
+
+    # ORPHAN: prefix is the alerting hook for log aggregators.
+    reason = (
+        f"export_records={'ok' if export_ok else 'MISSING'} "
+        f"replicated_assets={'ok' if replicated_ok else 'MISSING'}"
+    )
+    log.error(
+        "ORPHAN: canonical link failed after 3 attempts — %s — "
+        "dispatch=%s vendor=%s source_record=%s canonical_asset=%s",
+        reason, dispatch_id, user.vendor_id, source_record_id, dispatch["asset_id"],
+    )
+    now = _now_iso()
+    await asyncio.gather(
+        db_client.patch(
+            _url("/rest/v1/payload_field_mappings"),
+            params={"dispatch_id": f"eq.{dispatch_id}", "recipient_vendor_id": f"eq.{user.vendor_id}"},
+            headers=_headers({"Prefer": "return=minimal"}),
+            json={"failed_at": now, "failure_reason": reason},
+        ),
+        db_client.post(
+            _url("/rest/v1/failed_ingests"),
+            headers=_headers({"Prefer": "resolution=ignore-duplicates,return=minimal"}),
+            json={
+                "dispatch_id":       dispatch_id,
+                "vendor_id":         user.vendor_id,
+                "source_type":       source_type,
+                "source_record_id":  source_record_id,
+                "canonical_asset_id": dispatch["asset_id"],
+                "export_ok":         export_ok,
+                "replicated_ok":     replicated_ok,
+            },
+        ),
+    )
+    await _log(dispatch_id, "ingest_canonical_failed", detail={"source_record_id": source_record_id, "reason": reason})
     return {
         "ok": True,
         "source_record_id": source_record_id,
-        **({"canonical_link": "failed"} if not canonical_ok else {}),
+        "canonical_link": "failed",
+        "retry_path": f"POST /api/payload/{dispatch_id}/retry-canonical",
     }
+
+
+# ── retry-canonical (vendor: re-attempt failed canonical link without re-creating external record) ──
+
+@router.post("/{dispatch_id}/retry-canonical")
+async def retry_canonical(dispatch_id: str, user: CurrentUser = Depends(require_vendor)):
+    r_fi = await db_client.get(
+        _url("/rest/v1/failed_ingests"),
+        params={
+            "dispatch_id": f"eq.{dispatch_id}",
+            "vendor_id":   f"eq.{user.vendor_id}",
+            "select":      "id,source_type,source_record_id,canonical_asset_id,resolved_at",
+            "limit":       "1",
+        },
+        headers=_headers(),
+    )
+    rows = r_fi.json()
+    if not rows:
+        raise HTTPException(status_code=404, detail="No failed ingest record found for this dispatch")
+    fi = rows[0]
+    if fi["resolved_at"]:
+        raise HTTPException(status_code=409, detail="Already resolved")
+
+    export_ok, replicated_ok = await _write_canonical_link(
+        dispatch_id, user.vendor_id, fi["source_type"], fi["source_record_id"], fi["canonical_asset_id"]
+    )
+
+    if export_ok and replicated_ok:
+        now = _now_iso()
+        await asyncio.gather(
+            db_client.patch(
+                _url("/rest/v1/payload_field_mappings"),
+                params={"dispatch_id": f"eq.{dispatch_id}", "recipient_vendor_id": f"eq.{user.vendor_id}"},
+                headers=_headers({"Prefer": "return=minimal"}),
+                json={"ingested_at": now, "failed_at": None, "failure_reason": None},
+            ),
+            db_client.patch(
+                _url("/rest/v1/failed_ingests"),
+                params={"dispatch_id": f"eq.{dispatch_id}", "vendor_id": f"eq.{user.vendor_id}"},
+                headers=_headers({"Prefer": "return=minimal"}),
+                json={"resolved_at": now, "export_ok": True, "replicated_ok": True},
+            ),
+        )
+        await _log(dispatch_id, "canonical_retry_ok", detail={"source_record_id": fi["source_record_id"]})
+        return {"ok": True, "source_record_id": fi["source_record_id"]}
+
+    reason = (
+        f"export_records={'ok' if export_ok else 'MISSING'} "
+        f"replicated_assets={'ok' if replicated_ok else 'MISSING'}"
+    )
+    log.error(
+        "ORPHAN: canonical retry still failing — %s — dispatch=%s vendor=%s source_record=%s",
+        reason, dispatch_id, user.vendor_id, fi["source_record_id"],
+    )
+    await db_client.patch(
+        _url("/rest/v1/failed_ingests"),
+        params={"dispatch_id": f"eq.{dispatch_id}", "vendor_id": f"eq.{user.vendor_id}"},
+        headers=_headers({"Prefer": "return=minimal"}),
+        json={"export_ok": export_ok, "replicated_ok": replicated_ok},
+    )
+    raise HTTPException(status_code=503, detail="Canonical link still unavailable — try again later")
 
 
 # ── internal: build a connector for a vendor's connected source tool ──────────
