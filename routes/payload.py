@@ -639,21 +639,19 @@ async def get_outbox(user: CurrentUser = Depends(require_studio)):
 
 @router.get("/vendor-inbox")
 async def get_vendor_inbox(user: CurrentUser = Depends(require_vendor)):
+    now = datetime.now(timezone.utc)
     r = await db_client.get(
         _url("/rest/v1/payload_dispatches"),
         params={
             "recipient_vendor_id": f"eq.{user.vendor_id}",
+            "revoked_at":          "is.null",
+            "expires_at":          f"gt.{now.isoformat()}",
             "select": "id,asset_id,sender_studio_id,expires_at,revoked_at,created_at,payload_data,payload_field_mappings(ingested_at,failed_at,failure_reason,ingested_source_record_id)",
             "order": "created_at.desc",
         },
         headers=_headers(),
     )
-    now = datetime.now(timezone.utc)
-    return [
-        d for d in r.json()
-        if not d["revoked_at"]
-        and datetime.fromisoformat(d["expires_at"]) > now
-    ]
+    return r.json()
 
 
 # ── vendor viewed (vendor records that they opened the asset detail) ──────────
