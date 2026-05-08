@@ -9,11 +9,13 @@ export function useProducts() {
 
   useEffect(() => {
     if (state.products.length) return
+    const controller = new AbortController()
     setLoading(true)
-    apiFetch('/api/assets/products')
+    apiFetch('/api/assets/products', { signal: controller.signal })
       .then(data => update({ products: data }))
-      .catch(err => toast.error(err.message))
+      .catch(err => { if (err.name !== 'AbortError') toast.error(err.message) })
       .finally(() => setLoading(false))
+    return () => controller.abort()
   }, [])
 
   return { products: state.products, loading }

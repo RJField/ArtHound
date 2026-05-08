@@ -32,18 +32,21 @@ export function AuthProvider({ children }) {
   // prevents InitGuard from remounting the page component unnecessarily.
   useEffect(() => {
     if (!session) { setProfile(null); setProfileLoading(false); return }
+    const controller = new AbortController()
+    let retryTimer = null
     setProfileLoading(true)
-    apiFetch('/api/user/me')
+    apiFetch('/api/user/me', { signal: controller.signal })
       .then(data => { setProfile(data); setProfileLoading(false) })
       .catch(err => {
+        if (err.name === 'AbortError') return
         console.warn('Profile fetch failed:', err)
-        // Retry once after a short delay — handles transient token-propagation races
-        setTimeout(() => {
-          apiFetch('/api/user/me')
+        retryTimer = setTimeout(() => {
+          apiFetch('/api/user/me', { signal: controller.signal })
             .then(data => { setProfile(data); setProfileLoading(false) })
-            .catch(e => { console.warn('Profile fetch retry failed:', e); setProfileLoading(false) })
+            .catch(e => { if (e.name !== 'AbortError') { console.warn('Profile fetch retry failed:', e); setProfileLoading(false) } })
         }, 1500)
       })
+    return () => { controller.abort(); if (retryTimer) clearTimeout(retryTimer) }
   }, [session?.user?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
 

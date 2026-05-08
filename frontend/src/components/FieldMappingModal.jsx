@@ -20,13 +20,17 @@ export default function FieldMappingModal({ onClose }) {
   const [syncing, setSyncing]     = useState(false)
   const [error, setError]         = useState(null)
 
-  useEffect(() => { load() }, [])
+  useEffect(() => {
+    const controller = new AbortController()
+    load(controller.signal)
+    return () => controller.abort()
+  }, [])
 
-  async function load() {
+  async function load(signal) {
     setLoading(true)
     setError(null)
     try {
-      const data = await apiFetch('/api/sync/field-mapping')
+      const data = await apiFetch('/api/sync/field-mapping', signal ? { signal } : {})
       setSourceType(data.source_type ?? 'airtable')
       setMappings(data.mappings)
       setSlots(data.slots)
@@ -37,7 +41,7 @@ export default function FieldMappingModal({ onClose }) {
       }
       setAssignments(a)
     } catch (e) {
-      setError(e.message)
+      if (e.name !== 'AbortError') setError(e.message)
     } finally {
       setLoading(false)
     }

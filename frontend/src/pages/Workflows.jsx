@@ -168,15 +168,19 @@ export default function Workflows() {
   const [loading, setLoading]       = useState(true)
   const [modal, setModal]           = useState(null) // null | 'add' | 'edit' | 'remove'
 
-  useEffect(() => { load() }, [])
+  useEffect(() => {
+    const controller = new AbortController()
+    load(controller.signal)
+    return () => controller.abort()
+  }, [])
 
-  async function load() {
+  async function load(signal) {
     setLoading(true)
     try {
-      const data = await apiFetch('/api/workflow-steps')
+      const data = await apiFetch('/api/workflow-steps', signal ? { signal } : {})
       setSteps(data)
     } catch (err) {
-      toast.error(err.message)
+      if (!signal || err.name !== 'AbortError') toast.error(err.message)
     } finally {
       setLoading(false)
     }

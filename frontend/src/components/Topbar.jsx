@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { NavLink } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
+import { apiFetch } from '../lib/api'
 import UserModal from './UserModal'
 import FieldMappingModal from './FieldMappingModal'
 import SyntheticDataModal from './SyntheticDataModal'
@@ -26,8 +27,24 @@ export default function Topbar() {
   const [userOpen, setUserOpen]           = useState(false)
   const [settingsOpen, setSettingsOpen]   = useState(false)
   const [syntheticOpen, setSyntheticOpen] = useState(false)
+  const [syncing, setSyncing]             = useState(false)
+  const [syncMsg, setSyncMsg]             = useState(null)
 
   const nav = role === 'vendor' ? VENDOR_NAV : STUDIO_NAV
+
+  async function handleSync() {
+    setSyncing(true)
+    setSyncMsg(null)
+    try {
+      await apiFetch('/api/sync/run', { method: 'POST', body: JSON.stringify({ full: true }) })
+      setSyncMsg('ok')
+    } catch {
+      setSyncMsg('err')
+    } finally {
+      setSyncing(false)
+      setTimeout(() => setSyncMsg(null), 3000)
+    }
+  }
 
   return (
     <>
@@ -58,6 +75,20 @@ export default function Topbar() {
 
         {/* Right controls */}
         <div className="flex items-center gap-2">
+          {(role === 'studio' || role === 'vendor') && (
+            <button
+              onClick={handleSync}
+              disabled={syncing}
+              className={cn(
+                'px-3 py-1.5 rounded-md text-xs transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed',
+                syncMsg === 'ok'  ? 'text-success' :
+                syncMsg === 'err' ? 'text-error' :
+                'text-muted hover:text-foreground hover:bg-surface-2'
+              )}
+            >
+              {syncing ? 'Syncing…' : syncMsg === 'ok' ? 'Synced ✓' : syncMsg === 'err' ? 'Failed' : 'Sync'}
+            </button>
+          )}
           {isAdmin && (
             <button
               onClick={() => setSyntheticOpen(true)}

@@ -133,9 +133,11 @@ export default function SyntheticDataModal({ onClose }) {
   const [result, setResult]         = useState(null)
 
   useEffect(() => {
-    apiFetch('/api/synthetic/targets')
+    const controller = new AbortController()
+    apiFetch('/api/synthetic/targets', { signal: controller.signal })
       .then(data => { setTargets(data); setLoadingTargets(false) })
-      .catch(() => setLoadingTargets(false))
+      .catch(e => { if (e.name !== 'AbortError') setLoadingTargets(false) })
+    return () => controller.abort()
   }, [])
 
   const selectedTarget = targets.find(t => t.id === selectedId) ?? null

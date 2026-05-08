@@ -45,12 +45,15 @@ export default function StudioHome() {
   const [openBot, setOpenBot]       = useState(null)
 
   useEffect(() => {
-    apiFetch('/api/user/studio-summary')
+    const controller = new AbortController()
+    const { signal } = controller
+    apiFetch('/api/user/studio-summary', { signal })
       .then(setSummary)
-      .catch(e => setError(e.message))
-    apiFetch('/api/handshake/links')
+      .catch(e => { if (e.name !== 'AbortError') setError(e.message) })
+    apiFetch('/api/handshake/links', { signal })
       .then(links => setVendorCount(links.length))
-      .catch(() => setVendorCount(0))
+      .catch(e => { if (e.name !== 'AbortError') setVendorCount(0) })
+    return () => controller.abort()
   }, [])
 
   const loading = !summary && !error

@@ -3,6 +3,10 @@ load_dotenv()
 
 import asyncio
 import logging
+
+logging.basicConfig(level=logging.INFO)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, Request
@@ -183,7 +187,7 @@ async def _nightly_full_sync_loop() -> None:
                         )
                     )
         except Exception as exc:
-            log.warning("Nightly full sync error: %s", exc)
+            log.error("Nightly full sync error: %s", exc)
         await asyncio.sleep(interval_secs)
 
 

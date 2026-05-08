@@ -40,10 +40,11 @@ export default function FieldSettingsModal({ assets, onClose, onSaved }) {
   const [addFields, setAddFields] = useState(null) // additional field list
 
   useEffect(() => {
-    apiFetch('/api/assets/fields')
+    const controller = new AbortController()
+    apiFetch('/api/assets/fields', { signal: controller.signal })
       .then(fields => setAddFields(fields.filter(f => !BUILTIN_AIRTABLE_NAMES.has(f.name))))
-      .catch(() => {
-        // Fall back to keys found in current asset rawFields
+      .catch(e => {
+        if (e.name === 'AbortError') return
         const names = new Set()
         assets.forEach(a => Object.keys(a.rawFields || {}).forEach(k => names.add(k)))
         setAddFields([...names]
@@ -51,6 +52,7 @@ export default function FieldSettingsModal({ assets, onClose, onSaved }) {
           .sort()
           .map(name => ({ name })))
       })
+    return () => controller.abort()
   }, [])
 
   function save() {

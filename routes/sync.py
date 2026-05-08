@@ -337,7 +337,7 @@ async def _handle_webhook_deletions(
             headers=_headers(),
         )
         if not r.is_success:
-            log.warning("Deletion sync failed for %s: %s %s", table, r.status_code, r.text)
+            log.error("Deletion sync failed for %s: %s %s", table, r.status_code, r.text)
 
     # Soft-delete matching generated_work rows — studios only, vendors have no snapshots.
     # Sets deleted_at rather than hard-deleting so history is preserved for bots and audit.
@@ -353,7 +353,7 @@ async def _handle_webhook_deletions(
             headers=_headers({"Prefer": "return=minimal"}),
         )
         if not r.is_success:
-            log.warning("Soft-delete of generated_work failed: %s %s", r.status_code, r.text)
+            log.error("Soft-delete of generated_work failed: %s %s", r.status_code, r.text)
 
     log.info(
         "Webhook deletion sync: %d record IDs processed for %s/%s",

@@ -36,19 +36,20 @@ export default function InviteVendorModal({ onClose, onInvited }) {
   useEffect(() => {
     const q = query.replace(/^@+/, '')
     if (q.length < 2) { setResults([]); return }
+    const controller = new AbortController()
     clearTimeout(debounce.current)
     debounce.current = setTimeout(async () => {
       setSearching(true)
       try {
-        const data = await apiFetch(`/api/handshake/vendors/search?q=${encodeURIComponent(q)}`)
+        const data = await apiFetch(`/api/handshake/vendors/search?q=${encodeURIComponent(q)}`, { signal: controller.signal })
         setResults(data)
       } catch (err) {
-        toast.error(err.message)
+        if (err.name !== 'AbortError') toast.error(err.message)
       } finally {
         setSearching(false)
       }
     }, 300)
-    return () => clearTimeout(debounce.current)
+    return () => { clearTimeout(debounce.current); controller.abort() }
   }, [query])
 
   async function send() {

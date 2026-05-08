@@ -76,6 +76,10 @@ def classify_field(
     """
     name_lower = field_name.lower().strip()
 
+    # 0. [IGNORE]-prefixed — studio-explicitly excluded fields; suppressed regardless of type
+    if name_lower.startswith("[ignore]"):
+        return "source_native", "hidden", True
+
     # 1. source_native — type-based (highest priority)
     if field_type in _SOURCE_NATIVE_TYPES:
         return "source_native", "hidden", True
@@ -163,6 +167,15 @@ def default_mappings_from_schema(
             "display_tier":         tier,
             "ingest_suppressed":    suppressed,
         })
+
+    # TECH DEBT: Products and item types have no dedicated field mapping — only assets
+    # get a full source_field_mappings entry. Until proper PAW product field mapping is
+    # built (see "Decide core product field schema" TODO), we fall back to promoting the
+    # primary field (first in Airtable schema) to the name slot when no alias matches.
+    # This handles arbitrary primary field names (e.g. "Record" in flat-table setups)
+    # without relying on studios naming their fields predictably.
+    if "name" not in seen_slots and mappings:
+        mappings[0]["arthound_slot"] = "name"
 
     return mappings
 

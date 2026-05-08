@@ -499,7 +499,7 @@ async def _run_sync_locked(
                     filter_formula=connector.build_entity_filter(product_def),
                 )
             else:
-                raw_products = await connector.fetch_products()
+                raw_products = []
 
             if item_type_def and item_type_def.get("item_type_source") == "field_values":
                 # Derive item types from a field on asset records — no separate API call.
@@ -529,8 +529,47 @@ async def _run_sync_locked(
             # ── Normalize reference entities first ────────────────────────────
             # Reference tables are always fetched in full and normalized before
             # assets so their IDs are available for linked record resolution.
-            norm_products = [normalize_reference(r, "Product") for r in raw_products]
-            norm_item_types = [normalize_reference(r, "Item") for r in raw_item_types]
+            #
+            # Name-field resolution: flat-table setups share one table for all
+            # entity types, so the asset name-slot field also names products/item
+            # types. Separate-table setups (each entity in its own table) need the
+            # primary field of THAT table — the asset mapping's name slot won't
+            # exist in product or item-type records at all, causing normalize_reference
+            # to fall through to the string-scan fallback and pick up status values.
+            _asset_name_field = next(
+                (m["source_field_name"] for m in mappings if m.get("arthound_slot") == "name"),
+                schema_fields[0].name if schema_fields else "Name",
+            )
+
+            _product_name_field = _asset_name_field
+            if raw_products and product_def and (
+                not asset_def or product_def.get("table_id") != asset_def.get("table_id")
+            ):
+                try:
+                    _ps = await connector.fetch_asset_schema(table_id=product_def["table_id"])
+                    if _ps:
+                        _product_name_field = _ps[0].name
+                except Exception:
+                    log.warning("Could not fetch product table schema for name resolution — using asset name field fallback")
+
+            # field_values item types are synthetic records with a "name" key — use
+            # it directly. For table-based item types in their own table, fetch primary.
+            if item_type_def and item_type_def.get("item_type_source") == "field_values":
+                _item_type_name_field = "name"
+            elif raw_item_types and item_type_def and (
+                not asset_def or item_type_def.get("table_id") != asset_def.get("table_id")
+            ):
+                try:
+                    _its = await connector.fetch_asset_schema(table_id=item_type_def["table_id"])
+                    _item_type_name_field = _its[0].name if _its else _asset_name_field
+                except Exception:
+                    log.warning("Could not fetch item_type table schema for name resolution — using asset name field fallback")
+                    _item_type_name_field = _asset_name_field
+            else:
+                _item_type_name_field = _asset_name_field
+
+            norm_products = [normalize_reference(r, _product_name_field) for r in raw_products]
+            norm_item_types = [normalize_reference(r, _item_type_name_field) for r in raw_item_types]
 
             # Build resolver from synced reference data so the asset normalizer
             # can resolve linked record IDs to display names without extra API calls.

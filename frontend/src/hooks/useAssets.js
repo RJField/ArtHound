@@ -14,13 +14,15 @@ export function useAssets(productId) {
     }
     setAssets([])   // clear immediately — zero stale data between product switches
     setLoading(true)
+    const controller = new AbortController()
     const url = productId === NO_PRODUCT_ID
       ? '/api/assets?unassigned=true'
       : `/api/assets?productId=${encodeURIComponent(productId)}`
-    apiFetch(url)
+    apiFetch(url, { signal: controller.signal })
       .then(setAssets)
-      .catch(() => setAssets([]))
+      .catch(err => { if (err.name !== 'AbortError') setAssets([]) })
       .finally(() => setLoading(false))
+    return () => controller.abort()
   }, [productId])
 
   return { assets, loading }

@@ -39,7 +39,9 @@ export default function UserModal({ onClose }) {
 
   useEffect(() => {
     if (profile?.org) return
-    apiFetch('/api/user/orgs').then(setOrgs).catch(console.warn)
+    const controller = new AbortController()
+    apiFetch('/api/user/orgs', { signal: controller.signal }).then(setOrgs).catch(e => { if (e.name !== 'AbortError') console.warn(e) })
+    return () => controller.abort()
   }, [profile])
 
   async function handleAssign(e) {

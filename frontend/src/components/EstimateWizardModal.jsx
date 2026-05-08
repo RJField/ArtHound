@@ -39,9 +39,11 @@ function Step1({ wiz, setWiz }) {
 
   useEffect(() => {
     if (wiz.fields.length) { setLoading(false); return }
-    apiFetch('/api/setup/fields')
+    const controller = new AbortController()
+    apiFetch('/api/setup/fields', { signal: controller.signal })
       .then(data => { setWiz(w => ({ ...w, fields: data.fields })); setLoading(false) })
-      .catch(e => { setError(e.message); setLoading(false) })
+      .catch(e => { if (e.name !== 'AbortError') { setError(e.message); setLoading(false) } })
+    return () => controller.abort()
   }, [])
 
   function toggleField(name) {
@@ -94,24 +96,27 @@ function Step2({ wiz, setWiz }) {
   const fields = [...wiz.selected]
 
   useEffect(() => {
+    const controller = new AbortController()
+    const { signal } = controller
     const missing = fields.filter(f => !wiz.values[f])
-    if (!missing.length) { setLoadingCombos(false); fetchCombos(); return }
+    if (!missing.length) { setLoadingCombos(false); fetchCombos(signal); return () => controller.abort() }
 
     Promise.all(missing.map(f =>
-      apiFetch(`/api/setup/field-values?field=${encodeURIComponent(f)}`).then(d => [f, d.values])
+      apiFetch(`/api/setup/field-values?field=${encodeURIComponent(f)}`, { signal }).then(d => [f, d.values])
     )).then(pairs => {
       const vals = { ...wiz.values }
       pairs.forEach(([f, v]) => { vals[f] = v })
       setWiz(w => ({ ...w, values: vals }))
-      fetchCombos()
-    }).catch(() => { setLoadingCombos(false) })
+      fetchCombos(signal)
+    }).catch(e => { if (e.name !== 'AbortError') setLoadingCombos(false) })
+    return () => controller.abort()
   }, [])
 
-  function fetchCombos() {
+  function fetchCombos(signal) {
     const qs = fields.map(f => `field=${encodeURIComponent(f)}`).join('&')
-    apiFetch(`/api/setup/asset-combinations?${qs}`)
+    apiFetch(`/api/setup/asset-combinations?${qs}`, signal ? { signal } : {})
       .then(data => { setWiz(w => ({ ...w, existingCombos: data.combinations })); setCombosData(data); setLoadingCombos(false) })
-      .catch(e => { setCombosError(e.message); setLoadingCombos(false) })
+      .catch(e => { if (e.name !== 'AbortError') { setCombosError(e.message); setLoadingCombos(false) } })
   }
 
   return (

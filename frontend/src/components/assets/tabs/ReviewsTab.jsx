@@ -23,16 +23,20 @@ function ReviewAttachments({ reviewId }) {
   const [uploading, setUploading]     = useState(false)
   const inputRef = useRef(null)
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (signal) => {
     try {
-      const data = await apiFetch(`/api/reviews/${reviewId}/attachments`)
+      const data = await apiFetch(`/api/reviews/${reviewId}/attachments`, signal ? { signal } : {})
       setAttachments(data ?? [])
-    } catch {
-      setAttachments([])
+    } catch (err) {
+      if (err.name !== 'AbortError') setAttachments([])
     }
   }, [reviewId])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => {
+    const controller = new AbortController()
+    load(controller.signal)
+    return () => controller.abort()
+  }, [load])
 
   async function handleFiles(files) {
     if (!files?.length) return
@@ -250,16 +254,20 @@ export default function ReviewsTab({ asset }) {
   })()
   const attachmentCount = attachmentGroups.reduce((sum, g) => sum + (g.items?.length ?? 0), 0)
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (signal) => {
     if (!asset?.canonicalId) { setReviews([]); return }
     setLoading(true)
-    apiFetch(`/api/reviews?canonicalAssetId=${encodeURIComponent(asset.canonicalId)}`)
+    apiFetch(`/api/reviews?canonicalAssetId=${encodeURIComponent(asset.canonicalId)}`, signal ? { signal } : {})
       .then(setReviews)
-      .catch(err => { toast.error(err.message); setReviews([]) })
+      .catch(err => { if (err.name !== 'AbortError') { toast.error(err.message); setReviews([]) } })
       .finally(() => setLoading(false))
   }, [asset?.canonicalId])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => {
+    const controller = new AbortController()
+    load(controller.signal)
+    return () => controller.abort()
+  }, [load])
 
   function handleCreated(review) {
     setShowForm(false)

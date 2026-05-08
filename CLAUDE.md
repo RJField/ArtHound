@@ -77,6 +77,8 @@ Sync is triggered on login (via `AuthContext.jsx`) and by a background polling l
 
 **Field mapping:** Source fields are mapped to ArtHound slots via `source_field_mappings` in Supabase. Estimation and task queries must resolve field names through this table — never assume a column name. See `lib/sync/normalizer.py` for how slots are resolved.
 
+**`[IGNORE]` field convention:** Any source field whose name begins with `[IGNORE]` (case-insensitive) is auto-suppressed at classification time — `ingest_suppressed=True`, `display_tier="hidden"`, excluded from `meta`. Studios use this prefix to mark internal plumbing fields (link-back columns, formula sources) that should never appear in the ArtHound UI or be ingested into replicated records.
+
 ## Frontend Conventions
 
 **API calls:** Always use `apiFetch()` from `frontend/src/lib/api.js`. It injects the Supabase JWT and standardizes error handling. Never use raw `fetch` for `/api` routes.
@@ -131,6 +133,9 @@ Studios and vendors are separate roles with separate home pages (`StudioHome.jsx
 
 ## Known Debt
 
-- **`routes/schedule.py` (`reconcile_work`, `generate_schedule`, `generate_bulk`):** These routes still read directly from Airtable instead of from `replicated_work` in Supabase. The schedule write-back (`_write_back_to_source`) is multi-source (Jira + Airtable via connectors), but the upstream read path is not. Breaks for Jira studios.
-- **`maya/arthound_review.py`:** Posts to a defunct `/api/reviews/submit` endpoint. Needs redesign around `canonical_asset_id`.
-- **Asset reviews write in `routes/reviews.py`:** Legacy Airtable write path still present; to be removed once Supabase-only path is validated.
+- **Partial sync writes have no rollback** (`lib/sync/runner.py`): Products, item_types, assets, and work are written in sequence. Cursor is not advanced on failure (so the next sync retries), but already-written phases remain. A failure mid-write leaves the DB in a partially updated state until the next successful sync.
+- **`POST /api/user/assign`** (`routes/user.py:77`): Dev shortcut for assigning org membership. Must be removed before production; org assignment should go through the onboarding flow only.
+- **Jira write-back edge cases** (`routes/schedule.py`): Sub-task creation (requires `parent.key`), missing `_jira_key` warning not surfaced to UI, per-item failure detail not returned to frontend.
+
+- **`sync_log` grows unboundedly**: No retention policy or purge job.
+- **Products and item types have no field mapping** (`lib/sync/normalizer.py`, `lib/sync/runner.py`): `source_field_mappings` only covers the asset entity. Products and item types are normalized via `normalize_reference()` with a primary-field heuristic: the runner fetches the schema for each entity's own table and uses its first field as the name key (separate-table setups), or falls back to the asset name-slot field for flat-table setups. No slot mapping beyond name — product fields like status, owner, and deadline are never promoted to named slots. Proper fix is part of the full PAW product field schema design.

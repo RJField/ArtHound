@@ -21,10 +21,12 @@ export default function SchemaModal({ onClose }) {
   const [error, setError]       = useState(null)
 
   useEffect(() => {
-    apiFetch('/api/schema')
+    const controller = new AbortController()
+    apiFetch('/api/schema', { signal: controller.signal })
       .then(d => { setData(d); setActiveKey(d.configured[0]?.key ?? null) })
-      .catch(e => setError(e.message))
+      .catch(e => { if (e.name !== 'AbortError') setError(e.message) })
       .finally(() => setLoading(false))
+    return () => controller.abort()
   }, [])
 
   const activeTable = data?.configured.find(t => t.key === activeKey)
