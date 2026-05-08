@@ -3,6 +3,7 @@ Sync runner — trigger-agnostic orchestrator.
 Call run_sync() from login, manual refresh, webhook, or polling scheduler.
 """
 
+import asyncio
 import logging
 import os
 from datetime import datetime, timezone
@@ -11,7 +12,7 @@ import httpx
 
 from lib.canonical import get_or_create_studio_airtable_canonical_ids
 from lib.crypto import decrypt_credentials
-from lib.db import db_client, _url, _headers
+from lib.db import db_client, drain_pages, _url, _headers
 from lib.sync.connector import BaseConnector
 from lib.sync.connectors.airtable import AirtableConnector
 from lib.sync.differ import find_changes
@@ -32,6 +33,16 @@ from lib.sync.writer import (
 )
 
 log = logging.getLogger(__name__)
+
+# Per-(owner_type, owner_id) locks — prevents concurrent syncs within the same process.
+_sync_locks: dict[tuple[str, str], asyncio.Lock] = {}
+
+
+def _get_sync_lock(owner_type: str, owner_id: str) -> asyncio.Lock:
+    key = (owner_type, owner_id)
+    if key not in _sync_locks:
+        _sync_locks[key] = asyncio.Lock()
+    return _sync_locks[key]
 
 
 # ── connector factory ─────────────────────────────────────────────────────────
@@ -73,6 +84,7 @@ async def _get_credentials(owner_type: str, owner_id: str, source_type: str) -> 
         },
         headers=_headers(),
     )
+    r.raise_for_status()
     rows = r.json()
     if rows:
         return decrypt_credentials(rows[0]["credentials"])
@@ -91,6 +103,7 @@ async def _get_mappings(owner_type: str, owner_id: str, source_type: str) -> lis
         },
         headers=_headers(),
     )
+    r.raise_for_status()
     rows = r.json()
     return rows[0]["mappings"] if rows else None
 
@@ -129,6 +142,7 @@ async def _get_cursor(owner_type: str, owner_id: str, source_type: str) -> str |
         },
         headers=_headers(),
     )
+    r.raise_for_status()
     rows = r.json()
     return rows[0]["last_synced_at"] if rows else None
 
@@ -382,6 +396,21 @@ async def run_sync(
 
     full=True forces a complete re-fetch regardless of cursor.
     """
+    lock = _get_sync_lock(owner_type, owner_id)
+    if lock.locked():
+        log.info("Sync already in progress for %s/%s — skipping duplicate trigger", owner_type, owner_id)
+        return {"status": "skipped", "reason": "sync already in progress"}
+    async with lock:
+        return await _run_sync_locked(owner_type, owner_id, source_type, trigger, full)
+
+
+async def _run_sync_locked(
+    owner_type: str,
+    owner_id: str,
+    source_type: str = "airtable",
+    trigger: str = "manual",
+    full: bool = False,
+) -> dict:
     log_id = await _start_log(owner_type, owner_id, source_type, trigger)
     sync_started = datetime.now(timezone.utc).isoformat()
 
@@ -642,28 +671,26 @@ async def run_sync(
                 # On delta sync raw_assets is incomplete — supplement from the DB
                 # so work items linked to unchanged assets also get resolved.
                 if is_delta:
-                    _ar = await db_client.get(
+                    _rows = await drain_pages(
                         _url("/rest/v1/replicated_assets"),
-                        params={
+                        {
                             "owner_type": f"eq.{owner_type}",
                             "owner_id":   f"eq.{owner_id}",
                             "select":     "source_record_id,canonical_asset_id,meta",
                         },
-                        headers=_headers({"Range": "0-999"}),
                     )
-                    if _ar.is_success:
-                        for row in _ar.json():
-                            cid = row.get("canonical_asset_id")
-                            if not cid:
-                                continue
-                            meta = row.get("meta") or {}
-                            lv = meta.get(work_rel_field)
-                            if isinstance(lv, list):
-                                for wid in lv:
-                                    if isinstance(wid, str) and wid:
-                                        work_to_canonical.setdefault(wid, cid)
-                            elif isinstance(lv, str) and lv:
-                                work_to_canonical.setdefault(lv, cid)
+                    for row in _rows:
+                        cid = row.get("canonical_asset_id")
+                        if not cid:
+                            continue
+                        meta = row.get("meta") or {}
+                        lv = meta.get(work_rel_field)
+                        if isinstance(lv, list):
+                            for wid in lv:
+                                if isinstance(wid, str) and wid:
+                                    work_to_canonical.setdefault(wid, cid)
+                        elif isinstance(lv, str) and lv:
+                            work_to_canonical.setdefault(lv, cid)
 
             elif work_direction != "parent_holds_link" and raw_work and work_rel_field and is_delta:
                 # child_holds_link + delta sync: canonical_map only covers changed

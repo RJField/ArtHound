@@ -2,9 +2,30 @@ import os
 import httpx
 
 db_client = httpx.AsyncClient(
-    timeout=10.0,
-    limits=httpx.Limits(max_keepalive_connections=5, max_connections=10),
+    timeout=30.0,
+    limits=httpx.Limits(max_keepalive_connections=10, max_connections=25, keepalive_expiry=30.0),
 )
+
+_PAGE = 200
+
+
+async def drain_pages(url: str, params: dict, page: int = _PAGE) -> list[dict]:
+    """Collect all rows from a PostgREST endpoint using limit/offset pagination."""
+    rows: list[dict] = []
+    offset = 0
+    while True:
+        r = await db_client.get(
+            url,
+            params={**params, "limit": page, "offset": offset},
+            headers=_headers(),
+        )
+        r.raise_for_status()
+        batch = r.json()
+        rows.extend(batch)
+        if len(batch) < page:
+            break
+        offset += len(batch)
+    return rows
 
 
 def _url(path: str) -> str:

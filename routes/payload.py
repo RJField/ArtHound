@@ -428,18 +428,25 @@ async def dispatch_bulk(body: BulkDispatchBody, user: CurrentUser = Depends(requ
     now = datetime.now(timezone.utc)
     expires_at = (now + timedelta(days=max(1, min(body.expires_in_days, _MAX_EXPIRY_DAYS)))).isoformat()
 
-    dispatch_ids = []
-    for asset in body.assets:
-        if not asset.asset_id:
-            continue
-
-        # Verify asset belongs to this studio (service role bypasses RLS)
-        r_asset = await db_client.get(
+    # Verify all asset ownership in a single query before entering the loop.
+    candidate_ids = [a.asset_id for a in body.assets if a.asset_id]
+    verified_ids: set[str] = set()
+    if candidate_ids:
+        r_check = await db_client.get(
             _url("/rest/v1/canonical_assets"),
-            params={"id": f"eq.{asset.asset_id}", "studio_id": f"eq.{studio_id}", "select": "id"},
+            params={
+                "id":        f"in.({','.join(candidate_ids)})",
+                "studio_id": f"eq.{studio_id}",
+                "select":    "id",
+            },
             headers=_headers(),
         )
-        if not r_asset.json():
+        r_check.raise_for_status()
+        verified_ids = {row["id"] for row in r_check.json()}
+
+    dispatch_ids = []
+    for asset in body.assets:
+        if not asset.asset_id or asset.asset_id not in verified_ids:
             continue
 
         filtered_data = (

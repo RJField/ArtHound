@@ -114,11 +114,17 @@ async def signup(body: SignupBody):
 
     # When not auto-confirming, trigger the confirmation email explicitly.
     # The Admin API creates the user but never fires the email on its own.
+    # emailRedirectTo must be registered in the Supabase dashboard Redirect URLs list.
     if not _AUTO_CONFIRM:
+        _frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:5173")
         await db_client.post(
             _url("/auth/v1/resend"),
             headers=_headers(),
-            json={"type": "signup", "email": body.email},
+            json={
+                "type": "signup",
+                "email": body.email,
+                "options": {"emailRedirectTo": f"{_frontend_url}/auth/callback"},
+            },
         )
 
     return {"ok": True, "email_confirmation_required": not _AUTO_CONFIRM}

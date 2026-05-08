@@ -15,6 +15,7 @@ import Estimates from './pages/Estimates'
 import ProjectInit from './pages/ProjectInit'
 import VendorConnections from './pages/VendorConnections'
 import StudioConnections from './pages/StudioConnections'
+import AuthCallback from './pages/AuthCallback'
 
 function AuthGuard() {
   const { session, loading } = useAuth()
@@ -79,6 +80,7 @@ export default function App() {
           />
           <Routes>
             <Route path="/login" element={<Login />} />
+            <Route path="/auth/callback" element={<AuthCallback />} />
             <Route element={<AuthGuard />}>
               {/* Init wizard — shown to studio users before first sync */}
               <Route path="/init" element={<ProjectInit />} />

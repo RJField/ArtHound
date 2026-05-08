@@ -327,6 +327,7 @@ async def create_review(body: ReviewCreate, user: CurrentUser = Depends(get_curr
             "description": body.description or None,
             "status": body.status or None,
             "created_by_email": user.email,
+            "created_by_user_id": user.id,
         },
         headers=_headers({"Prefer": "return=representation"}),
     )

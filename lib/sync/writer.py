@@ -1,7 +1,7 @@
 import logging
 from datetime import datetime, timezone
 
-from lib.db import db_client, _url, _headers
+from lib.db import db_client, drain_pages, _url, _headers
 
 log = logging.getLogger(__name__)
 
@@ -27,18 +27,16 @@ async def load_existing_hashes(
     owner_type: str, owner_id: str, source_type: str
 ) -> dict[str, str]:
     """Fetch {source_record_id: source_hash} for existing rows — used by the differ."""
-    r = await db_client.get(
+    rows = await drain_pages(
         _url("/rest/v1/replicated_assets"),
-        params={
-            "select": "source_record_id,source_hash",
-            "owner_type": f"eq.{owner_type}",
-            "owner_id": f"eq.{owner_id}",
+        {
+            "select":      "source_record_id,source_hash",
+            "owner_type":  f"eq.{owner_type}",
+            "owner_id":    f"eq.{owner_id}",
             "source_type": f"eq.{source_type}",
         },
-        headers=_headers(),
     )
-    r.raise_for_status()
-    return {row["source_record_id"]: row["source_hash"] for row in r.json()}
+    return {row["source_record_id"]: row["source_hash"] for row in rows}
 
 
 async def upsert_assets(
@@ -194,13 +192,8 @@ async def delete_orphaned_records(
     total_deleted = 0
 
     for table, fetched_ids in checks:
-        r = await db_client.get(
-            _url(f"/rest/v1/{table}"),
-            params=base_params,
-            headers=_headers(),
-        )
-        r.raise_for_status()
-        existing_ids = {row["source_record_id"] for row in r.json()}
+        existing_rows = await drain_pages(_url(f"/rest/v1/{table}"), base_params)
+        existing_ids = {row["source_record_id"] for row in existing_rows}
 
         orphaned = existing_ids - fetched_ids
         if not orphaned:
