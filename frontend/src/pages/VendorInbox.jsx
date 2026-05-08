@@ -23,6 +23,7 @@ function buildModalProps(d, onIngest) {
     : null
 
   const isIngested = !!d.payload_field_mappings?.[0]?.ingested_at
+  const isFailed   = !isIngested && !!d.payload_field_mappings?.[0]?.failed_at
 
   return {
     title:  name,
@@ -34,7 +35,7 @@ function buildModalProps(d, onIngest) {
     ],
     actions: [
       {
-        label: isIngested ? 'Ingested ✓' : 'Ingest to Source',
+        label: isIngested ? 'Ingested ✓' : isFailed ? 'Link Failed — Retry' : 'Ingest to Source',
         style: isIngested ? undefined : 'primary',
         onClick: closeFn => {
           closeFn()
@@ -111,6 +112,7 @@ export default function VendorInbox() {
             const studio    = d.payload_data?.sender_studio_name || 'Unknown Studio'
             const date      = d.created_at ? new Date(d.created_at).toLocaleDateString() : '—'
             const isIngested = !!d.payload_field_mappings?.[0]?.ingested_at
+            const isFailed   = !isIngested && !!d.payload_field_mappings?.[0]?.failed_at
 
             return (
               <div
@@ -130,11 +132,23 @@ export default function VendorInbox() {
                     {isIngested && (
                       <span className="px-2 py-0.5 rounded-full bg-accent/10 text-accent text-xs">Ingested</span>
                     )}
+                    {isFailed && (
+                      <span className="px-2 py-0.5 rounded-full bg-error/10 text-error text-xs">Link Failed</span>
+                    )}
                   </div>
                 </div>
-                <div className="flex flex-col items-end gap-1 shrink-0 text-xs text-muted">
-                  <span>{studio}</span>
-                  <span>{date}</span>
+                <div className="flex items-center gap-3 shrink-0">
+                  <div className="flex flex-col items-end gap-1 text-xs text-muted">
+                    <span>{studio}</span>
+                    <span>{date}</span>
+                  </div>
+                  <button
+                    disabled
+                    onClick={e => e.stopPropagation()}
+                    className="px-3 py-1 rounded-md text-xs text-muted border border-border bg-surface opacity-40 cursor-not-allowed"
+                  >
+                    Request Refresh
+                  </button>
                 </div>
               </div>
             )

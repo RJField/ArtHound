@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
 from fastapi.responses import FileResponse, JSONResponse
 
-from lib.airtable import http_client
+import httpx
 from lib.crypto import decrypt_credentials
 from lib.db import db_client, _url, _headers
 from lib.auth import CurrentUser, get_current_user
@@ -34,6 +34,7 @@ from routes.synthetic import router as synthetic_router
 from routes.connectors.jira_oauth import router as jira_oauth_router
 from routes.attachments import router as attachments_router
 from routes.lorebot import router as lorebot_router
+from routes.handshake import router as handshake_router
 
 log = logging.getLogger(__name__)
 
@@ -42,13 +43,24 @@ async def _poll_loop() -> None:
     """
     Background polling task. Disabled when SYNC_POLL_INTERVAL_SECONDS is unset or 0.
     When enabled, triggers a delta sync for every owner that has source credentials stored.
+
+    Failure handling: exponential backoff up to 4× the base interval; escalates from
+    warning → error after 3 consecutive failures so log aggregators can alert on it.
     """
-    interval = int(os.environ.get("SYNC_POLL_INTERVAL_SECONDS", "0"))
+    interval = int(os.environ.get("SYNC_POLL_INTERVAL_SECONDS", "3600"))
     if not interval:
         return
     log.info("Polling sync enabled — interval: %ds", interval)
+    _MAX_BACKOFF = interval * 4
+    _ERROR_THRESHOLD = 3
+    consecutive_failures = 0
     while True:
-        await asyncio.sleep(interval)
+        if consecutive_failures == 0:
+            await asyncio.sleep(interval)
+        else:
+            backoff = min(interval * (2 ** (consecutive_failures - 1)), _MAX_BACKOFF)
+            log.warning("Poll backoff: %ds after %d consecutive failure(s)", backoff, consecutive_failures)
+            await asyncio.sleep(backoff)
         try:
             r = await db_client.get(
                 _url("/rest/v1/source_credentials"),
@@ -66,8 +78,15 @@ async def _poll_loop() -> None:
                             full=False,
                         )
                     )
+            if consecutive_failures:
+                log.info("Poll cycle recovered after %d consecutive failure(s)", consecutive_failures)
+            consecutive_failures = 0
         except Exception as exc:
-            log.warning("Poll cycle error: %s", exc)
+            consecutive_failures += 1
+            if consecutive_failures >= _ERROR_THRESHOLD:
+                log.error("Poll cycle error (%d consecutive): %s", consecutive_failures, exc)
+            else:
+                log.warning("Poll cycle error (%d consecutive): %s", consecutive_failures, exc)
 
 
 async def _attachment_drain_loop() -> None:
@@ -105,6 +124,28 @@ async def _attachment_purge_loop() -> None:
             log.info("Attachment purge complete: %s", result)
         except Exception as exc:
             log.error("Attachment purge error: %s", exc)
+        await asyncio.sleep(interval_secs)
+
+
+async def _schema_drift_loop() -> None:
+    """
+    Periodic schema drift detection. Compares live source schemas against stored
+    field mappings and flags studios that need to review new/removed/changed fields.
+    Configurable via SCHEMA_DRIFT_INTERVAL_HOURS (default 24, set 0 to disable).
+    """
+    interval_hours = float(os.environ.get("SCHEMA_DRIFT_INTERVAL_HOURS", "24"))
+    if not interval_hours:
+        return
+    interval_secs = interval_hours * 3600
+    log.info("Schema drift detection enabled — interval: %.1fh", interval_hours)
+    # Stagger first run so it doesn't fire immediately on startup alongside sync.
+    await asyncio.sleep(3600)
+    while True:
+        try:
+            from lib.sync.schema_drift import run_schema_drift_check
+            await run_schema_drift_check()
+        except Exception as exc:
+            log.warning("Schema drift check error: %s", exc)
         await asyncio.sleep(interval_secs)
 
 
@@ -177,12 +218,13 @@ async def lifespan(app: FastAPI):
     nightly_task     = asyncio.create_task(_nightly_full_sync_loop())
     drain_task       = asyncio.create_task(_attachment_drain_loop())
     purge_task       = asyncio.create_task(_attachment_purge_loop())
+    drift_task       = asyncio.create_task(_schema_drift_loop())
     yield
     poll_task.cancel()
     nightly_task.cancel()
     drain_task.cancel()
     purge_task.cancel()
-    await http_client.aclose()
+    drift_task.cancel()
     await db_client.aclose()
 
 
@@ -233,6 +275,7 @@ app.include_router(jira_oauth_router,     prefix="/api/connectors/jira/oauth")
 # Attachment proxy: /asset/* requires studio JWT; /payload/* accepts studio or vendor JWT
 app.include_router(attachments_router,    prefix="/api/attachments", dependencies=_auth)
 app.include_router(lorebot_router,        prefix="/api/lorebot",     dependencies=_auth)
+app.include_router(handshake_router,      prefix="/api/handshake",   dependencies=_auth)
 
 
 _REPLICATED_TABLE: dict[str, str] = {
@@ -306,10 +349,11 @@ async def get_record_by_id(
         raise HTTPException(status_code=404, detail="Entity definition not found")
     table_id = entity_rows[0]["table_id"]
 
-    r = await http_client.get(
-        f"https://api.airtable.com/v0/{creds['base_id']}/{table_id}/{record_id}",
-        headers={"Authorization": f"Bearer {creds['api_token']}"},
-    )
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        r = await client.get(
+            f"https://api.airtable.com/v0/{creds['base_id']}/{table_id}/{record_id}",
+            headers={"Authorization": f"Bearer {creds['api_token']}"},
+        )
     if not r.is_success:
         raise HTTPException(status_code=404, detail="Record not found")
     rec = r.json()
@@ -341,6 +385,7 @@ async def health_check():
     except Exception as exc:
         log.error("Health check failed: %s", exc)
         return JSONResponse(status_code=503, content={"status": "unavailable"})
+
 
 
 @app.exception_handler(HTTPException)

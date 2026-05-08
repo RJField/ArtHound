@@ -250,7 +250,8 @@ async def purge_orphaned_attachments() -> dict:
         for i in range(0, len(to_delete), batch_size):
             batch = to_delete[i : i + batch_size]
             try:
-                del_r = await client.delete(
+                del_r = await client.request(
+                    "DELETE",
                     _storage_api_url(f"/object/{_BUCKET}"),
                     headers=_storage_headers({"Content-Type": "application/json"}),
                     json={"prefixes": batch},

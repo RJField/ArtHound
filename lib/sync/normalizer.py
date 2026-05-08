@@ -1,5 +1,6 @@
 import hashlib
 import json
+import re
 from typing import Any
 
 from lib.connectors.adapters.airtable import AirtableFieldAdapter
@@ -14,6 +15,94 @@ ARTHOUND_SLOTS = {
     "name", "dev_name", "item_type", "priority",
     "product", "project_date", "status", "asset_number", "team",
 }
+
+# ── Field classification ──────────────────────────────────────────────────────
+
+# Field types that are always source-native plumbing regardless of name.
+_SOURCE_NATIVE_TYPES = frozenset({
+    "formula", "rollup", "count", "autoNumber",
+    "createdBy", "createdTime", "lastModifiedBy", "lastModifiedTime",
+})
+
+# Name fragments (whole-word, case-insensitive) that indicate source-native fields.
+_SOURCE_NATIVE_NAME_PATTERNS = re.compile(
+    r"\b(rank|ratio|workratio|watches|votes|progress|timespent|timeestimate|"
+    r"timeoriginalestimate|lastviewed|statuscategory|sigma)\b",
+    re.IGNORECASE,
+)
+
+# Scheduling fields (Work paw_level only).
+_SCHEDULING_NAME_PATTERNS = re.compile(
+    r"\b(date|due|deadline|sprint|eta|milestone|start|end|target|delivery)\b",
+    re.IGNORECASE,
+)
+_SCHEDULING_TYPES = frozenset({"date", "dateTime"})
+
+# Production, technical, business name fragments.
+_PRODUCTION_PATTERNS = re.compile(
+    r"\b(status|state|phase|stage|approval|review|qc|pass|fail)\b",
+    re.IGNORECASE,
+)
+_TECHNICAL_PATTERNS = re.compile(
+    r"\b(format|resolution|fps|poly|triangle|texture|uv\b|lod|dimension|spec|"
+    r"pipeline|rig|shader|dpi|pixel|mesh)\b",
+    re.IGNORECASE,
+)
+_BUSINESS_PATTERNS = re.compile(
+    r"\b(contract|billing|rate|invoice|copyright|license|budget|cost|fee)\b"
+    r"|\bip\b",
+    re.IGNORECASE,
+)
+
+
+def classify_field(
+    field_name: str,
+    field_type: str,
+    source_type: str = "airtable",
+    paw_level: str = "asset",
+) -> tuple[str, str, bool]:
+    """
+    Classify a source field into a meta bucket.
+
+    Returns (meta_bucket, display_tier, ingest_suppressed).
+
+    Priority order:
+      1. source_native — plumbing fields; auto-suppressed
+      2. scheduling    — date/timeline fields (Work only)
+      3. production    — status, approval, QC
+      4. technical     — specs, formats, pipeline
+      5. business      — contracts, billing, IP
+      6. custom        — safe default
+    """
+    name_lower = field_name.lower().strip()
+
+    # 1. source_native — type-based (highest priority)
+    if field_type in _SOURCE_NATIVE_TYPES:
+        return "source_native", "hidden", True
+
+    # 1b. source_native — name-based (Jira plumbing fields that arrive as plain strings)
+    if name_lower.startswith("_jira_") or _SOURCE_NATIVE_NAME_PATTERNS.search(field_name):
+        return "source_native", "hidden", True
+
+    # 2. scheduling (Work paw_level only)
+    if paw_level == "work":
+        if field_type in _SCHEDULING_TYPES or _SCHEDULING_NAME_PATTERNS.search(field_name):
+            return "scheduling", "primary", False
+
+    # 3. production
+    if _PRODUCTION_PATTERNS.search(field_name):
+        return "production", "primary", False
+
+    # 4. technical
+    if _TECHNICAL_PATTERNS.search(field_name):
+        return "technical", "secondary", False
+
+    # 5. business
+    if _BUSINESS_PATTERNS.search(field_name):
+        return "business", "secondary", False
+
+    # 6. custom — default
+    return "custom", "secondary", False
 
 _SLOT_ALIASES: dict[str, list[str]] = {
     "name":         ["asset name", "name", "asset", "summary"],  # "summary" = Jira title field
@@ -36,11 +125,19 @@ _NAME_TO_SLOT: dict[str, str] = {
 _airtable_adapter = AirtableFieldAdapter()
 
 
-def default_mappings_from_schema(schema_fields: list[SchemaField]) -> list[dict]:
+def default_mappings_from_schema(
+    schema_fields: list[SchemaField],
+    source_type: str = "airtable",
+    paw_level: str = "asset",
+) -> list[dict]:
     """
     Generate default slot mappings by matching source field names to ArtHound
     slot aliases. Saved on first sync so the user sees sensible pre-fills in the UI.
     Fields that don't match any alias get arthound_slot=null and land in meta.
+
+    Each entry is stamped with meta_bucket, display_tier, and ingest_suppressed
+    via classify_field() so downstream layers can immediately filter/group fields
+    without requiring a separate configuration step.
     """
     mappings = []
     seen_slots: set[str] = set()
@@ -51,12 +148,20 @@ def default_mappings_from_schema(schema_fields: list[SchemaField]) -> list[dict]
             slot = None
         if slot:
             seen_slots.add(slot)
+
+        bucket, tier, suppressed = classify_field(
+            field.name, field.type, source_type=source_type, paw_level=paw_level
+        )
+
         mappings.append({
             "source_field_id":      field.id,
             "source_field_name":    field.name,
             "source_field_type":    field.type,
             "source_field_options": field.options,
             "arthound_slot":        slot,
+            "meta_bucket":          bucket,
+            "display_tier":         tier,
+            "ingest_suppressed":    suppressed,
         })
 
     return mappings
@@ -69,6 +174,7 @@ def normalize_asset(
     reference_resolver: dict[str, str] | None = None,
     adapter=None,
     product_rel_field_id: str | None = None,
+    suppressed_names: set[str] | None = None,
 ) -> dict:
     """
     Apply field mappings to a raw source record using the connector field adapter.
@@ -85,16 +191,25 @@ def normalize_asset(
         slot instead of alias-based detection. Allows Epic→Feature hierarchies in Jira
         where the parent field (not the project field) identifies the product.
 
+    suppressed_names: set of field display names (and/or source field IDs) that must
+        never be written to meta, even if they arrive in the raw record. Safety net for
+        the bootstrapping window (first sync before mappings exist) and connectors that
+        cannot exclude fields at the API level.
+
     Returns a dict ready for insertion into replicated_assets.
     """
     _adp = adapter or _airtable_adapter
+    _suppressed = suppressed_names or set()
+
     # Build lookup tables from mappings.
     # by_id: field ID → slot (covers connectors like Jira where record keys are API IDs)
     # by_name: display name → slot (covers Airtable where record keys are display names)
     # id_to_display: field ID → display name (for human-readable meta keys)
+    # suppressed_ids: field IDs whose ingest_suppressed=True in mappings
     by_id: dict[str, str | None] = {}
     by_name: dict[str, str | None] = {}
     id_to_display: dict[str, str] = {}
+    suppressed_ids: set[str] = set()
     for m in mappings:
         slot = m.get("arthound_slot")
         fid  = m.get("source_field_id")
@@ -104,6 +219,10 @@ def normalize_asset(
             by_id[fid] = slot
             if fname and fid != fname:
                 id_to_display[fid] = fname
+            if m.get("ingest_suppressed"):
+                suppressed_ids.add(fid)
+        if m.get("ingest_suppressed") and fname:
+            _suppressed = _suppressed | {fname}
 
     resolved_type_map = field_type_map or {}
 
@@ -111,6 +230,12 @@ def normalize_asset(
     meta: dict = {}
 
     for field_name, raw_value in record.fields.items():
+        # Skip fields that are suppressed at the mapping level (safety net — the
+        # connector should already have excluded these at the fetch layer).
+        display_name = id_to_display.get(field_name, field_name)
+        if field_name in suppressed_ids or display_name in _suppressed:
+            continue
+
         field_type = resolved_type_map.get(field_name, "unknown")
         canonical = _adp.deserialize(field_type, raw_value, reference_resolver)
 
@@ -121,7 +246,6 @@ def normalize_asset(
         # 1. Explicit mapping by field ID or display name
         # 2. product_rel_field_id — this specific field is forced to the product slot
         # 3. Alias fallback on display name (but suppressed for product when rel_field drives it)
-        display_name = id_to_display.get(field_name, field_name)
         slot = by_id.get(field_name) or by_name.get(field_name) or by_name.get(display_name)
 
         # When product_rel_field_id is configured, it is the sole authority for the
@@ -143,6 +267,10 @@ def normalize_asset(
             coerced = _coerce_slot(slot, canonical, _adp)
             if coerced is not None:
                 slots[slot] = coerced
+            if slot == "product":
+                src_id = _extract_product_source_id(canonical)
+                if src_id:
+                    slots["product_source_record_id"] = src_id
 
         # Store canonical JSON in meta using the human-readable display name so
         # the detail panel shows "Issue Type" instead of "issuetype", etc.
@@ -260,6 +388,17 @@ def normalize_work(
     }
 
 
+def _extract_product_source_id(canonical: Any) -> str | None:
+    """Extract the source record ID from a product canonical value, if present."""
+    if isinstance(canonical, list) and canonical:
+        item = canonical[0]
+        if hasattr(item, "source_id") and item.source_id:
+            return str(item.source_id)
+    if isinstance(canonical, dict):
+        return canonical.get("id") or canonical.get("key") or None
+    return None
+
+
 def _coerce_slot(slot: str, canonical: Any, adapter=None) -> object:
     """
     Extract a slot-appropriate scalar from a canonical value.
@@ -277,12 +416,12 @@ def _coerce_slot(slot: str, canonical: Any, adapter=None) -> object:
         # (which may have iterated first) is not overwritten.
         if isinstance(canonical, (int, float)):
             return None
-        # Prefer the display name; fall back to source_id so the slot is never
-        # null for a linked asset (critical for DB-level product filtering).
+        # Return only the display name. The source_id is written to the separate
+        # product_source_record_id column in normalize_asset — never stored here.
         if isinstance(canonical, list) and canonical:
             item = canonical[0]
             if hasattr(item, "display_name") and hasattr(item, "source_id"):
-                return item.display_name or item.source_id
+                return item.display_name or None
         # Raw Jira issue-link dicts (parent/epic fields that survive as "unknown" type):
         # {id, key, fields: {summary, ...}}
         if isinstance(canonical, dict):
@@ -290,7 +429,6 @@ def _coerce_slot(slot: str, canonical: Any, adapter=None) -> object:
                 (canonical.get("fields", {}).get("summary")
                  if isinstance(canonical.get("fields"), dict) else None)
                 or canonical.get("name")
-                or canonical.get("key")
             )
             return display if display else None
         display = _adp.display_string(canonical)
@@ -298,12 +436,13 @@ def _coerce_slot(slot: str, canonical: Any, adapter=None) -> object:
 
     if slot == "priority":
         if isinstance(canonical, (int, float)):
-            return int(canonical)
+            return str(int(canonical))
         if isinstance(canonical, str):
+            s = canonical.strip()
             try:
-                return int(canonical.strip().upper().lstrip("P"))
+                return str(int(s.upper().lstrip("P")))
             except ValueError:
-                return None
+                return s or None
         # SelectValue — Jira priority objects (Highest/High/Medium/Low/Lowest)
         if hasattr(canonical, "label"):
             _pmap = {"highest": 1, "critical": 1, "high": 2, "medium": 3, "low": 4, "lowest": 5}
@@ -316,12 +455,13 @@ def _coerce_slot(slot: str, canonical: Any, adapter=None) -> object:
         if isinstance(canonical, list) and canonical:
             first = canonical[0]
             if isinstance(first, (int, float)):
-                return int(first)
+                return str(int(first))
             if isinstance(first, str):
+                s = first.strip()
                 try:
-                    return int(first.strip().upper().lstrip("P"))
+                    return str(int(s.upper().lstrip("P")))
                 except ValueError:
-                    return None
+                    return s or None
         return None
 
     if slot == "project_date":

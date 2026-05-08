@@ -2,40 +2,14 @@ import asyncio
 import logging
 from typing import List
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from lib.airtable import select_all
 from lib.auth import CurrentUser, require_studio
 from lib.db import db_client, _url, _headers
-from lib.source_creds import get_studio_airtable_creds
-from lib.utils import link_id
-import config
 
 log = logging.getLogger(__name__)
 router = APIRouter()
-
-
-async def _get_entity_table_name(studio_id: str, entity_type: str, fallback: str) -> str:
-    r = await db_client.get(
-        _url("/rest/v1/source_entity_definitions"),
-        params={
-            "owner_type":  "eq.studio",
-            "owner_id":    f"eq.{studio_id}",
-            "source_type": "eq.airtable",
-            "entity_type": f"eq.{entity_type}",
-            "select":      "table_name",
-        },
-        headers=_headers(),
-    )
-    rows = r.json()
-    if rows and rows[0].get("table_name"):
-        return rows[0]["table_name"]
-    return fallback
-
-
-async def _get_template_table_name(studio_id: str) -> str:
-    return await _get_entity_table_name(studio_id, "template", config.tables["templates"])
 
 
 @router.get("/matrix-table-pg")
@@ -193,14 +167,12 @@ class VariableFieldItem(BaseModel):
 class CreateMatrixBody(BaseModel):
     variables: List[VariableFieldItem]
     combinations: List[dict]
-    prefillCol: str = ""
     clearExisting: bool = False
 
 
 @router.post("/create-matrix-pg")
 async def create_matrix_pg(
     body: CreateMatrixBody,
-    background_tasks: BackgroundTasks,
     current_user: CurrentUser = Depends(require_studio),
 ):
     """ArtHound-native estimation matrix stored in Postgres."""
@@ -216,11 +188,6 @@ async def create_matrix_pg(
             params={"studio_id": f"eq.{studio_id}"},
             headers=_headers(),
         )
-        await db_client.delete(
-            _url("/rest/v1/workflow_steps"),
-            params={"studio_id": f"eq.{studio_id}", "airtable_template_id": "not.is.null"},
-            headers=_headers(),
-        )
 
     await db_client.post(
         _url("/rest/v1/estimate_config"),
@@ -228,75 +195,6 @@ async def create_matrix_pg(
         headers=_headers({"Prefer": "resolution=merge-duplicates,return=minimal"}),
         json={"studio_id": studio_id, "variable_fields": variable_fields},
     )
-
-    upserted_steps = []
-    at_token = at_base_id = template_table = None
-    try:
-        at_token, at_base_id = await get_studio_airtable_creds(studio_id)
-        template_table = await _get_template_table_name(studio_id)
-        templates, templates_str = await asyncio.gather(
-            select_all(template_table, token=at_token, base_id=at_base_id),
-            select_all(template_table, {
-                "cellFormat": "string",
-                "timeZone": "America/Los_Angeles",
-                "userLocale": "en-us",
-            }, token=at_token, base_id=at_base_id),
-        )
-        craft_name_by_template = {
-            r["id"]: (r["fields"].get("Crafts") or "").split(",")[0].strip()
-            for r in templates_str
-        }
-
-        step_rows = [
-            {
-                "studio_id": studio_id,
-                "name": t["fields"].get("Task") or "Untitled",
-                "craft": craft_name_by_template.get(t["id"], ""),
-                "airtable_template_id": t["id"],
-            }
-            for t in templates
-        ]
-        r = await db_client.post(
-            _url("/rest/v1/workflow_steps"),
-            params={"on_conflict": "studio_id,airtable_template_id"},
-            headers=_headers({"Prefer": "resolution=merge-duplicates,return=representation"}),
-            json=step_rows,
-        )
-        if not r.is_success:
-            raise HTTPException(status_code=500, detail=f"Failed to upsert workflow_steps: {r.text}")
-
-        upserted_steps = r.json()
-        template_to_step_id = {row["airtable_template_id"]: row["id"] for row in upserted_steps}
-
-        step_ids = [row["id"] for row in upserted_steps]
-        if step_ids:
-            ids_csv = ",".join(step_ids)
-            await db_client.delete(
-                _url("/rest/v1/workflow_step_dependencies"),
-                params={"step_id": f"in.({ids_csv})"},
-                headers=_headers(),
-            )
-            dep_rows = []
-            for t in templates:
-                step_id = template_to_step_id.get(t["id"])
-                if not step_id:
-                    continue
-                for l in (t["fields"].get("Depends upon") or []):
-                    dep_template_id = link_id(l)
-                    if not dep_template_id:
-                        continue
-                    dep_step_id = template_to_step_id.get(dep_template_id)
-                    if dep_step_id:
-                        dep_rows.append({"step_id": step_id, "depends_on_step_id": dep_step_id})
-            if dep_rows:
-                await db_client.post(
-                    _url("/rest/v1/workflow_step_dependencies"),
-                    params={"on_conflict": "step_id,depends_on_step_id"},
-                    headers=_headers({"Prefer": "resolution=ignore-duplicates,return=minimal"}),
-                    json=dep_rows,
-                )
-    except Exception:
-        upserted_steps = []
 
     r_steps = await db_client.get(
         _url("/rest/v1/workflow_steps"),
@@ -340,41 +238,8 @@ async def create_matrix_pg(
             json=default_rows,
         )
 
-    prefill_pending = False
-    if body.prefillCol and upserted_steps and at_token:
-        prefill_pending = True
-        _prefill_template_to_step = {row["airtable_template_id"]: row["id"] for row in upserted_steps}
-
-        async def run_pg_prefill():
-            try:
-                await asyncio.sleep(1.0)
-                records = await select_all(template_table, {"fields": ["Task", body.prefillCol]}, token=at_token, base_id=at_base_id)
-                for rec in records:
-                    val = rec["fields"].get(body.prefillCol)
-                    if val is None:
-                        continue
-                    step_id = _prefill_template_to_step.get(rec["id"])
-                    if not step_id:
-                        continue
-                    try:
-                        days = float(val)
-                    except (TypeError, ValueError):
-                        continue
-                    await db_client.patch(
-                        _url("/rest/v1/estimate_matrix"),
-                        params={"studio_id": f"eq.{studio_id}", "workflow_step_id": f"eq.{step_id}"},
-                        headers=_headers(),
-                        json={"estimate_days": days},
-                    )
-                log.info("pg-prefill complete for studio %s", studio_id)
-            except Exception as e:
-                log.warning("pg-prefill error for studio %s: %s", studio_id, e)
-
-        background_tasks.add_task(run_pg_prefill)
-
     return {
-        "stepsUpserted": len(upserted_steps),
+        "stepsUpserted": 0,
         "matrixRows": len(matrix_rows),
         "cleared": body.clearExisting,
-        "prefillPending": prefill_pending,
     }

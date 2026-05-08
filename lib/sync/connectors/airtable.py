@@ -1,7 +1,10 @@
 import asyncio
+import logging
 from urllib.parse import quote
 
 import httpx
+
+log = logging.getLogger(__name__)
 
 import config
 from lib.connectors.adapters.airtable import AIRTABLE_MANIFEST  # noqa: F401 — re-exported
@@ -79,7 +82,10 @@ class AirtableConnector(BaseConnector):
         return records
 
     async def fetch_single_asset(
-        self, source_record_id: str, table_id: str | None = None
+        self,
+        source_record_id: str,
+        table_id: str | None = None,
+        excluded_field_ids: set[str] | None = None,
     ) -> RawRecord | None:
         table = table_id or config.tables["assets"]
         table_enc = quote(table, safe="")
@@ -91,9 +97,12 @@ class AirtableConnector(BaseConnector):
             return None
         r.raise_for_status()
         rec = r.json()
+        fields = rec.get("fields", {})
+        if excluded_field_ids:
+            fields = {k: v for k, v in fields.items() if k not in excluded_field_ids}
         return RawRecord(
             source_record_id=rec["id"],
-            fields=rec.get("fields", {}),
+            fields=fields,
             source_last_modified_at=rec.get("createdTime"),
         )
 
@@ -128,11 +137,15 @@ class AirtableConnector(BaseConnector):
         filter_formula: str | None = None,
         since: str | None = None,
         max_records: int | None = None,
+        excluded_field_ids: set[str] | None = None,
     ) -> list[RawRecord]:
         """
         Fetch records from any table by ID, with optional formula filter and
         delta-sync cursor. Airtable's records API accepts table IDs in the URL
         interchangeably with table names.
+
+        excluded_field_ids: field names to strip from returned records (v1: client-side
+        filter; v2 will use Airtable's fields[] param as a whitelist instead).
         """
         table_enc = quote(table_id, safe="")
         records: list[dict] = []
@@ -170,7 +183,8 @@ class AirtableConnector(BaseConnector):
         return [
             RawRecord(
                 source_record_id=r["id"],
-                fields=r.get("fields", {}),
+                fields={k: v for k, v in r.get("fields", {}).items()
+                        if not excluded_field_ids or k not in excluded_field_ids},
                 source_last_modified_at=r.get("createdTime"),
             )
             for r in records
@@ -239,10 +253,34 @@ class AirtableConnector(BaseConnector):
 
     async def create_record(self, table_id: str, fields: dict) -> str:
         """Create a record in the given table. Returns the new record ID."""
-        r = await self._client.post(
-            f"{_AT_BASE}/v0/{self._base_id}/{quote(table_id, safe='')}",
-            headers={**self._headers(), "Content-Type": "application/json"},
-            json={"fields": fields},
-        )
+        _TRANSIENT = {429, 500, 502, 503, 504}
+        url     = f"{_AT_BASE}/{self._base_id}/{quote(table_id, safe='')}"
+        headers = {**self._headers(), "Content-Type": "application/json"}
+        payload = {"fields": fields, "typecast": True}
+        r = None
+        for attempt in range(3):
+            if attempt:
+                await asyncio.sleep(2 ** attempt)  # 2s, 4s
+            try:
+                r = await self._client.post(url, headers=headers, json=payload)
+            except httpx.TransportError as exc:
+                log.warning("Airtable create_record network error (attempt %d/3): %s", attempt + 1, exc)
+                r = None
+                continue
+            if r.status_code == 429:
+                wait = int(r.headers.get("Retry-After", 10))
+                log.warning("Airtable 429 on create_record — retrying in %ds (attempt %d)", wait, attempt + 1)
+                await asyncio.sleep(wait)
+                r = None
+                continue
+            if r.status_code in _TRANSIENT:
+                log.warning("Airtable create_record %s (attempt %d/3): %s", r.status_code, attempt + 1, r.text)
+                r = None
+                continue
+            break
+        if r is None:
+            raise RuntimeError("Airtable create_record: exhausted retries on transient error")
+        if r.is_error:
+            log.error("Airtable create_record %s — %s %s", r.status_code, r.text, fields)
         r.raise_for_status()
         return r.json()["id"]

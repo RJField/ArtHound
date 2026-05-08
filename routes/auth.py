@@ -4,6 +4,8 @@ Public auth routes — no JWT required.
 
 import logging
 import os
+import re
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -18,11 +20,15 @@ router = APIRouter()
 _AUTO_CONFIRM = os.environ.get("SIGNUP_AUTO_CONFIRM", "false").lower() == "true"
 
 
+_HANDLE_RE = re.compile(r'^[a-z0-9][a-z0-9_-]{2,31}$')
+
+
 class SignupBody(BaseModel):
     email:    str
     password: str
-    role:     str   # "studio" | "vendor"
+    role:     str             # "studio" | "vendor"
     org_name: str
+    handle:   Optional[str] = None   # vendor only
 
 
 @router.post("/signup")
@@ -44,6 +50,12 @@ async def signup(body: SignupBody):
         raise HTTPException(status_code=422, detail="Organisation name is required")
     if len(body.password) < 8:
         raise HTTPException(status_code=422, detail="Password must be at least 8 characters")
+    if body.role == "vendor" and body.handle is not None:
+        if not _HANDLE_RE.match(body.handle):
+            raise HTTPException(
+                status_code=422,
+                detail="HANDLE_INVALID",
+            )
 
     # ── 1. Create auth user ───────────────────────────────────────────────────
     r = await db_client.post(
@@ -68,11 +80,17 @@ async def signup(body: SignupBody):
 
     # ── 2. Create org row ─────────────────────────────────────────────────────
     org_table = "studios" if body.role == "studio" else "vendors"
+    org_payload: dict = {"name": body.org_name.strip()}
+    if body.role == "vendor" and body.handle:
+        org_payload["handle"] = body.handle
+
     r2 = await db_client.post(
         _url(f"/rest/v1/{org_table}"),
         headers=_headers({"Prefer": "return=representation"}),
-        json={"name": body.org_name.strip()},
+        json=org_payload,
     )
+    if r2.status_code == 409 or (not r2.is_success and "23505" in r2.text):
+        raise HTTPException(status_code=422, detail="HANDLE_TAKEN")
     if not r2.is_success:
         log.error("Org create failed for user %s: %s", user_id, r2.text[:300])
         raise HTTPException(status_code=500, detail="Failed to create organisation record")
@@ -96,11 +114,17 @@ async def signup(body: SignupBody):
 
     # When not auto-confirming, trigger the confirmation email explicitly.
     # The Admin API creates the user but never fires the email on its own.
+    # emailRedirectTo must be registered in the Supabase dashboard Redirect URLs list.
     if not _AUTO_CONFIRM:
+        _frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:5173")
         await db_client.post(
             _url("/auth/v1/resend"),
             headers=_headers(),
-            json={"type": "signup", "email": body.email},
+            json={
+                "type": "signup",
+                "email": body.email,
+                "options": {"emailRedirectTo": f"{_frontend_url}/auth/callback"},
+            },
         )
 
     return {"ok": True, "email_confirmation_required": not _AUTO_CONFIRM}

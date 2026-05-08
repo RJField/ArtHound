@@ -13,6 +13,9 @@ import Reviews from './pages/Reviews'
 import Assets from './pages/Assets'
 import Estimates from './pages/Estimates'
 import ProjectInit from './pages/ProjectInit'
+import VendorConnections from './pages/VendorConnections'
+import StudioConnections from './pages/StudioConnections'
+import AuthCallback from './pages/AuthCallback'
 
 function AuthGuard() {
   const { session, loading } = useAuth()
@@ -77,6 +80,7 @@ export default function App() {
           />
           <Routes>
             <Route path="/login" element={<Login />} />
+            <Route path="/auth/callback" element={<AuthCallback />} />
             <Route element={<AuthGuard />}>
               {/* Init wizard — shown to studio users before first sync */}
               <Route path="/init" element={<ProjectInit />} />
@@ -91,6 +95,8 @@ export default function App() {
                 <Route path="/workflows"   element={<Workflows />} />
                 <Route path="/reviews"     element={<Reviews />} />
                 <Route path="/inbox"       element={<VendorInbox />} />
+                <Route path="/vendors"     element={<VendorConnections />} />
+                <Route path="/studios"    element={<StudioConnections />} />
               </Route>
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />

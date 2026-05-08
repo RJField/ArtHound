@@ -132,8 +132,9 @@ export default function WorkTab({ asset, workRefreshKey }) {
     async function load() {
       try {
         if (source === 'source') {
+          if (!asset.canonicalId) { setWork([]); return }
           const data = await apiFetch(
-            `/api/work?asset_source_id=${encodeURIComponent(asset.id)}`
+            `/api/work/?canonical_asset_id=${encodeURIComponent(asset.canonicalId)}`
           )
           setWork(data)
         } else {

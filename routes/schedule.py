@@ -12,6 +12,8 @@ from lib.db import db_client, _url, _headers
 from lib.scheduler import build_schedule
 from lib.token_refresh import get_jira_token
 from lib.sync.connectors.jira import JiraConnector
+from lib.sync.connectors.airtable import AirtableConnector
+from lib.source_creds import get_studio_airtable_creds
 
 log = logging.getLogger(__name__)
 
@@ -81,12 +83,49 @@ async def _get_studio_source_type(studio_id: str) -> str | None:
 _ISSUETYPE_RE = re.compile(r'issuetype\s*=\s*["\']?([^"\'\s),]+)', re.IGNORECASE)
 
 
+def _to_adf(text: str) -> dict:
+    """Wrap plain text in Atlassian Document Format for Jira Cloud v3."""
+    content = [
+        {"type": "paragraph", "content": [{"type": "text", "text": line or " "}]}
+        for line in text.split("\n")
+    ]
+    return {"version": 1, "type": "doc", "content": content}
+
+
+def _build_asset_description(asset: dict) -> str:
+    pairs = [
+        ("Asset",        asset.get("name")),
+        ("Type",         asset.get("itemType")),
+        ("Team",         asset.get("team")),
+        ("Priority",     asset.get("priority")),
+        ("Project date", asset.get("projectDate")),
+        ("Variables",    asset.get("estimateCol")),
+    ]
+    return "\n".join(f"{label}: {val}" for label, val in pairs if val)
+
+
 def _parse_issue_type(jql_filter: str | None) -> str | None:
     """Extract the issue type name from a JQL string, e.g. 'issuetype = "Sub-task"' → 'Sub-task'."""
     if not jql_filter:
         return None
     m = _ISSUETYPE_RE.search(jql_filter)
     return m.group(1) if m else None
+
+
+async def _get_asset_table_id(studio_id: str) -> str | None:
+    r = await db_client.get(
+        _url("/rest/v1/source_entity_definitions"),
+        params={
+            "owner_type":  "eq.studio",
+            "owner_id":    f"eq.{studio_id}",
+            "entity_type": "eq.asset",
+            "select":      "table_id",
+            "limit":       "1",
+        },
+        headers=_headers(),
+    )
+    rows = r.json() if r.is_success else []
+    return rows[0]["table_id"] if rows else None
 
 
 async def _get_work_entity_def(studio_id: str) -> dict | None:
@@ -130,7 +169,6 @@ async def _get_asset_jira_key(studio_id: str, source_record_id: str) -> str | No
 async def _write_back_to_source(result: dict, snapshot_map: dict[str, str]) -> int:
     """Push generated work items to the studio's source tool.
     Returns the count of items successfully created. Non-fatal — errors are logged.
-    Currently implemented for Jira only; Airtable write-back is deferred.
     """
     studio_id  = result["_studioId"]
     work_items = result["work"]
@@ -139,117 +177,244 @@ async def _write_back_to_source(result: dict, snapshot_map: dict[str, str]) -> i
         return 0
 
     source_type = await _get_studio_source_type(studio_id)
-    if source_type != "jira":
+    if source_type not in ("jira", "airtable"):
         return 0
 
     async with httpx.AsyncClient(timeout=30.0) as client:
-        try:
-            jira_creds = await get_jira_token("studio", studio_id, client)
-        except RuntimeError as exc:
-            log.warning("Jira write-back: cannot get token for studio %s — %s", studio_id, exc)
-            return 0
-
-        work_def = await _get_work_entity_def(studio_id)
-        if not work_def:
-            log.warning("Jira write-back: no work entity def for studio %s", studio_id)
-            return 0
-
-        asset_jira_key = await _get_asset_jira_key(studio_id, result["asset"]["id"])
-        if not asset_jira_key:
-            log.warning(
-                "Jira write-back: no _jira_key in meta for asset %s — "
-                "re-sync the asset then retry",
-                result["asset"]["id"],
-            )
-            return 0
-
-        connector = JiraConnector(
-            access_token=jira_creds["access_token"],
-            client=client,
-            cloud_id=jira_creds.get("cloud_id"),
-            deployment=jira_creds.get("deployment", "cloud"),
-            instance_url=jira_creds.get("instance_url"),
-        )
-
-        project_key    = work_def.get("table_id")
-        # rel_field_id is null in Jira wizard saves; fall back to rel_field_name
-        rel_field      = work_def.get("rel_field_id") or work_def.get("rel_field_name")
-        start_field_id = work_def.get("work_start_date_field_id")
-        end_field_id   = work_def.get("work_end_date_field_id")
-        est_field_id   = work_def.get("work_estimate_field_id")
-
-        jql_issue_type = _parse_issue_type(work_def.get("jql_filter"))
-        if jql_issue_type:
-            issue_type = jql_issue_type
-        else:
-            available = await connector.fetch_project_issue_types(project_key)
-            issue_type = available[0] if available else "Task"
-            log.info(
-                "Jira write-back: no issuetype in JQL — using '%s' from project %s (available: %s)",
-                issue_type, project_key, available,
-            )
-
-        log.info(
-            "Jira write-back: project=%s issuetype=%s rel_field=%s asset=%s",
-            project_key, issue_type, rel_field, asset_jira_key,
-        )
-
-        source_id_updates: list[dict] = []
-        created = 0
-        # Link type used when the asset and work item are at the same hierarchy level.
-        # "Relates" is a standard Jira link type present in all installations.
-        _LINK_TYPE = "Relates"
-
-        for item in work_items:
-            fields: dict = {
-                "project":   {"key": project_key},
-                "issuetype": {"name": issue_type},
-                "summary":   item["workName"],
-            }
-
-            if start_field_id and item.get("startDate"):
-                fields[start_field_id] = item["startDate"]
-            if end_field_id and item.get("endDate"):
-                fields[end_field_id] = item["endDate"]
-            if est_field_id and item.get("estimate") is not None:
-                fields[est_field_id] = item["estimate"]
-
+        if source_type == "jira":
             try:
-                issue_key = await connector.create_issue(fields)
-                created += 1
-                gw_id = snapshot_map.get(item.get("workflowStepId") or "")
-                if gw_id:
-                    source_id_updates.append({"id": gw_id, "source_record_id": issue_key})
+                jira_creds = await get_jira_token("studio", studio_id, client)
+            except RuntimeError as exc:
+                log.warning("Jira write-back: cannot get token for studio %s — %s", studio_id, exc)
+                return 0
 
-                if asset_jira_key:
-                    try:
-                        await connector.create_issue_link(_LINK_TYPE, asset_jira_key, issue_key)
-                    except Exception as link_exc:
-                        log.warning(
-                            "Jira write-back: issue link failed (%s → %s): %s",
-                            asset_jira_key, issue_key, link_exc,
-                        )
-            except Exception as exc:
+            work_def = await _get_work_entity_def(studio_id)
+            if not work_def:
+                log.warning("Jira write-back: no work entity def for studio %s", studio_id)
+                return 0
+
+            asset_jira_key = await _get_asset_jira_key(studio_id, result["asset"]["id"])
+            if not asset_jira_key:
                 log.warning(
-                    "Jira write-back: create_issue failed for '%s' (project=%s issuetype=%s): %s",
-                    item["workName"], project_key, issue_type, exc,
+                    "Jira write-back: no _jira_key in meta for asset %s — "
+                    "re-sync the asset then retry",
+                    result["asset"]["id"],
+                )
+                return 0
+
+            connector = JiraConnector(
+                access_token=jira_creds["access_token"],
+                client=client,
+                cloud_id=jira_creds.get("cloud_id"),
+                deployment=jira_creds.get("deployment", "cloud"),
+                instance_url=jira_creds.get("instance_url"),
+            )
+
+            project_key    = work_def.get("table_id")
+            # rel_field_id is null in Jira wizard saves; fall back to rel_field_name
+            rel_field      = work_def.get("rel_field_id") or work_def.get("rel_field_name")
+            start_field_id = work_def.get("work_start_date_field_id")
+            end_field_id   = work_def.get("work_end_date_field_id")
+            est_field_id   = work_def.get("work_estimate_field_id")
+
+            jql_issue_type = _parse_issue_type(work_def.get("jql_filter"))
+            if jql_issue_type:
+                issue_type = jql_issue_type
+            else:
+                available = await connector.fetch_project_issue_types(project_key)
+                issue_type = available[0] if available else "Task"
+                log.info(
+                    "Jira write-back: no issuetype in JQL — using '%s' from project %s (available: %s)",
+                    issue_type, project_key, available,
                 )
 
-        if source_id_updates:
+            log.info(
+                "Jira write-back: project=%s issuetype=%s rel_field=%s asset=%s",
+                project_key, issue_type, rel_field, asset_jira_key,
+            )
+
+            source_id_updates: list[dict] = []
+            created = 0
+            _LINK_TYPE = "Relates"
+
+            _desc_text = _build_asset_description(result["asset"])
+            _desc_field = (
+                _to_adf(_desc_text)
+                if _desc_text and connector._deployment == "cloud"
+                else _desc_text or None
+            )
+
+            for item in work_items:
+                fields: dict = {
+                    "project":   {"key": project_key},
+                    "issuetype": {"name": issue_type},
+                    "summary":   item["workName"],
+                }
+                if _desc_field:
+                    fields["description"] = _desc_field
+
+                if start_field_id and item.get("startDate"):
+                    fields[start_field_id] = item["startDate"]
+                if end_field_id and item.get("endDate"):
+                    fields[end_field_id] = item["endDate"]
+                if est_field_id and item.get("estimate") is not None:
+                    fields[est_field_id] = item["estimate"]
+
+                try:
+                    issue_key = await connector.create_issue(fields)
+                    created += 1
+                    gw_id = snapshot_map.get(item.get("workflowStepId") or "")
+                    if gw_id:
+                        source_id_updates.append({"id": gw_id, "source_record_id": issue_key})
+
+                    if asset_jira_key:
+                        try:
+                            await connector.create_issue_link(_LINK_TYPE, asset_jira_key, issue_key)
+                        except Exception as link_exc:
+                            log.warning(
+                                "Jira write-back: issue link failed (%s → %s): %s",
+                                asset_jira_key, issue_key, link_exc,
+                            )
+                except Exception as exc:
+                    log.warning(
+                        "Jira write-back: create_issue failed for '%s' (project=%s issuetype=%s): %s",
+                        item["workName"], project_key, issue_type, exc,
+                    )
+
+            if source_id_updates:
+                try:
+                    await db_client.post(
+                        _url("/rest/v1/generated_work?on_conflict=id"),
+                        json=source_id_updates,
+                        headers=_headers({"Prefer": "resolution=merge-duplicates,return=minimal"}),
+                    )
+                except Exception as exc:
+                    log.warning("Jira write-back: source_record_id update failed: %s", exc)
+
+            log.info(
+                "Jira write-back: %d/%d issues created for asset %s (studio %s)",
+                created, len(work_items), result["asset"]["id"], studio_id,
+            )
+            return created
+
+        else:  # airtable
             try:
-                await db_client.post(
-                    _url("/rest/v1/generated_work?on_conflict=id"),
-                    json=source_id_updates,
-                    headers=_headers({"Prefer": "resolution=merge-duplicates,return=minimal"}),
-                )
+                api_token, base_id = await get_studio_airtable_creds(studio_id)
             except Exception as exc:
-                log.warning("Jira write-back: source_record_id update failed: %s", exc)
+                log.warning("Airtable write-back: cannot get creds for studio %s — %s", studio_id, exc)
+                return 0
 
-        log.info(
-            "Jira write-back: %d/%d issues created for asset %s (studio %s)",
-            created, len(work_items), result["asset"]["id"], studio_id,
-        )
-        return created
+            work_def = await _get_work_entity_def(studio_id)
+            if not work_def:
+                log.warning("Airtable write-back: no work entity def for studio %s", studio_id)
+                return 0
+
+            table_id       = work_def.get("table_id")
+            name_field_id  = work_def.get("work_name_field_id")
+            start_field_id = work_def.get("work_start_date_field_id")
+            end_field_id   = work_def.get("work_end_date_field_id")
+            est_field_id   = work_def.get("work_estimate_field_id")
+            rel_field_id   = work_def.get("rel_field_id") or work_def.get("rel_field_name")
+
+            if not table_id or not name_field_id:
+                log.warning(
+                    "Airtable write-back: work entity def missing table_id or name field for studio %s",
+                    studio_id,
+                )
+                return 0
+
+            connector = AirtableConnector(api_token=api_token, base_id=base_id, client=client)
+            # For Airtable, source_record_id IS the record ID (rec...)
+            asset_at_id = result["asset"]["id"]
+            desc_text   = _build_asset_description(result["asset"])
+
+            # Resolve the work→asset link field. The entity def may store the asset-side
+            # field ID instead of the work-side one, so we validate against the work schema
+            # and auto-discover the correct field by linkedTableId if needed.
+            # Abort entirely if we can't resolve it — orphaned records are worse than none.
+            if rel_field_id:
+                try:
+                    work_schema   = await connector.fetch_asset_schema(table_id)
+                    work_field_map = {f.id: f for f in work_schema}
+                    if rel_field_id not in work_field_map:
+                        asset_table_id = await _get_asset_table_id(studio_id)
+                        discovered = next(
+                            (
+                                f.id for f in work_schema
+                                if f.type == "multipleRecordLinks"
+                                and f.options.get("linkedTableId") == asset_table_id
+                            ),
+                            None,
+                        )
+                        if discovered:
+                            log.info(
+                                "Airtable write-back: rel_field_id %s not on work table — "
+                                "auto-discovered link field %s via linkedTableId",
+                                rel_field_id, discovered,
+                            )
+                            rel_field_id = discovered
+                        else:
+                            log.error(
+                                "Airtable write-back: rel_field_id %s not found on work table %s "
+                                "and no multipleRecordLinks field points to asset table %s — "
+                                "aborting to prevent orphaned records",
+                                rel_field_id, table_id, asset_table_id,
+                            )
+                            return 0
+                except Exception as exc:
+                    log.error(
+                        "Airtable write-back: schema fetch failed — aborting to prevent orphaned records: %s", exc,
+                    )
+                    return 0
+
+            log.info(
+                "Airtable write-back: table=%s name_field=%s rel_field=%s asset=%s",
+                table_id, name_field_id, rel_field_id, asset_at_id,
+            )
+
+            source_id_updates: list[dict] = []
+            created = 0
+
+            for item in work_items:
+                fields: dict = {name_field_id: item["workName"]}
+                if start_field_id and item.get("startDate"):
+                    fields[start_field_id] = item["startDate"]
+                if end_field_id and item.get("endDate"):
+                    fields[end_field_id] = item["endDate"]
+                if est_field_id and item.get("estimate") is not None:
+                    fields[est_field_id] = item["estimate"]
+                if rel_field_id and asset_at_id:
+                    fields[rel_field_id] = [asset_at_id]
+                if desc_text and work_def.get("work_notes_field_id"):
+                    fields[work_def["work_notes_field_id"]] = desc_text
+
+                try:
+                    record_id = await connector.create_record(table_id, fields)
+                    created += 1
+                    gw_id = snapshot_map.get(item.get("workflowStepId") or "")
+                    if gw_id:
+                        source_id_updates.append({"id": gw_id, "source_record_id": record_id})
+                except Exception as exc:
+                    log.warning(
+                        "Airtable write-back: create_record failed for '%s' (table=%s): %s",
+                        item["workName"], table_id, exc,
+                    )
+
+            if source_id_updates:
+                try:
+                    await db_client.post(
+                        _url("/rest/v1/generated_work?on_conflict=id"),
+                        json=source_id_updates,
+                        headers=_headers({"Prefer": "resolution=merge-duplicates,return=minimal"}),
+                    )
+                except Exception as exc:
+                    log.warning("Airtable write-back: source_record_id update failed: %s", exc)
+
+            log.info(
+                "Airtable write-back: %d/%d records created for asset %s (studio %s)",
+                created, len(work_items), result["asset"]["id"], studio_id,
+            )
+            return created
 
 
 # ── Route models ──────────────────────────────────────────────────────────────

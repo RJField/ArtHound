@@ -1,12 +1,18 @@
 import { createClient } from '@supabase/supabase-js'
 
-let client = null
+let _promise = null
 
-export async function getSupabase() {
-  if (client) return client
-  const res = await fetch('/api/config')
-  if (!res.ok) throw new Error('Failed to load app config')
-  const { supabaseUrl, supabaseAnonKey } = await res.json()
-  client = createClient(supabaseUrl, supabaseAnonKey)
-  return client
+export function getSupabase() {
+  if (_promise) return _promise
+  _promise = fetch('/api/config')
+    .then(async res => {
+      if (!res.ok) throw new Error('Failed to load app config')
+      const { supabaseUrl, supabaseAnonKey } = await res.json()
+      return createClient(supabaseUrl, supabaseAnonKey)
+    })
+    .catch(err => {
+      _promise = null // allow retry on failure
+      throw err
+    })
+  return _promise
 }

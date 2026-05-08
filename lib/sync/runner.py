@@ -3,6 +3,7 @@ Sync runner — trigger-agnostic orchestrator.
 Call run_sync() from login, manual refresh, webhook, or polling scheduler.
 """
 
+import asyncio
 import logging
 import os
 from datetime import datetime, timezone
@@ -11,7 +12,7 @@ import httpx
 
 from lib.canonical import get_or_create_canonical_ids
 from lib.crypto import decrypt_credentials
-from lib.db import db_client, _url, _headers
+from lib.db import db_client, drain_pages, _url, _headers
 from lib.sync.connector import BaseConnector
 from lib.sync.connectors.airtable import AirtableConnector
 from lib.sync.differ import find_changes
@@ -32,6 +33,16 @@ from lib.sync.writer import (
 )
 
 log = logging.getLogger(__name__)
+
+# Per-(owner_type, owner_id) locks — prevents concurrent syncs within the same process.
+_sync_locks: dict[tuple[str, str], asyncio.Lock] = {}
+
+
+def _get_sync_lock(owner_type: str, owner_id: str) -> asyncio.Lock:
+    key = (owner_type, owner_id)
+    if key not in _sync_locks:
+        _sync_locks[key] = asyncio.Lock()
+    return _sync_locks[key]
 
 
 # ── connector factory ─────────────────────────────────────────────────────────
@@ -73,6 +84,7 @@ async def _get_credentials(owner_type: str, owner_id: str, source_type: str) -> 
         },
         headers=_headers(),
     )
+    r.raise_for_status()
     rows = r.json()
     if rows:
         return decrypt_credentials(rows[0]["credentials"])
@@ -91,6 +103,7 @@ async def _get_mappings(owner_type: str, owner_id: str, source_type: str) -> lis
         },
         headers=_headers(),
     )
+    r.raise_for_status()
     rows = r.json()
     return rows[0]["mappings"] if rows else None
 
@@ -129,6 +142,7 @@ async def _get_cursor(owner_type: str, owner_id: str, source_type: str) -> str |
         },
         headers=_headers(),
     )
+    r.raise_for_status()
     rows = r.json()
     return rows[0]["last_synced_at"] if rows else None
 
@@ -166,6 +180,48 @@ async def _finish_log(log_id: str, status: str, records_synced: int, error: str 
             "error_detail":   error,
         },
     )
+
+
+async def _get_ingest_canonical_map(
+    vendor_id: str, source_type: str, source_record_ids: list[str]
+) -> dict[str, str]:
+    """
+    Returns {source_record_id: canonical_asset_id} for vendor records that were
+    created via payload ingest. Scoped to the current sync batch — only looks up
+    IDs present in source_record_ids rather than pulling all ingest records for the
+    vendor, keeping the query index-backed and URL-length bounded.
+
+    Chunked at 200 IDs per request to stay under PostgREST's URL length ceiling
+    (~8KB). A 500-record batch that is not chunked will fail with a 414 or gateway
+    error; chunking makes this safe at any batch size.
+
+    Vendor records not found here (no payload_export_records entry) were created
+    outside of ArtHound ingestion — they land in replicated_assets with
+    canonical_asset_id=NULL and origin='sync'. Known v1 gap; explicit-map reconciles.
+    """
+    if not source_record_ids:
+        return {}
+
+    result: dict[str, str] = {}
+    for i in range(0, len(source_record_ids), 200):
+        chunk = source_record_ids[i : i + 200]
+        r = await db_client.get(
+            _url("/rest/v1/payload_export_records"),
+            params={
+                "vendor_id":             f"eq.{vendor_id}",
+                "vendor_source_type":    f"eq.{source_type}",
+                "vendor_tool_record_id": f"in.({','.join(chunk)})",
+                "select":                "vendor_tool_record_id,canonical_asset_id",
+            },
+            headers=_headers(),
+        )
+        r.raise_for_status()
+        result.update({
+            row["vendor_tool_record_id"]: row["canonical_asset_id"]
+            for row in r.json()
+        })
+
+    return result
 
 
 # ── field-derived item types ──────────────────────────────────────────────────
@@ -246,7 +302,9 @@ async def sync_single_asset(
 
             mappings = await _get_mappings(owner_type, owner_id, source_type)
             if mappings is None:
-                mappings = default_mappings_from_schema(schema_fields)
+                mappings = default_mappings_from_schema(
+                    schema_fields, source_type=source_type, paw_level="asset"
+                )
 
         # Build reference resolver from already-replicated reference data — no extra source API calls.
         r_prods = await db_client.get(
@@ -289,17 +347,31 @@ async def sync_single_asset(
         elif source_type == "jira" and entity_defs.get("product"):
             product_rel_field_id = (asset_def.get("rel_field_id") or "parent") if asset_def else "parent"
 
+        _excluded: set[str] = {
+            key
+            for m in mappings if m.get("ingest_suppressed")
+            for key in (m.get("source_field_id"), m.get("source_field_name"))
+            if key
+        }
+
         norm = normalize_asset(
             raw, mappings,
             field_type_map=field_type_map,
             reference_resolver=reference_resolver,
             adapter=field_adapter,
             product_rel_field_id=product_rel_field_id,
+            suppressed_names=_excluded or None,
         )
 
         canonical_map: dict[str, str] = {}
         if owner_type == "studio" and source_type in ("airtable", "jira"):
-            canonical_map = await get_or_create_canonical_ids([source_record_id], owner_id)
+            canonical_map = await get_or_create_canonical_ids(
+                [source_record_id], owner_id, source_type
+            )
+        elif owner_type == "vendor":
+            canonical_map = await _get_ingest_canonical_map(
+                owner_id, source_type, [source_record_id]
+            )
 
         await upsert_assets(owner_type, owner_id, source_type, [norm], canonical_map)
 
@@ -324,6 +396,21 @@ async def run_sync(
 
     full=True forces a complete re-fetch regardless of cursor.
     """
+    lock = _get_sync_lock(owner_type, owner_id)
+    if lock.locked():
+        log.info("Sync already in progress for %s/%s — skipping duplicate trigger", owner_type, owner_id)
+        return {"status": "skipped", "reason": "sync already in progress"}
+    async with lock:
+        return await _run_sync_locked(owner_type, owner_id, source_type, trigger, full)
+
+
+async def _run_sync_locked(
+    owner_type: str,
+    owner_id: str,
+    source_type: str = "airtable",
+    trigger: str = "manual",
+    full: bool = False,
+) -> dict:
     log_id = await _start_log(owner_type, owner_id, source_type, trigger)
     sync_started = datetime.now(timezone.utc).isoformat()
 
@@ -367,9 +454,20 @@ async def run_sync(
 
             mappings = await _get_mappings(owner_type, owner_id, source_type)
             if mappings is None:
-                mappings = default_mappings_from_schema(schema_fields)
+                mappings = default_mappings_from_schema(
+                    schema_fields, source_type=source_type, paw_level="asset"
+                )
                 await save_default_mappings(owner_type, owner_id, source_type, mappings)
                 log.info("Generated default field mappings for %s/%s", owner_type, owner_id)
+
+            # Build excluded field set from suppressed mappings so connectors can
+            # strip them at record construction time (v1 client-side; v2 API-level).
+            excluded_field_ids: set[str] = {
+                key
+                for m in mappings if m.get("ingest_suppressed")
+                for key in (m.get("source_field_id"), m.get("source_field_name"))
+                if key
+            }
 
             # ── Fetch — use entity definitions when available, else config.tables
             if asset_def:
@@ -377,6 +475,7 @@ async def run_sync(
                     table_id=asset_def["table_id"],
                     filter_formula=connector.build_entity_filter(asset_def),
                     since=cursor if is_delta else None,
+                    excluded_field_ids=excluded_field_ids or None,
                 )
             else:
                 raw_assets = await connector.fetch_assets(since=cursor if is_delta else None)
@@ -409,6 +508,7 @@ async def run_sync(
                 raw_work = await connector.fetch_entity(
                     table_id=work_def["table_id"],
                     filter_formula=connector.build_entity_filter(work_def),
+                    excluded_field_ids=excluded_field_ids or None,
                 )
             else:
                 raw_work = []
@@ -490,6 +590,7 @@ async def run_sync(
                     reference_resolver=reference_resolver,
                     adapter=field_adapter,
                     product_rel_field_id=product_rel_field_id,
+                    suppressed_names=excluded_field_ids or None,
                 )
                 for r in raw_assets
             ]
@@ -503,12 +604,20 @@ async def run_sync(
                 assets_to_write = norm_assets
                 log.info("Full sync: writing all %d records", len(assets_to_write))
 
-            # ── Canonical ID linking (all studio source types) ───────────────
+            # ── Canonical ID linking ──────────────────────────────────────────
             canonical_map: dict[str, str] = {}
+            source_ids = [r["source_record_id"] for r in assets_to_write]
             if owner_type == "studio" and source_type in ("airtable", "jira"):
-                source_ids = [r["source_record_id"] for r in assets_to_write]
                 if source_ids:
-                    canonical_map = await get_or_create_canonical_ids(source_ids, owner_id)
+                    canonical_map = await get_or_create_canonical_ids(
+                        source_ids, owner_id, source_type
+                    )
+            elif owner_type == "vendor" and source_ids:
+                # Attach canonical IDs for records created via payload ingest.
+                # Records not in payload_export_records (manual creates) stay NULL.
+                canonical_map = await _get_ingest_canonical_map(
+                    owner_id, source_type, source_ids
+                )
 
             # ── Write ─────────────────────────────────────────────────────────
             await upsert_assets(owner_type, owner_id, source_type, assets_to_write, canonical_map)
@@ -516,10 +625,118 @@ async def run_sync(
             await upsert_item_types(owner_type, owner_id, source_type, norm_item_types)
 
             work_rel_field = work_def.get("rel_field_name") if work_def else None
+            work_direction = work_def.get("rel_direction") if work_def else None
+
+            # Auto-detect direction mismatch: if the stored rel_field_name doesn't appear
+            # in any work record (asset-side field stored instead of work-side field), fall
+            # back to parent_holds_link so canonical IDs resolve without user having to
+            # re-run the init wizard. Confirmed by checking raw_assets; for delta syncs
+            # with no changed assets, optimistically switch and let the DB supplement handle it.
+            if (
+                work_rel_field
+                and raw_work
+                and work_direction != "parent_holds_link"
+                and not any(work_rel_field in rw.fields for rw in raw_work)
+                and (any(work_rel_field in ar.fields for ar in raw_assets) or is_delta)
+            ):
+                log.info(
+                    "Work rel_field '%s' not found in work records — "
+                    "auto-correcting direction to parent_holds_link",
+                    work_rel_field,
+                )
+                work_direction = "parent_holds_link"
+
+            # work_to_canonical: used only for parent_holds_link — maps
+            # work source_record_id → canonical_asset_id built from asset side.
+            work_to_canonical: dict[str, str] = {}
+
+            if work_direction == "parent_holds_link" and work_rel_field and raw_work:
+                # Link is on the asset: iterate raw_assets to build a reverse map.
+                # raw_assets covers all fetched assets (all on full sync,
+                # only changed ones on delta sync).
+                def _apply_asset_link(asset_sid: str, link_val) -> None:
+                    cid = canonical_map.get(asset_sid)
+                    if not cid:
+                        return
+                    if isinstance(link_val, list):
+                        for wid in link_val:
+                            if isinstance(wid, str) and wid:
+                                work_to_canonical.setdefault(wid, cid)
+                    elif isinstance(link_val, str) and link_val:
+                        work_to_canonical.setdefault(link_val, cid)
+
+                for ar in raw_assets:
+                    _apply_asset_link(ar.source_record_id, ar.fields.get(work_rel_field))
+
+                # On delta sync raw_assets is incomplete — supplement from the DB
+                # so work items linked to unchanged assets also get resolved.
+                if is_delta:
+                    _rows = await drain_pages(
+                        _url("/rest/v1/replicated_assets"),
+                        {
+                            "owner_type": f"eq.{owner_type}",
+                            "owner_id":   f"eq.{owner_id}",
+                            "select":     "source_record_id,canonical_asset_id,meta",
+                        },
+                    )
+                    for row in _rows:
+                        cid = row.get("canonical_asset_id")
+                        if not cid:
+                            continue
+                        meta = row.get("meta") or {}
+                        lv = meta.get(work_rel_field)
+                        if isinstance(lv, list):
+                            for wid in lv:
+                                if isinstance(wid, str) and wid:
+                                    work_to_canonical.setdefault(wid, cid)
+                        elif isinstance(lv, str) and lv:
+                            work_to_canonical.setdefault(lv, cid)
+
+            elif work_direction != "parent_holds_link" and raw_work and work_rel_field and is_delta:
+                # child_holds_link + delta sync: canonical_map only covers changed
+                # assets. Supplement it with DB-resolved IDs for work parents that
+                # aren't already present so we don't overwrite existing values with NULL.
+                parent_ids: set[str] = set()
+                for rw in raw_work:
+                    link_val = rw.fields.get(work_rel_field)
+                    if isinstance(link_val, list) and link_val:
+                        parent_ids.add(link_val[0])
+                    elif isinstance(link_val, str) and link_val:
+                        parent_ids.add(link_val)
+                missing = parent_ids - set(canonical_map.keys())
+                if missing:
+                    _cr = await db_client.get(
+                        _url("/rest/v1/replicated_assets"),
+                        params={
+                            "owner_type":       f"eq.{owner_type}",
+                            "owner_id":         f"eq.{owner_id}",
+                            "source_record_id": f"in.({','.join(missing)})",
+                            "select":           "source_record_id,canonical_asset_id",
+                        },
+                        headers=_headers(),
+                    )
+                    if _cr.is_success:
+                        for row in _cr.json():
+                            if row.get("canonical_asset_id"):
+                                canonical_map[row["source_record_id"]] = row["canonical_asset_id"]
+
             norm_work = [
-                normalize_work(r, rel_field_name=work_rel_field, asset_canonical_map=canonical_map)
+                normalize_work(
+                    r,
+                    rel_field_name=work_rel_field if work_direction != "parent_holds_link" else None,
+                    asset_canonical_map=canonical_map,
+                )
                 for r in raw_work
             ]
+
+            # Apply parent_holds_link canonical IDs (built from asset side above)
+            if work_to_canonical:
+                for w in norm_work:
+                    if w.get("canonical_asset_id") is None:
+                        cid = work_to_canonical.get(w["source_record_id"])
+                        if cid:
+                            w["canonical_asset_id"] = cid
+
             await upsert_work(owner_type, owner_id, source_type, norm_work)
 
             # ── Deletion detection ────────────────────────────────────────────

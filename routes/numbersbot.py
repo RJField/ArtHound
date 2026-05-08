@@ -48,15 +48,16 @@ async def _build_context(user: CurrentUser) -> str:
     if not owner_id:
         return "No studio or vendor linked to this account — cannot load asset data."
 
-    asset_r, fm_r, tasks_r, reviews_r = await _parallel_fetch(owner_type, owner_id)
+    asset_r, fm_r, rw_r, tasks_r, reviews_r = await _parallel_fetch(owner_type, owner_id)
 
-    raw_assets  = asset_r.json() if asset_r.is_success else []
-    fm_rows     = fm_r.json() if fm_r.is_success else []
-    first_fm    = fm_rows[0] if fm_rows else {}
-    mappings    = first_fm.get("mappings") or []
-    source_type = first_fm.get("source_type") or "unknown"
-    tasks       = tasks_r.json() if tasks_r and tasks_r.is_success else []
-    reviews     = reviews_r.json() if reviews_r and reviews_r.is_success else []
+    raw_assets    = asset_r.json() if asset_r.is_success else []
+    fm_rows       = fm_r.json() if fm_r.is_success else []
+    first_fm      = fm_rows[0] if fm_rows else {}
+    mappings      = first_fm.get("mappings") or []
+    source_type   = first_fm.get("source_type") or "unknown"
+    replicated_work = rw_r.json() if rw_r and rw_r.is_success else []
+    tasks         = tasks_r.json() if tasks_r and tasks_r.is_success else []
+    reviews       = reviews_r.json() if reviews_r and reviews_r.is_success else []
 
     # Hard ownership assertion — discard any row that doesn't belong to this user.
     assets = [
@@ -112,6 +113,28 @@ async def _build_context(user: CurrentUser) -> str:
         lines.append(row)
         if cid := a.get("canonical_asset_id"):
             asset_name_by_canonical_id[cid] = a.get("name") or "—"
+
+    if replicated_work:
+        work_statuses = Counter(w.get("status") or "—" for w in replicated_work)
+        lines += [
+            "",
+            f"REPLICATED WORK (source-synced) — {len(replicated_work)} work items",
+            "",
+            "BREAKDOWN BY STATUS:",
+            *[f"  {s}: {c}" for s, c in work_statuses.most_common()],
+            "",
+            "WORK LIST — columns: work_name | status | estimate | asset_name",
+        ]
+        for w in replicated_work:
+            asset_name = asset_name_by_canonical_id.get(w.get("canonical_asset_id") or "", "—")
+            lines.append(
+                " | ".join([
+                    str(w.get("name") or "—"),
+                    str(w.get("status") or "—"),
+                    str(w.get("estimate") if w.get("estimate") is not None else "—"),
+                    asset_name,
+                ])
+            )
 
     if tasks:
         crafts      = Counter(t.get("craft") or "—" for t in tasks)
@@ -190,6 +213,11 @@ async def _parallel_fetch(owner_type: str, owner_id: str):
             params={**params_base, "select": "mappings,source_type", "limit": "1"},
             headers=_headers(),
         ),
+        db_client.get(
+            _url("/rest/v1/replicated_work"),
+            params={**params_base, "select": "canonical_asset_id,name,status,estimate", "order": "name.asc"},
+            headers=_headers({"Range": "0-999"}),
+        ),
     ]
 
     if owner_type == "studio":
@@ -219,8 +247,8 @@ async def _parallel_fetch(owner_type: str, owner_id: str):
 
     results = await asyncio.gather(*coros)
     if owner_type == "studio":
-        return results[0], results[1], results[2], results[3]
-    return results[0], results[1], None, None
+        return results[0], results[1], results[2], results[3], results[4]
+    return results[0], results[1], results[2], None, None
 
 
 @router.post("/chat")
@@ -242,6 +270,8 @@ async def chat(body: ChatRequest, user: CurrentUser = Depends(get_current_user))
                     f"You have access to this {owner_description}'s live data from the ArtHound database. "
                     "Your job is to answer questions about that data: assets, products, item types, statuses, "
                     "priorities, project dates, field mappings, generated work schedules, and asset reviews.\n\n"
+                    "DATA NOTES:\n"
+                    "- All estimate values (both 'estimate' in replicated work and 'estimate_days' in generated work) are in days.\n\n"
                     "STRICT SCOPE RULES:\n"
                     "- Only answer questions about the data provided below. Do not answer general knowledge "
                     "questions, give opinions, write creative content, or discuss anything outside of this "

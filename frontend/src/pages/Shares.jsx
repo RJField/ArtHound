@@ -122,6 +122,8 @@ export default function Shares() {
             const isRevokable = !d.revoked_at && now <= new Date(d.expires_at)
             const viewCount   = d.view_count ?? 0
             const viewLabel   = viewCount === 0 ? 'Not viewed' : `Viewed ${viewCount}×`
+            const ingestedAt   = d.payload_field_mappings?.[0]?.ingested_at
+            const ingestedBy   = d.payload_field_mappings?.[0]?.ingested_by_name
 
             return (
               <div
@@ -141,6 +143,15 @@ export default function Shares() {
                     <span className={cn(viewCount > 0 ? 'text-p2' : 'text-muted')}>
                       {viewLabel}
                     </span>
+                    {ingestedAt && (
+                      <>
+                        <Dot />
+                        <span className="text-success font-medium">
+                          Ingested {new Date(ingestedAt).toLocaleDateString()}
+                          {ingestedBy && <span className="font-normal"> by {ingestedBy}</span>}
+                        </span>
+                      </>
+                    )}
                   </div>
                 </div>
 

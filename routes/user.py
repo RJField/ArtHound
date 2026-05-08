@@ -1,12 +1,16 @@
 import asyncio
 import logging
+import re
 from datetime import datetime, timezone
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from lib.auth import CurrentUser, get_current_user, require_admin
 from lib.db import db_client, _url, _headers
+
+_HANDLE_RE = re.compile(r'^[a-z0-9][a-z0-9_-]{2,31}$')
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -37,7 +41,7 @@ async def get_me(user: CurrentUser = Depends(get_current_user)):
     elif user.role == "vendor" and user.vendor_id:
         r = await db_client.get(
             _url("/rest/v1/vendors"),
-            params={"id": f"eq.{user.vendor_id}", "select": "id,name,initialized_at"},
+            params={"id": f"eq.{user.vendor_id}", "select": "id,name,handle,initialized_at"},
             headers=_headers(),
         )
         r.raise_for_status()
@@ -105,6 +109,32 @@ async def assign_org(body: AssignBody, user: CurrentUser = Depends(get_current_u
     return {"ok": True}
 
 
+# ── Vendor handle ────────────────────────────────────────────────────────────
+
+class HandleBody(BaseModel):
+    handle: str
+
+
+@router.patch("/handle")
+async def update_handle(body: HandleBody, user: CurrentUser = Depends(get_current_user)):
+    if user.role != "vendor" or not user.vendor_id:
+        raise HTTPException(status_code=403, detail="Vendor access required")
+    if not _HANDLE_RE.match(body.handle):
+        raise HTTPException(status_code=422, detail="HANDLE_INVALID")
+
+    r = await db_client.patch(
+        _url(f"/rest/v1/vendors"),
+        params={"id": f"eq.{user.vendor_id}"},
+        headers=_headers({"Prefer": "return=minimal"}),
+        json={"handle": body.handle},
+    )
+    if r.status_code == 409 or (not r.is_success and "23505" in r.text):
+        raise HTTPException(status_code=422, detail="HANDLE_TAKEN")
+    if not r.is_success:
+        raise HTTPException(status_code=500, detail="Failed to update handle")
+    return {"ok": True}
+
+
 # ── Studio summary ───────────────────────────────────────────────────────────
 
 @router.get("/studio-summary")
@@ -124,8 +154,8 @@ async def studio_summary(user: CurrentUser = Depends(get_current_user)):
                       headers=count_hdrs),
         db_client.get(_url("/rest/v1/replicated_assets"),
                       params={"owner_type": "eq.studio", "owner_id": f"eq.{owner_id}",
-                              "product": "not.is.null",
-                              "select": "product"},
+                              "or": "(product.not.is.null,product_source_record_id.not.is.null)",
+                              "select": "product,product_source_record_id"},
                       headers=_headers()),
         db_client.get(_url("/rest/v1/payload_dispatches"),
                       params={"sender_studio_id": f"eq.{owner_id}",
@@ -152,7 +182,11 @@ async def studio_summary(user: CurrentUser = Depends(get_current_user)):
 
     return {
         "asset_count":    _count(asset_r),
-        "product_count":  len({r["product"] for r in (product_r.json() if product_r.is_success else []) if r.get("product")}),
+        "product_count":  len({
+            r.get("product_source_record_id") or r.get("product")
+            for r in (product_r.json() if product_r.is_success else [])
+            if r.get("product_source_record_id") or r.get("product")
+        }),
         "active_shares":  _count(share_r),
         "work_count":     _count(work_r),
         "last_synced_at":      cursor_rows[0]["last_synced_at"]      if isinstance(cursor_rows, list) and cursor_rows else None,

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import re
 from datetime import datetime, timezone, timedelta
@@ -46,6 +47,78 @@ async def _log(
         log.warning("payload audit log failed (dispatch=%s event=%s): %s", dispatch_id, event, exc)
 
 
+async def _write_canonical_link(
+    dispatch_id: str,
+    vendor_id: str,
+    source_type: str,
+    source_record_id: str,
+    canonical_asset_id: str,
+) -> tuple[bool, bool]:
+    """
+    Writes two rows after a successful ingest:
+      - payload_export_records: links vendor's new source record → studio's canonical asset
+      - replicated_assets: stub row so the record is immediately queryable via ArtHound
+
+    Both writes are idempotent (ignore-duplicates), so retrying after a partial success
+    on a subsequent attempt is safe — the already-written row is a no-op.
+
+    Returns (export_records_ok, replicated_assets_ok). Caller logs and surfaces
+    which writes failed so manual remediation targets the right table(s).
+    """
+    _DELAYS = [0.0, 0.1, 0.3]
+    export_ok = replicated_ok = False
+
+    for attempt, delay in enumerate(_DELAYS):
+        if delay:
+            await asyncio.sleep(delay)
+
+        results = await asyncio.gather(
+            db_client.post(
+                _url("/rest/v1/payload_export_records"),
+                headers=_headers({"Prefer": "resolution=ignore-duplicates,return=minimal"}),
+                json={
+                    "dispatch_id":           dispatch_id,
+                    "vendor_id":             vendor_id,
+                    "vendor_source_type":    source_type,
+                    "vendor_tool_record_id": source_record_id,
+                    "canonical_asset_id":    canonical_asset_id,
+                },
+            ),
+            db_client.post(
+                _url("/rest/v1/replicated_assets"
+                     "?on_conflict=owner_type,owner_id,source_type,source_record_id"),
+                headers=_headers({"Prefer": "resolution=ignore-duplicates,return=minimal"}),
+                json={
+                    "owner_type":         "vendor",
+                    "owner_id":           vendor_id,
+                    "source_type":        source_type,
+                    "source_record_id":   source_record_id,
+                    "canonical_asset_id": canonical_asset_id,
+                    "origin":             "ingest",
+                    "meta":               {},
+                },
+            ),
+            return_exceptions=True,
+        )
+
+        export_ok   = export_ok   or not isinstance(results[0], Exception)
+        replicated_ok = replicated_ok or not isinstance(results[1], Exception)
+
+        if export_ok and replicated_ok:
+            return True, True
+
+        log.warning(
+            "canonical link attempt %d/3 — export_records=%s replicated_assets=%s "
+            "(dispatch=%s source_record=%s)",
+            attempt + 1,
+            "ok" if export_ok else "failed",
+            "ok" if replicated_ok else "failed",
+            dispatch_id, source_record_id,
+        )
+
+    return export_ok, replicated_ok
+
+
 async def _get_dispatch(dispatch_id: str, select: str = "*") -> dict | None:
     r = await db_client.get(
         _url("/rest/v1/payload_dispatches"),
@@ -68,10 +141,28 @@ def _assert_valid(dispatch: dict) -> None:
 # ── vendors list (for dispatch modal dropdown) ────────────────────────────────
 
 @router.get("/vendors")
-async def list_vendors(_: CurrentUser = Depends(require_studio)):
+async def list_vendors(user: CurrentUser = Depends(require_studio)):
+    """Returns only vendors with an active handshake link to this studio."""
+    r_links = await db_client.get(
+        _url("/rest/v1/studio_vendor_links"),
+        params={
+            "studio_id": f"eq.{user.studio_id}",
+            "status":    "eq.active",
+            "select":    "vendor_id",
+        },
+        headers=_headers(),
+    )
+    vendor_ids = [row["vendor_id"] for row in r_links.json()]
+    if not vendor_ids:
+        return []
+
     r = await db_client.get(
         _url("/rest/v1/vendors"),
-        params={"select": "id,name", "order": "name.asc"},
+        params={
+            "id":     f"in.({','.join(vendor_ids)})",
+            "select": "id,name,handle",
+            "order":  "name.asc",
+        },
         headers=_headers(),
     )
     return r.json()
@@ -151,6 +242,133 @@ async def delete_template(template_id: str, user: CurrentUser = Depends(require_
     return {"ok": True}
 
 
+# ── link mapping setup (vendor: payload fields + source schema for post-accept mapping) ──
+
+@router.get("/link-mapping/{link_id}")
+async def get_link_mapping(link_id: str, user: CurrentUser = Depends(require_vendor)):
+    """Union of payload fields from the link's acceptance snapshot + vendor source schema."""
+    r_link = await db_client.get(
+        _url("/rest/v1/studio_vendor_links"),
+        params={
+            "id":        f"eq.{link_id}",
+            "vendor_id": f"eq.{user.vendor_id}",
+            "status":    "eq.active",
+            "select":    "id,studio_id,payload_format_snapshot",
+        },
+        headers=_headers(),
+    )
+    link_rows = r_link.json()
+    if not link_rows:
+        raise HTTPException(status_code=404, detail="Link not found")
+    link      = link_rows[0]
+    studio_id = link["studio_id"]
+
+    snap_templates = (link.get("payload_format_snapshot") or {}).get("templates") or []
+
+    seen_keys: set[str] = set()
+    payload_fields: list[dict] = []
+    for tmpl in snap_templates:
+        for field in (tmpl.get("field_schema") or []):
+            key = field.get("key")
+            if key and key not in seen_keys:
+                seen_keys.add(key)
+                payload_fields.append({
+                    "key":   field["key"],
+                    "label": field.get("label", field["key"]),
+                    "type":  field.get("type", "text"),
+                })
+    if "name" not in seen_keys:
+        payload_fields.insert(0, {"key": "name", "label": "Name", "type": "text"})
+
+    source_type   = None
+    source_schema = []
+    auto_target   = None
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            source_type, connector = await _get_vendor_connector(user.vendor_id, client)
+            source_schema = await connector.fetch_base_schema()
+
+            r_entity = await db_client.get(
+                _url("/rest/v1/source_entity_definitions"),
+                params={
+                    "owner_type":  "eq.vendor",
+                    "owner_id":    f"eq.{user.vendor_id}",
+                    "entity_type": "eq.asset",
+                    "select":      "table_id,table_name,jql_filter",
+                },
+                headers=_headers(),
+            )
+            entity_rows = r_entity.json()
+            if entity_rows:
+                entity     = entity_rows[0]
+                issue_type = None
+                if source_type == "jira":
+                    jql = entity.get("jql_filter") or ""
+                    m   = re.search(r'issuetype\s*=\s*["\']?([^"\')\s,]+)["\']?', jql, re.IGNORECASE)
+                    if m:
+                        issue_type = m.group(1)
+                auto_target = {
+                    "table_id":   entity["table_id"],
+                    "table_name": entity["table_name"],
+                    "issue_type": issue_type,
+                }
+        except HTTPException:
+            pass  # vendor has no source tool yet — frontend shows graceful skip option
+
+    from lib.handshake import get_ingest_template
+    existing = await get_ingest_template(user.vendor_id, studio_id)
+
+    return {
+        "studio_id":        studio_id,
+        "has_templates":    len(snap_templates) > 0,
+        "payload_fields":   payload_fields,
+        "source_type":      source_type,
+        "source_schema":    source_schema,
+        "auto_target":      auto_target,
+        "existing_mapping": existing.get("field_mappings") if existing else None,
+    }
+
+
+# ── field preview (studio: sample field keys from their assets for template building) ──
+
+@router.get("/field-preview")
+async def get_field_preview(user: CurrentUser = Depends(require_studio)):
+    """Sample up to 20 recent assets and return the union of all field keys found."""
+    r = await db_client.get(
+        _url("/rest/v1/replicated_assets"),
+        params={
+            "owner_type": "eq.studio",
+            "owner_id":   f"eq.{user.studio_id}",
+            "select":     "meta,name",
+            "limit":      "20",
+            "order":      "created_at.desc",
+        },
+        headers=_headers(),
+    )
+    rows = r.json() if r.is_success else []
+
+    seen: dict[str, dict] = {}
+    # Always include "name" first
+    seen["name"] = {"key": "name", "label": "Name", "sample": None}
+
+    for row in rows:
+        if "name" in seen and seen["name"]["sample"] is None and row.get("name"):
+            seen["name"]["sample"] = str(row["name"])[:60]
+        for k, v in (row.get("meta") or {}).items():
+            if k in seen:
+                continue
+            sample = None
+            if isinstance(v, list) and v:
+                first = v[0]
+                sample = (first.get("display_name") or first.get("name") or str(first))[:60] if isinstance(first, dict) else str(first)[:60]
+            elif v is not None and not isinstance(v, (dict, list)):
+                sample = str(v)[:60]
+            seen[k] = {"key": k, "label": k, "sample": sample}
+
+    return list(seen.values())
+
+
 # ── bulk dispatch (studio → vendor, multiple assets) ──────────────────────────
 
 class BulkAsset(BaseModel):
@@ -161,6 +379,7 @@ class BulkAsset(BaseModel):
 class BulkDispatchBody(BaseModel):
     vendor_id: str
     assets: list[BulkAsset]
+    template_id: Optional[str] = None
     expires_in_days: int = _DEFAULT_EXPIRY_DAYS
 
 
@@ -168,7 +387,7 @@ class BulkDispatchBody(BaseModel):
 async def dispatch_bulk(body: BulkDispatchBody, user: CurrentUser = Depends(require_studio)):
     studio_id = user.studio_id
 
-    # Verify vendor exists
+    # Verify vendor exists and an active link is in place
     r_vendor = await db_client.get(
         _url("/rest/v1/vendors"),
         params={"id": f"eq.{body.vendor_id}", "select": "id,name"},
@@ -178,6 +397,9 @@ async def dispatch_bulk(body: BulkDispatchBody, user: CurrentUser = Depends(requ
     if not vendors:
         raise HTTPException(status_code=404, detail="Vendor not found")
 
+    from lib.handshake import require_active_link
+    await require_active_link(studio_id, body.vendor_id)
+
     # Embed sender studio name so payload is self-describing without a DB join
     r_studio = await db_client.get(
         _url("/rest/v1/studios"),
@@ -186,42 +408,79 @@ async def dispatch_bulk(body: BulkDispatchBody, user: CurrentUser = Depends(requ
     )
     studio_name = r_studio.json()[0]["name"] if r_studio.json() else "Unknown Studio"
 
+    # Resolve template field filter (optional)
+    allowed_keys: set[str] | None = None
+    template_field_schema: list[dict] | None = None
+    template_id: str | None = None
+    if body.template_id:
+        r_tmpl = await db_client.get(
+            _url("/rest/v1/payload_templates"),
+            params={"id": f"eq.{body.template_id}", "studio_id": f"eq.{studio_id}", "select": "id,field_schema"},
+            headers=_headers(),
+        )
+        tmpl_rows = r_tmpl.json()
+        if not tmpl_rows:
+            raise HTTPException(status_code=404, detail="Template not found")
+        template_field_schema = tmpl_rows[0]["field_schema"]
+        allowed_keys = {f["key"] for f in template_field_schema}
+        template_id = body.template_id
+
     now = datetime.now(timezone.utc)
     expires_at = (now + timedelta(days=max(1, min(body.expires_in_days, _MAX_EXPIRY_DAYS)))).isoformat()
 
-    dispatch_ids = []
-    for asset in body.assets:
-        if not asset.asset_id:
-            continue
-
-        # Verify asset belongs to this studio (service role bypasses RLS)
-        r_asset = await db_client.get(
+    # Verify all asset ownership in a single query before entering the loop.
+    candidate_ids = [a.asset_id for a in body.assets if a.asset_id]
+    verified_ids: set[str] = set()
+    if candidate_ids:
+        r_check = await db_client.get(
             _url("/rest/v1/canonical_assets"),
-            params={"id": f"eq.{asset.asset_id}", "studio_id": f"eq.{studio_id}", "select": "id"},
+            params={
+                "id":        f"in.({','.join(candidate_ids)})",
+                "studio_id": f"eq.{studio_id}",
+                "select":    "id",
+            },
             headers=_headers(),
         )
-        if not r_asset.json():
+        r_check.raise_for_status()
+        verified_ids = {row["id"] for row in r_check.json()}
+
+    dispatch_ids = []
+    for asset in body.assets:
+        if not asset.asset_id or asset.asset_id not in verified_ids:
             continue
 
-        field_schema = [{"key": k, "label": k, "type": "text"} for k in asset.asset_data.keys()]
+        filtered_data = (
+            {k: v for k, v in asset.asset_data.items() if k in allowed_keys}
+            if allowed_keys is not None
+            else asset.asset_data
+        )
+        field_schema = (
+            template_field_schema
+            if template_field_schema is not None
+            else [{"key": k, "label": k, "type": "text"} for k in filtered_data.keys()]
+        )
         payload_data = {
             "asset_global_id": asset.asset_id,
             "sender_studio_name": studio_name,
             "schema": field_schema,
-            "data": asset.asset_data,
+            "data": filtered_data,
             "dispatched_at": now.isoformat(),
         }
+
+        dispatch_row = {
+            "asset_id": asset.asset_id,
+            "sender_studio_id": studio_id,
+            "recipient_vendor_id": body.vendor_id,
+            "payload_data": payload_data,
+            "expires_at": expires_at,
+        }
+        if template_id:
+            dispatch_row["template_id"] = template_id
 
         r_dispatch = await db_client.post(
             _url("/rest/v1/payload_dispatches"),
             headers=_headers({"Prefer": "return=representation"}),
-            json={
-                "asset_id": asset.asset_id,
-                "sender_studio_id": studio_id,
-                "recipient_vendor_id": body.vendor_id,
-                "payload_data": payload_data,
-                "expires_at": expires_at,
-            },
+            json=dispatch_row,
         )
         dispatch_id = r_dispatch.json()[0]["id"]
         await _log(dispatch_id, "dispatched", actor_studio_id=studio_id)
@@ -255,6 +514,10 @@ async def dispatch_payload(body: DispatchBody, user: CurrentUser = Depends(requi
     )
     if not r_asset.json():
         raise HTTPException(status_code=404, detail="Asset not found")
+
+    if body.recipient_vendor_id:
+        from lib.handshake import require_active_link
+        await require_active_link(studio_id, body.recipient_vendor_id)
 
     r_tmpl = await db_client.get(
         _url("/rest/v1/payload_templates"),
@@ -304,7 +567,7 @@ async def get_outbox(user: CurrentUser = Depends(require_studio)):
         _url("/rest/v1/payload_dispatches"),
         params={
             "sender_studio_id": f"eq.{user.studio_id}",
-            "select": "id,asset_id,recipient_vendor_id,template_id,expires_at,revoked_at,created_at,payload_data",
+            "select": "id,asset_id,recipient_vendor_id,template_id,expires_at,revoked_at,created_at,payload_data,payload_field_mappings(ingested_at,failed_at,failure_reason,ingested_source_record_id,ingested_by_user_id)",
             "order": "created_at.desc",
         },
         headers=_headers(),
@@ -331,6 +594,44 @@ async def get_outbox(user: CurrentUser = Depends(require_studio)):
     for d in dispatches:
         d["view_count"] = view_counts.get(d["id"], 0)
 
+    # Resolve ingested_by_user_id → display name for all dispatches that were ingested.
+    ingested_user_ids: set[str] = {
+        m[0]["ingested_by_user_id"]
+        for d in dispatches
+        if (m := d.get("payload_field_mappings")) and m and m[0].get("ingested_by_user_id")
+    }
+
+    if ingested_user_ids:
+        async def _resolve_user(uid: str) -> tuple[str, str]:
+            try:
+                ru = await db_client.get(
+                    _url(f"/auth/v1/admin/users/{uid}"),
+                    headers=_headers(),
+                )
+                if ru.is_success:
+                    data = ru.json()
+                    name = (
+                        data.get("user_metadata", {}).get("full_name")
+                        or data.get("user_metadata", {}).get("name")
+                        or data.get("email")
+                        or "Unknown"
+                    )
+                    return uid, name
+            except Exception:
+                pass
+            return uid, "Unknown"
+
+        user_name_map: dict[str, str] = dict(
+            await asyncio.gather(*[_resolve_user(uid) for uid in ingested_user_ids])
+        )
+
+        for d in dispatches:
+            mapping = (d.get("payload_field_mappings") or [None])[0]
+            if mapping and mapping.get("ingested_by_user_id"):
+                mapping["ingested_by_name"] = user_name_map.get(
+                    mapping["ingested_by_user_id"], "Unknown"
+                )
+
     return dispatches
 
 
@@ -338,21 +639,19 @@ async def get_outbox(user: CurrentUser = Depends(require_studio)):
 
 @router.get("/vendor-inbox")
 async def get_vendor_inbox(user: CurrentUser = Depends(require_vendor)):
+    now = datetime.now(timezone.utc)
     r = await db_client.get(
         _url("/rest/v1/payload_dispatches"),
         params={
             "recipient_vendor_id": f"eq.{user.vendor_id}",
-            "select": "id,asset_id,sender_studio_id,expires_at,revoked_at,created_at,payload_data,payload_field_mappings(ingested_at,ingested_source_record_id)",
+            "revoked_at":          "is.null",
+            "expires_at":          f"gt.{now.isoformat()}",
+            "select": "id,asset_id,sender_studio_id,expires_at,revoked_at,created_at,payload_data,payload_field_mappings(ingested_at,failed_at,failure_reason,ingested_source_record_id)",
             "order": "created_at.desc",
         },
         headers=_headers(),
     )
-    now = datetime.now(timezone.utc)
-    return [
-        d for d in r.json()
-        if not d["revoked_at"]
-        and datetime.fromisoformat(d["expires_at"]) > now
-    ]
+    return r.json()
 
 
 # ── vendor viewed (vendor records that they opened the asset detail) ──────────
@@ -483,7 +782,7 @@ async def get_ingest_schema(dispatch_id: str, user: CurrentUser = Depends(requir
         params={
             "dispatch_id": f"eq.{dispatch_id}",
             "recipient_vendor_id": f"eq.{user.vendor_id}",
-            "select": "target_table_id,target_issue_type,mappings,ingested_at,ingested_source_record_id",
+            "select": "target_table_id,target_issue_type,mappings,ingested_at,ingested_source_record_id,failed_at,failure_reason",
         },
         headers=_headers(),
     )
@@ -546,12 +845,59 @@ async def get_ingest_schema(dispatch_id: str, user: CurrentUser = Depends(requir
         for key, value in data.items()
     ]
 
+    # Load the vendor's saved ingest template for this studio (if any) and detect drift.
+    # Drift check is unconditional — new fields AND removed fields both surface here.
+    from lib.handshake import get_ingest_template, compare_payload_snapshots
+
+    # Resolve sender studio from the dispatch
+    r_dispatch_studio = await db_client.get(
+        _url("/rest/v1/payload_dispatches"),
+        params={"id": f"eq.{dispatch_id}", "select": "sender_studio_id"},
+        headers=_headers(),
+    )
+    sender_studio_id = (r_dispatch_studio.json() or [{}])[0].get("sender_studio_id")
+
+    default_template = None
+    active_link_id   = None
+    drift            = None
+
+    if sender_studio_id:
+        r_link = await db_client.get(
+            _url("/rest/v1/studio_vendor_links"),
+            params={
+                "studio_id": f"eq.{sender_studio_id}",
+                "vendor_id": f"eq.{user.vendor_id}",
+                "status":    "eq.active",
+                "select":    "id,payload_format_snapshot",
+            },
+            headers=_headers(),
+        )
+        link_rows = r_link.json()
+        if link_rows:
+            active_link_id = link_rows[0]["id"]
+
+        template = await get_ingest_template(user.vendor_id, sender_studio_id)
+        if template:
+            default_template = template
+            # Drift is always checked when a template exists.
+            # Use the dispatch's own field keys as the current payload snapshot —
+            # this catches new fields added and old fields removed since the template was saved.
+            dispatch_snapshot = {"field_schema": [{"key": k} for k in data.keys()]}
+            drift = compare_payload_snapshots(
+                dispatch_snapshot,
+                template.get("field_mappings") or {},
+            )
+
     return {
-        "source_type":    source_type,
-        "payload_fields": payload_fields,
-        "source_schema":  source_schema,
-        "auto_target":    auto_target,
+        "source_type":      source_type,
+        "payload_fields":   payload_fields,
+        "source_schema":    source_schema,
+        "auto_target":      auto_target,
         "existing_mapping": existing_mapping,
+        "default_template": default_template,
+        "drift":            drift,
+        "sender_studio_id": sender_studio_id,
+        "active_link_id":   active_link_id,
     }
 
 
@@ -574,17 +920,51 @@ async def do_ingest(dispatch_id: str, user: CurrentUser = Depends(require_vendor
     mapping_row = rows[0]
     if mapping_row.get("ingested_at"):
         raise HTTPException(status_code=409, detail="Already ingested")
+    if mapping_row.get("failed_at"):
+        raise HTTPException(
+            status_code=409,
+            detail="Previous ingest failed — use POST /retry-canonical to recover without re-creating the external record",
+        )
 
     mappings = mapping_row.get("mappings") or {}
 
     dispatch = await _get_dispatch(
-        dispatch_id, select="id,recipient_vendor_id,revoked_at,expires_at,payload_data"
+        dispatch_id, select="id,asset_id,recipient_vendor_id,revoked_at,expires_at,payload_data"
     )
     if not dispatch or dispatch.get("recipient_vendor_id") != user.vendor_id:
         raise HTTPException(status_code=404, detail="Dispatch not found")
     _assert_valid(dispatch)
 
     data = (dispatch.get("payload_data") or {}).get("data") or {}
+
+    # If this canonical asset was already ingested by this vendor (e.g. prior dispatch),
+    # reuse the existing source record instead of creating a duplicate.
+    r_existing = await db_client.get(
+        _url("/rest/v1/payload_export_records"),
+        params={
+            "canonical_asset_id": f"eq.{dispatch['asset_id']}",
+            "vendor_id":          f"eq.{user.vendor_id}",
+            "select":             "vendor_tool_record_id,vendor_source_type",
+            "limit":              "1",
+        },
+        headers=_headers(),
+    )
+    existing_export = (r_existing.json() or [None])[0]
+    if existing_export:
+        source_record_id = existing_export["vendor_tool_record_id"]
+        source_type      = existing_export["vendor_source_type"]
+        await db_client.patch(
+            _url("/rest/v1/payload_field_mappings"),
+            params={"dispatch_id": f"eq.{dispatch_id}", "recipient_vendor_id": f"eq.{user.vendor_id}"},
+            headers=_headers({"Prefer": "return=minimal"}),
+            json={
+                "ingested_at":                _now_iso(),
+                "ingested_source_record_id":  source_record_id,
+                "ingested_by_user_id":        user.id,
+            },
+        )
+        await _log(dispatch_id, "ingested", detail={"source_record_id": source_record_id, "reused": True})
+        return {"ok": True, "source_record_id": source_record_id, "reused": True}
 
     # Extract meta-summary config before iterating direct mappings.
     _RESERVED = {"_meta_summary_target", "_meta_summary_fields"}
@@ -600,7 +980,9 @@ async def do_ingest(dispatch_id: str, user: CurrentUser = Depends(require_vendor
         raw = data.get(payload_key)
         if raw is None:
             continue
-        target_fields[source_field_id] = raw if isinstance(raw, (dict, list)) else str(raw)
+        # Preserve native types — Airtable rejects numbers/booleans sent as strings.
+        # Jira-specific coercion is handled in the block below.
+        target_fields[source_field_id] = raw if isinstance(raw, (dict, list, bool, int, float)) else str(raw)
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         source_type, connector = await _get_vendor_connector(user.vendor_id, client)
@@ -696,20 +1078,163 @@ async def do_ingest(dispatch_id: str, user: CurrentUser = Depends(require_vendor
             target_fields["issuetype"] = {"name": resolved_issue_type}
             source_record_id = await connector.create_issue(target_fields)
         else:
-            source_record_id = await connector.create_record(target_table_id, target_fields)
+            # Strip fields that Airtable will reject before posting.
+            _AT_READ_ONLY = {
+                "formula", "lookup", "rollup", "count", "autoNumber",
+                "createdTime", "lastModifiedTime", "createdBy", "lastModifiedBy", "button",
+            }
+            target_schema = await connector.fetch_asset_schema(target_table_id)
+            schema_by_id = {f.id: f for f in target_schema}
+            for fid in list(target_fields.keys()):
+                field = schema_by_id.get(fid)
+                if field is None:
+                    continue
+                if field.type in _AT_READ_ONLY:
+                    target_fields.pop(fid)
+                elif field.type == "multipleRecordLinks":
+                    val = target_fields[fid]
+                    # Airtable write API needs ["recXXX", ...]; skip display-name strings.
+                    if not (isinstance(val, list) and all(
+                        isinstance(v, str) and v.startswith("rec") for v in val
+                    )):
+                        target_fields.pop(fid)
+                elif field.type == "multipleSelect":
+                    val = target_fields[fid]
+                    if not isinstance(val, list):
+                        target_fields[fid] = [val]
+            try:
+                source_record_id = await connector.create_record(target_table_id, target_fields)
+            except httpx.HTTPStatusError as exc:
+                raise HTTPException(
+                    status_code=exc.response.status_code,
+                    detail=f"Source tool rejected the record: {exc.response.text}",
+                ) from exc
 
+    # Step 1 — record the new source record ID immediately. The external record exists
+    # from this point; the retry endpoint needs this ID regardless of what follows.
     await db_client.patch(
         _url("/rest/v1/payload_field_mappings"),
         params={"dispatch_id": f"eq.{dispatch_id}", "recipient_vendor_id": f"eq.{user.vendor_id}"},
         headers=_headers({"Prefer": "return=minimal"}),
-        json={
-            "ingested_at": _now_iso(),
-            "ingested_source_record_id": source_record_id,
-            "ingested_by_user_id": user.id,
-        },
+        json={"ingested_source_record_id": source_record_id, "ingested_by_user_id": user.id},
     )
-    await _log(dispatch_id, "ingested", detail={"source_record_id": source_record_id})
-    return {"ok": True, "source_record_id": source_record_id}
+
+    # Step 2 — write canonical link. On success, mark ingested_at (complete).
+    # On failure, write failed_at + quarantine to failed_ingests (retryable).
+    export_ok, replicated_ok = await _write_canonical_link(
+        dispatch_id, user.vendor_id, source_type, source_record_id, dispatch["asset_id"]
+    )
+
+    if export_ok and replicated_ok:
+        await db_client.patch(
+            _url("/rest/v1/payload_field_mappings"),
+            params={"dispatch_id": f"eq.{dispatch_id}", "recipient_vendor_id": f"eq.{user.vendor_id}"},
+            headers=_headers({"Prefer": "return=minimal"}),
+            json={"ingested_at": _now_iso()},
+        )
+        await _log(dispatch_id, "ingested", detail={"source_record_id": source_record_id})
+        return {"ok": True, "source_record_id": source_record_id}
+
+    # ORPHAN: prefix is the alerting hook for log aggregators.
+    reason = (
+        f"export_records={'ok' if export_ok else 'MISSING'} "
+        f"replicated_assets={'ok' if replicated_ok else 'MISSING'}"
+    )
+    log.error(
+        "ORPHAN: canonical link failed after 3 attempts — %s — "
+        "dispatch=%s vendor=%s source_record=%s canonical_asset=%s",
+        reason, dispatch_id, user.vendor_id, source_record_id, dispatch["asset_id"],
+    )
+    now = _now_iso()
+    await asyncio.gather(
+        db_client.patch(
+            _url("/rest/v1/payload_field_mappings"),
+            params={"dispatch_id": f"eq.{dispatch_id}", "recipient_vendor_id": f"eq.{user.vendor_id}"},
+            headers=_headers({"Prefer": "return=minimal"}),
+            json={"failed_at": now, "failure_reason": reason},
+        ),
+        db_client.post(
+            _url("/rest/v1/failed_ingests"),
+            headers=_headers({"Prefer": "resolution=ignore-duplicates,return=minimal"}),
+            json={
+                "dispatch_id":       dispatch_id,
+                "vendor_id":         user.vendor_id,
+                "source_type":       source_type,
+                "source_record_id":  source_record_id,
+                "canonical_asset_id": dispatch["asset_id"],
+                "export_ok":         export_ok,
+                "replicated_ok":     replicated_ok,
+            },
+        ),
+    )
+    await _log(dispatch_id, "ingest_canonical_failed", detail={"source_record_id": source_record_id, "reason": reason})
+    return {
+        "ok": True,
+        "source_record_id": source_record_id,
+        "canonical_link": "failed",
+        "retry_path": f"POST /api/payload/{dispatch_id}/retry-canonical",
+    }
+
+
+# ── retry-canonical (vendor: re-attempt failed canonical link without re-creating external record) ──
+
+@router.post("/{dispatch_id}/retry-canonical")
+async def retry_canonical(dispatch_id: str, user: CurrentUser = Depends(require_vendor)):
+    r_fi = await db_client.get(
+        _url("/rest/v1/failed_ingests"),
+        params={
+            "dispatch_id": f"eq.{dispatch_id}",
+            "vendor_id":   f"eq.{user.vendor_id}",
+            "select":      "id,source_type,source_record_id,canonical_asset_id,resolved_at",
+            "limit":       "1",
+        },
+        headers=_headers(),
+    )
+    rows = r_fi.json()
+    if not rows:
+        raise HTTPException(status_code=404, detail="No failed ingest record found for this dispatch")
+    fi = rows[0]
+    if fi["resolved_at"]:
+        raise HTTPException(status_code=409, detail="Already resolved")
+
+    export_ok, replicated_ok = await _write_canonical_link(
+        dispatch_id, user.vendor_id, fi["source_type"], fi["source_record_id"], fi["canonical_asset_id"]
+    )
+
+    if export_ok and replicated_ok:
+        now = _now_iso()
+        await asyncio.gather(
+            db_client.patch(
+                _url("/rest/v1/payload_field_mappings"),
+                params={"dispatch_id": f"eq.{dispatch_id}", "recipient_vendor_id": f"eq.{user.vendor_id}"},
+                headers=_headers({"Prefer": "return=minimal"}),
+                json={"ingested_at": now, "failed_at": None, "failure_reason": None},
+            ),
+            db_client.patch(
+                _url("/rest/v1/failed_ingests"),
+                params={"dispatch_id": f"eq.{dispatch_id}", "vendor_id": f"eq.{user.vendor_id}"},
+                headers=_headers({"Prefer": "return=minimal"}),
+                json={"resolved_at": now, "export_ok": True, "replicated_ok": True},
+            ),
+        )
+        await _log(dispatch_id, "canonical_retry_ok", detail={"source_record_id": fi["source_record_id"]})
+        return {"ok": True, "source_record_id": fi["source_record_id"]}
+
+    reason = (
+        f"export_records={'ok' if export_ok else 'MISSING'} "
+        f"replicated_assets={'ok' if replicated_ok else 'MISSING'}"
+    )
+    log.error(
+        "ORPHAN: canonical retry still failing — %s — dispatch=%s vendor=%s source_record=%s",
+        reason, dispatch_id, user.vendor_id, fi["source_record_id"],
+    )
+    await db_client.patch(
+        _url("/rest/v1/failed_ingests"),
+        params={"dispatch_id": f"eq.{dispatch_id}", "vendor_id": f"eq.{user.vendor_id}"},
+        headers=_headers({"Prefer": "return=minimal"}),
+        json={"export_ok": export_ok, "replicated_ok": replicated_ok},
+    )
+    raise HTTPException(status_code=503, detail="Canonical link still unavailable — try again later")
 
 
 # ── internal: build a connector for a vendor's connected source tool ──────────
