@@ -1,6 +1,6 @@
 import { createContext, useContext, useState, useEffect } from 'react'
 import { getSupabase } from '../lib/supabase'
-import { apiFetch } from '../lib/api'
+import { apiFetch, setAccessToken } from '../lib/api'
 
 const AuthContext = createContext(null)
 
@@ -11,15 +11,25 @@ export function AuthProvider({ children }) {
 
   useEffect(() => {
     getSupabase().then(sb => {
-      sb.auth.getSession().then(({ data }) => setSession(data.session))
+      sb.auth.getSession().then(({ data }) => {
+        setAccessToken(data.session?.access_token ?? null)
+        setSession(data.session)
+      })
       const { data: { subscription } } = sb.auth.onAuthStateChange((_e, s) => {
+        setAccessToken(s?.access_token ?? null)
         setSession(s)
       })
       return () => subscription.unsubscribe()
-    }).catch(() => setSession(null))
+    }).catch(() => {
+      setAccessToken(null)
+      setSession(null)
+    })
   }, [])
 
-  // Fetch profile whenever session appears
+  // Fetch profile only when the logged-in user changes — not on every token refresh.
+  // Token refreshes change the session object reference but keep the same user ID,
+  // so depending on session?.user?.id avoids spurious profile refetches and
+  // prevents InitGuard from remounting the page component unnecessarily.
   useEffect(() => {
     if (!session) { setProfile(null); setProfileLoading(false); return }
     setProfileLoading(true)
@@ -34,7 +44,7 @@ export function AuthProvider({ children }) {
             .catch(e => { console.warn('Profile fetch retry failed:', e); setProfileLoading(false) })
         }, 1500)
       })
-  }, [session])
+  }, [session?.user?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
 
   async function signOut() {

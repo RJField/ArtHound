@@ -1,10 +1,23 @@
 import { getSupabase } from './supabase'
 import { formatRawFields } from './fields'
 
-export async function apiFetch(path, opts = {}) {
+// Kept current by AuthContext via onAuthStateChange — avoids per-request getSession() calls.
+let _accessToken = null
+
+export function setAccessToken(token) {
+  _accessToken = token
+}
+
+async function _getToken() {
+  if (_accessToken) return _accessToken
+  // Cold-start fallback: AuthContext hasn't pushed a token yet.
   const sb = await getSupabase()
   const { data: { session } } = await sb.auth.getSession()
-  const token = session?.access_token
+  return session?.access_token ?? null
+}
+
+export async function apiFetch(path, opts = {}) {
+  const token = await _getToken()
 
   const res = await fetch(path, {
     ...opts,
@@ -26,9 +39,7 @@ export async function apiFetch(path, opts = {}) {
 
 // Raw fetch with JWT — returns the Response object for blob/stream consumption.
 export async function apiFetchRaw(path, opts = {}) {
-  const sb = await getSupabase()
-  const { data: { session } } = await sb.auth.getSession()
-  const token = session?.access_token
+  const token = await _getToken()
   return fetch(path, {
     ...opts,
     headers: {
@@ -40,9 +51,7 @@ export async function apiFetchRaw(path, opts = {}) {
 
 // Returns the JWT access token (needed for pdf.js httpHeaders).
 export async function getAuthToken() {
-  const sb = await getSupabase()
-  const { data: { session } } = await sb.auth.getSession()
-  return session?.access_token ?? null
+  return _getToken()
 }
 
 // Proxy URL for a live attachment on a replicated asset (studio Asset Viewer only).
@@ -57,9 +66,7 @@ export function payloadAttachmentUrl(dispatchId, canonicalAssetId, fieldKey, idx
 
 // Multipart upload with JWT — no Content-Type header (browser sets boundary).
 export async function apiUpload(path, formData) {
-  const sb = await getSupabase()
-  const { data: { session } } = await sb.auth.getSession()
-  const token = session?.access_token
+  const token = await _getToken()
   const res = await fetch(path, {
     method: 'POST',
     body: formData,
