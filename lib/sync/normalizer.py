@@ -267,6 +267,10 @@ def normalize_asset(
             coerced = _coerce_slot(slot, canonical, _adp)
             if coerced is not None:
                 slots[slot] = coerced
+            if slot == "product":
+                src_id = _extract_product_source_id(canonical)
+                if src_id:
+                    slots["product_source_record_id"] = src_id
 
         # Store canonical JSON in meta using the human-readable display name so
         # the detail panel shows "Issue Type" instead of "issuetype", etc.
@@ -384,6 +388,17 @@ def normalize_work(
     }
 
 
+def _extract_product_source_id(canonical: Any) -> str | None:
+    """Extract the source record ID from a product canonical value, if present."""
+    if isinstance(canonical, list) and canonical:
+        item = canonical[0]
+        if hasattr(item, "source_id") and item.source_id:
+            return str(item.source_id)
+    if isinstance(canonical, dict):
+        return canonical.get("id") or canonical.get("key") or None
+    return None
+
+
 def _coerce_slot(slot: str, canonical: Any, adapter=None) -> object:
     """
     Extract a slot-appropriate scalar from a canonical value.
@@ -401,12 +416,12 @@ def _coerce_slot(slot: str, canonical: Any, adapter=None) -> object:
         # (which may have iterated first) is not overwritten.
         if isinstance(canonical, (int, float)):
             return None
-        # Prefer the display name; fall back to source_id so the slot is never
-        # null for a linked asset (critical for DB-level product filtering).
+        # Return only the display name. The source_id is written to the separate
+        # product_source_record_id column in normalize_asset — never stored here.
         if isinstance(canonical, list) and canonical:
             item = canonical[0]
             if hasattr(item, "display_name") and hasattr(item, "source_id"):
-                return item.display_name or item.source_id
+                return item.display_name or None
         # Raw Jira issue-link dicts (parent/epic fields that survive as "unknown" type):
         # {id, key, fields: {summary, ...}}
         if isinstance(canonical, dict):
@@ -414,7 +429,6 @@ def _coerce_slot(slot: str, canonical: Any, adapter=None) -> object:
                 (canonical.get("fields", {}).get("summary")
                  if isinstance(canonical.get("fields"), dict) else None)
                 or canonical.get("name")
-                or canonical.get("key")
             )
             return display if display else None
         display = _adp.display_string(canonical)

@@ -63,11 +63,15 @@ def _build_asset_response(
 ) -> dict:
     meta = row.get("meta") or {}
 
-    # Resolve product name + source ID
+    # Resolve product name + source ID.
+    # product_source_record_id is the stable ID; product is always the display name.
+    # Fall back to name_to_id for rows synced before the migration (no source_id column yet).
     product_name = row.get("product")
-    product_id   = product_name_to_id.get(product_name) if product_name else None
+    product_id   = row.get("product_source_record_id")
+    if not product_id and product_name:
+        product_id = product_name_to_id.get(product_name)
     if not product_id:
-        # Canonical format: [{source_id, display_name}]; legacy: ["recXXX"]
+        # Legacy meta fallback for very old rows.
         for entry in (meta.get(slot_to_field_name.get("product", "")) or []):
             pid = entry.get("source_id") if isinstance(entry, dict) else entry
             if pid and pid in product_id_to_name:
@@ -219,32 +223,29 @@ async def get_products(user: CurrentUser = Depends(get_current_user)):
     # the slot holds a display name or source_id) and flat select-based setups
     # (where the slot holds the select option text). Join with replicated_products
     # to resolve source_ids back to display names where available.
-    asset_r, prod_rows = await asyncio.gather(
-        db_client.get(
-            _url("/rest/v1/replicated_assets"),
-            params={
-                "owner_type": f"eq.{owner_type}",
-                "owner_id":   f"eq.{owner_id}",
-                "select":     "product",
-                "product":    "not.is.null",
-            },
-            headers=_headers(),
-        ),
-        _fetch_ref_table(owner_type, owner_id, "replicated_products"),
+    asset_r = await db_client.get(
+        _url("/rest/v1/replicated_assets"),
+        params={
+            "owner_type": f"eq.{owner_type}",
+            "owner_id":   f"eq.{owner_id}",
+            "select":     "product,product_source_record_id",
+            "or":         "(product.not.is.null,product_source_record_id.not.is.null)",
+        },
+        headers=_headers(),
     )
     asset_r.raise_for_status()
-
-    prod_name_map = {r["source_record_id"]: r["name"] for r in prod_rows if r.get("name")}
 
     seen: set[str] = set()
     products = []
     for row in asset_r.json():
-        val = row.get("product")
-        if not val or val in seen:
+        # Use source_record_id as the stable product ID when available (linked-record
+        # products). Fall back to the display name as ID for select-based products.
+        prod_id   = row.get("product_source_record_id") or row.get("product")
+        prod_name = row.get("product") or prod_id
+        if not prod_id or prod_id in seen:
             continue
-        seen.add(val)
-        name = prod_name_map.get(val) or val
-        products.append({"id": val, "name": name})
+        seen.add(prod_id)
+        products.append({"id": prod_id, "name": prod_name})
 
     return sorted(products, key=lambda p: p["name"])
 
@@ -274,18 +275,14 @@ async def get_assets(
     }
 
     if unassigned:
-        # product column is NULL for assets with no product link.
-        asset_params["product"] = "is.null"
+        asset_params["product"]                  = "is.null"
+        asset_params["product_source_record_id"] = "is.null"
     elif productId:
-        # The product column stores either the display name or the Airtable
-        # source_id (when the product has no display name). Check both.
-        target_name = prod_id_to_name.get(productId, "")
-        if target_name and target_name != productId:
-            # Named product: match by name OR source_id (handles data from
-            # before the normalizer fix stored source_id as fallback).
-            asset_params["or"] = f"(product.eq.{target_name},product.eq.{productId})"
+        if productId in prod_id_to_name:
+            # Linked-record product: filter on the stable source ID column.
+            asset_params["product_source_record_id"] = f"eq.{productId}"
         else:
-            # Blank-named product: the column stores the source_id directly.
+            # Select-based product: no source ID exists; filter on display name.
             asset_params["product"] = f"eq.{productId}"
 
     asset_r = await db_client.get(
