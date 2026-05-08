@@ -413,6 +413,7 @@ async def _run_sync_locked(
 ) -> dict:
     log_id = await _start_log(owner_type, owner_id, source_type, trigger)
     sync_started = datetime.now(timezone.utc).isoformat()
+    _phase = "init"
 
     try:
         creds = await _get_credentials(owner_type, owner_id, source_type)
@@ -434,6 +435,7 @@ async def _run_sync_locked(
             await _finish_log(log_id, "success", 0)
             return {"status": "skipped", "reason": "entity_definitions_not_configured"}
 
+        _phase = "fetch"
         async with httpx.AsyncClient(timeout=60.0) as client:
             # Refresh OAuth tokens before building connector (Jira only for now)
             if source_type == "jira":
@@ -557,6 +559,7 @@ async def _run_sync_locked(
                     except Exception:
                         log.warning("Could not fetch linked table %s for reference resolver", _tid)
 
+            _phase = "normalize"
             # ── Normalize assets ──────────────────────────────────────────────
             # Resolve the field adapter for this connector so the normalizer
             # can deserialize source-specific field value shapes correctly.
@@ -620,9 +623,16 @@ async def _run_sync_locked(
                 )
 
             # ── Write ─────────────────────────────────────────────────────────
-            await upsert_assets(owner_type, owner_id, source_type, assets_to_write, canonical_map)
+            # Reference entities first — assets reference them by name/ID, so they
+            # must be current before assets land. Cursor is only advanced after all
+            # phases complete; a failure here leaves the cursor un-advanced so the
+            # next sync retries from the same point.
+            _phase = "write_products"
             await upsert_products(owner_type, owner_id, source_type, norm_products)
+            _phase = "write_item_types"
             await upsert_item_types(owner_type, owner_id, source_type, norm_item_types)
+            _phase = "write_assets"
+            await upsert_assets(owner_type, owner_id, source_type, assets_to_write, canonical_map)
 
             work_rel_field = work_def.get("rel_field_name") if work_def else None
             work_direction = work_def.get("rel_direction") if work_def else None
@@ -737,11 +747,13 @@ async def _run_sync_locked(
                         if cid:
                             w["canonical_asset_id"] = cid
 
+            _phase = "write_work"
             await upsert_work(owner_type, owner_id, source_type, norm_work)
 
             # ── Deletion detection ────────────────────────────────────────────
             # Assets: only on full sync (delta fetch is incomplete by design).
             # Products + item_types: always — they are always fetched in full.
+            _phase = "delete_orphans"
             orphaned = await delete_orphaned_records(
                 owner_type, owner_id, source_type,
                 fetched_asset_ids={r["source_record_id"] for r in norm_assets},
@@ -762,6 +774,6 @@ async def _run_sync_locked(
         return {"status": "success", "records_synced": records_synced}
 
     except Exception as exc:
-        log.exception("Sync failed for %s/%s", owner_type, owner_id)
-        await _finish_log(log_id, "error", 0, str(exc))
-        return {"status": "error", "error": str(exc)}
+        log.exception("Sync failed for %s/%s at phase=%s", owner_type, owner_id, _phase)
+        await _finish_log(log_id, "error", 0, f"[{_phase}] {exc}")
+        return {"status": "error", "phase": _phase, "error": str(exc)}
