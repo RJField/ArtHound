@@ -18,16 +18,40 @@ npm run lint
 
 Both servers must run simultaneously in development. The FastAPI app also serves `frontend/dist/` as the SPA in production via a catch-all route.
 
+## Core Principles
+
+**Security and schema integrity first.** These are non-negotiable constraints, not trade-offs. Every decision about data access, schema shape, and inter-org data flow must pass a security and integrity check before anything else.
+
+**Named schema fields are reserved for universal production truths.** Promoted fields on canonical tables (e.g. `canonical_assets`, `replicated_assets`) must represent facts that are universally true across all studios and source tools — asset name, item type, priority, and similar. Studio-specific or source-specific data belongs in `meta` (the JSONB payload), not in named columns. Before nominating any field for promotion to a named schema slot, explicitly flag it for review. The bar is high: if it only applies to some studios, or if it duplicates what `meta` already carries, it stays in `meta`.
+
+**Client data is unreleased IP. Treat it accordingly.** Studios trust ArtHound with pre-release game assets, schedules, and production plans. Data must never cross org boundaries without explicit authorization (RLS, dispatch tokens, or direct studio action). No cross-tenant queries, no leaking of studio data to vendors beyond what was explicitly dispatched, no logging of payload content at levels visible outside the system.
+
+## PAW — Product, Asset, Work
+
+PAW is the conceptual spine of ArtHound. Every piece of data in the system belongs to one of these three tiers:
+
+- **Product** — the project or production context (a game title, a film, a season)
+- **Asset** — the discrete creative unit (a character, prop, environment, VFX element)
+- **Work** — the task or deliverable attached to an asset (a modelling pass, a review cycle, a vendor delivery)
+
+All three tiers will eventually have their own named schema fields and studio-specific meta. Each studio defines their own P→A→W hierarchy via `source_entity_definitions`, and connectors translate source tool data into this unified shape.
+
+**Asset is the most important entity in the system.** The canonical asset is the stable, cross-tool identity that everything else anchors to. It is the thread that connects a studio's internal production data, vendor deliveries, reviews, schedules, and generated work into a single coherent record of that asset's journey through development.
+
+**Everything must link to its canonical asset. No exceptions.** Work items, dispatches, asset reviews (studio and vendor side, regardless of collaboration model), source keys, change records, vendor deliveries, ingested records — none of these have meaning without their canonical asset link. An unlinked record is an orphan and has no place in the system. When any operation would produce a record without a resolved canonical asset link, abort rather than persist the incomplete state.
+
+Connectors exist to translate source tool idioms (Jira epics/stories, Airtable linked records, ShotGrid tasks) into the PAW shape. The connector's job is to make the source tool's structure conform to ArtHound's model — not the other way around.
+
 ## Architecture
 
-ArtHound is a **canonical production data layer** for game studios. It replicates source tool data (Airtable, ShotGrid, etc.) into Supabase, then all product features read from Supabase — never from the source tool directly. This is the single most important architectural principle.
+ArtHound is a **canonical production data layer** for game studios. It replicates source tool data (Airtable, Jira, and future connectors) into Supabase, then all product features read from Supabase — never from the source tool directly. This is the single most important architectural principle.
 
 ```
-Source Tool (Airtable)
+Source Tool (Airtable / Jira / …)
         │
    lib/sync/runner.py          ← orchestrates full/delta sync
         │
-   lib/sync/connectors/        ← source-specific fetch logic
+   lib/sync/connectors/        ← source-specific fetch logic (airtable.py, jira.py)
    lib/sync/normalizer.py      ← maps source fields → ArtHound slots
    lib/sync/differ.py          ← change detection via source_hash
    lib/sync/writer.py          ← batch upsert to Supabase
@@ -47,7 +71,7 @@ Sync is triggered on login (via `AuthContext.jsx`) and by a background polling l
 
 **Supabase queries:** Use the helper in `lib/db.py` which builds the PostgREST URL and injects service-role headers. All DB writes use the service role key, not the anon key.
 
-**Airtable calls:** `lib/airtable.py` wraps the Airtable REST API. This is being phased out of most routes — new features should read from Supabase replicated tables, not call Airtable directly. `routes/schedule.py` (`reconcile_work`, `generate_schedule`) is a known exception that still uses this pattern and needs migration.
+**Airtable calls:** `lib/airtable.py` has been deleted. All Airtable access goes through `lib/sync/connectors/airtable.py` (AirtableConnector). New features must read from Supabase replicated tables, not call Airtable directly.
 
 **Credentials:** Source credentials (Airtable PAT, etc.) are encrypted at rest in `source_credentials`. Use `lib/source_creds.py` to retrieve and decrypt them; never query that table directly in route handlers.
 
@@ -67,22 +91,46 @@ Sync is triggered on login (via `AuthContext.jsx`) and by a background polling l
 
 Migrations live in `supabase/migrations/` and are applied in filename order. All schema changes must go through migration files — never via the Supabase dashboard.
 
-**Key tables:**
-- `canonical_assets` — global stable IDs (studio_id + source_record_id)
-- `replicated_assets` / `replicated_products` / `replicated_item_types` / `replicated_work` — synced source data
-- `generated_work` — ArtHound-generated work snapshots (always filter `deleted_at IS NULL` unless querying history)
-- `source_field_mappings` — per-studio field → slot mapping
-- `source_entity_definitions` — defines the P→A→W hierarchy for each studio (which source table is Products, which is Assets, which is Work, and the linking fields between them)
+**Identity & tenancy:**
+- `studios`, `vendors` — org records
+- `studio_members`, `vendor_members` — user → org membership
+- `studio_vendor_links`, `studio_vendor_invites` — org-level studio↔vendor connections
+- `canonical_assets` — global stable asset IDs; keyed on `(studio_id, source_record_id, source_type)`
+
+**Sync layer:**
+- `replicated_assets` / `replicated_products` / `replicated_item_types` / `replicated_work` — synced source data; all features read from here
+- `source_field_mappings` — per-studio field → ArtHound slot mapping
+- `source_entity_definitions` — P→A→W hierarchy per studio/vendor (which source table is Products, Assets, Work; linking fields; filters)
+- `source_credentials` — encrypted source tokens (service role only; use `lib/source_creds.py`)
+- `sync_cursors`, `sync_log` — sync state and audit trail
+
+**Work generation:**
+- `generated_work` — ArtHound-generated work snapshots; always filter `deleted_at IS NULL` unless querying history
+- `workflow_steps`, `workflow_step_dependencies` — studio workflow definitions
+- `estimate_matrix`, `estimate_config` — estimation system
+
+**Payload / vendor dispatch:**
+- `payload_dispatches` — studio-to-vendor asset payloads (token, expiry, revoke state)
+- `payload_field_mappings` — vendor's saved field mapping + ingest state (`ingested_at`, `failed_at`, `failure_reason`, `ingested_source_record_id`)
+- `payload_templates` — vendor's saved default mapping per studio link
+- `payload_export_records` — canonical link between vendor's created source record and the canonical asset; written on successful ingest
+- `failed_ingests` — quarantine for records where external write succeeded but canonical link failed; used by `/retry-canonical`
+- `vendor_studio_ingest_templates` — vendor ingest template snapshots per studio link
+
+**Reviews & attachments:**
 - `asset_reviews` — ArtHound-native reviews (not synced to/from any source tool)
-- `source_credentials` — encrypted tokens (service role only)
-- `payload_dispatch` — vendor payload tokens
+- `review_attachments` — files attached to reviews
+- `attachment_copy_jobs`, `attachment_refs` — copy-on-demand attachment pipeline to Supabase Storage
+
+**Meta / schema classification:**
+- `field_bucket_override_log`, `schema_drift_events` — meta bucket classification and drift tracking
 
 ## Multi-tenancy
 
-Studios and vendors are separate roles with separate home pages (`StudioHome.jsx` / `VendorHome.jsx`). Field mappings, source credentials, and sync cursors are all scoped to `studio_id`. The `source_entity_definitions` table defines each studio's P→A→W hierarchy — nothing about the source table structure should be assumed or hardcoded.
+Studios and vendors are separate roles with separate home pages (`StudioHome.jsx` / `VendorHome.jsx`). Field mappings, source credentials, and sync cursors are all scoped to `studio_id` or `vendor_id`. The `source_entity_definitions` table defines each org's P→A→W hierarchy — nothing about the source table structure should be assumed or hardcoded. Data never crosses org boundaries without explicit authorization: RLS policies, dispatch tokens, or a direct studio action. Vendor data is scoped to the vendor; studio data is scoped to the studio; shared data (dispatches, reviews) requires an explicit link between the two.
 
 ## Known Debt
 
-- **`routes/schedule.py` (`reconcile_work`, `generate_schedule`, `generate_bulk`):** Still calls Airtable directly via `lib/airtable.py` instead of reading from Supabase. Breaks for Jira studios. Needs multi-source redesign to read from `replicated_work` and write back via source connectors.
+- **`routes/schedule.py` (`reconcile_work`, `generate_schedule`, `generate_bulk`):** These routes still read directly from Airtable instead of from `replicated_work` in Supabase. The schedule write-back (`_write_back_to_source`) is multi-source (Jira + Airtable via connectors), but the upstream read path is not. Breaks for Jira studios.
 - **`maya/arthound_review.py`:** Posts to a defunct `/api/reviews/submit` endpoint. Needs redesign around `canonical_asset_id`.
 - **Asset reviews write in `routes/reviews.py`:** Legacy Airtable write path still present; to be removed once Supabase-only path is validated.
