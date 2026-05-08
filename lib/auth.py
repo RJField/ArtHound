@@ -1,15 +1,36 @@
 import os
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
+from typing import Optional
 
 import jwt
 from jwt import PyJWKClient
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
+from lib.db import db_client, _url, _headers, _user_headers
+
 bearer_scheme = HTTPBearer()
 
 # Cached JWKS client — fetches Supabase's public keys once, refreshes every 5 min
 _jwks_client: PyJWKClient | None = None
+
+# Per-user membership cache: user_id -> (studio_id, vendor_id, cached_at)
+# Keyed strictly by verified JWT sub — no cross-user leakage possible.
+# TTL of 60s means a removed member retains access for at most one minute.
+_MEMBERSHIP_TTL = 60
+_membership_cache: dict[str, tuple[Optional[str], Optional[str], float]] = {}
+
+
+def _get_cached_membership(user_id: str) -> tuple[Optional[str], Optional[str]] | None:
+    entry = _membership_cache.get(user_id)
+    if entry is not None and (time.monotonic() - entry[2]) < _MEMBERSHIP_TTL:
+        return entry[0], entry[1]
+    return None
+
+
+def _set_cached_membership(user_id: str, studio_id: Optional[str], vendor_id: Optional[str]) -> None:
+    _membership_cache[user_id] = (studio_id, vendor_id, time.monotonic())
 
 
 def _get_jwks_client() -> PyJWKClient:
@@ -29,6 +50,10 @@ class CurrentUser:
     id: str
     email: str
     role: str
+    token: str = field(default="")
+    studio_id: str | None = field(default=None)
+    vendor_id: str | None = field(default=None)
+    is_admin: bool = field(default=False)
 
 
 async def get_current_user(
@@ -74,17 +99,57 @@ async def get_current_user(
 
     app_metadata = payload.get("app_metadata") or {}
     role = app_metadata.get("role", "")
+    is_admin = bool(app_metadata.get("is_admin", False))
     if role not in ("studio", "vendor"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="No valid role assigned to this account",
         )
 
+    user_id = payload["sub"]
+    cached = _get_cached_membership(user_id)
+
+    if cached is not None:
+        studio_id, vendor_id = cached
+    else:
+        studio_id = None
+        vendor_id = None
+
+        if role == "studio":
+            r = await db_client.get(
+                _url("/rest/v1/studio_members"),
+                params={"select": "studio_id", "user_id": f"eq.{user_id}"},
+                headers=_headers(),
+            )
+            rows = r.json()
+            if rows:
+                studio_id = rows[0]["studio_id"]
+        elif role == "vendor":
+            r = await db_client.get(
+                _url("/rest/v1/vendor_members"),
+                params={"select": "vendor_id", "user_id": f"eq.{user_id}"},
+                headers=_headers(),
+            )
+            rows = r.json()
+            if rows:
+                vendor_id = rows[0]["vendor_id"]
+
+        _set_cached_membership(user_id, studio_id, vendor_id)
+
     return CurrentUser(
-        id=payload["sub"],
+        id=user_id,
         email=payload.get("email", ""),
         role=role,
+        token=token,
+        studio_id=studio_id,
+        vendor_id=vendor_id,
+        is_admin=is_admin,
     )
+
+
+def require_admin(user: CurrentUser) -> None:
+    if not user.is_admin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin only")
 
 
 def require_studio(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
@@ -92,5 +157,19 @@ def require_studio(user: CurrentUser = Depends(get_current_user)) -> CurrentUser
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Studio access required",
+        )
+    return user
+
+
+def require_vendor(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
+    if user.role != "vendor":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Vendor access required",
+        )
+    if not user.vendor_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No vendor linked to this account",
         )
     return user

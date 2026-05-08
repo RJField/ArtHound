@@ -1,8 +1,8 @@
-import os
-
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 import httpx
 
+from lib.auth import CurrentUser, require_studio
+from lib.source_creds import get_studio_airtable_creds
 import config
 
 router = APIRouter()
@@ -23,12 +23,9 @@ FIELD_CATEGORY = {
 }
 
 
-@router.get("/")
-async def get_schema():
-    token = os.environ.get("AIRTABLE_TOKEN")
-    base_id = os.environ.get("AIRTABLE_BASE_ID")
-    if not token or not base_id:
-        raise ValueError("AIRTABLE_TOKEN and AIRTABLE_BASE_ID must be set in .env")
+@router.get("")
+async def get_schema(current_user: CurrentUser = Depends(require_studio)):
+    token, base_id = await get_studio_airtable_creds(current_user.studio_id)
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         r = await client.get(

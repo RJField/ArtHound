@@ -1,184 +1,444 @@
 import asyncio
-import os
-from datetime import date
 from typing import Optional
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
-from lib.airtable import select_all, find_record, update_records, http_client
-from lib.auth import CurrentUser, require_studio
-from lib.utils import resolve_name, link_id
-import config
+from lib.auth import CurrentUser, get_current_user, require_studio
+from lib.crypto import decrypt_credentials
+from lib.db import db_client, _url, _headers
 
 router = APIRouter()
 
 
-def _is_record_id(s) -> bool:
-    return isinstance(s, str) and s.startswith("rec") and len(s) >= 10 and s[3:].isalnum()
+def _owner(user: CurrentUser) -> tuple[str, str]:
+    owner_type = user.role
+    owner_id   = user.studio_id if user.role == "studio" else user.vendor_id
+    if not owner_id:
+        raise HTTPException(status_code=403, detail="No studio/vendor linked to account")
+    return owner_type, owner_id
 
 
-def _format_field_value(field_name: str, val):
-    if val is None:
+def _fmt(v) -> object:
+    """Convert a meta value to a display-friendly form."""
+    if v is None:
         return None
-    if isinstance(val, bool):
-        return "Yes" if val else "No"
-    if isinstance(val, (int, float)):
-        if field_name == "Priority":
-            return f"P{int(val)}"
-        return str(int(val)) if val == int(val) else str(round(val, 4))
-    if isinstance(val, str):
-        if not val:
+    if isinstance(v, list):
+        if not v:
             return None
-        if len(val) >= 10 and val[4:5] == "-" and val[7:8] == "-":
-            try:
-                d = date.fromisoformat(val[:10])
-                return f"{d.month}/{d.day}/{d.year}"
-            except Exception:
-                pass
-        return val
-    if isinstance(val, list):
-        if not val:
-            return None
-        if all(isinstance(v, str) for v in val):
-            # Bare linked-record ID arrays — caller resolves these separately
-            if all(_is_record_id(v) for v in val):
-                return None
-            return ", ".join(v for v in val if v) or None
-        if all(isinstance(v, dict) for v in val):
-            first = val[0]
-            extra_keys = set(first.keys()) - {"id", "deleted"}
-            if not extra_keys:
-                return None
-            names = [
-                str(v.get("name") or v.get("text") or v.get("value") or v.get("email") or "")
-                for v in val
-            ]
-            return ", ".join(n for n in names if n) or None
-        return None
-    if isinstance(val, dict):
-        n = val.get("name") or val.get("text") or val.get("value") or val.get("email")
-        return str(n) if n else None
-    return str(val)
+        first = v[0]
+        if all(isinstance(x, str) and x.startswith("rec") for x in v):
+            return None  # bare legacy linked-record IDs — not useful for display
+        if isinstance(first, dict):
+            if "url" in first:
+                return v  # attachments — keep as-is for frontend rendering
+            if "source_id" in first:
+                # Canonical linked record objects [{source_id, display_name}]
+                names = [x.get("display_name") or "" for x in v if isinstance(x, dict)]
+                names = [n for n in names if n]
+                if names:
+                    return ", ".join(names)
+                return f"{len(v)} linked record{'s' if len(v) != 1 else ''}"
+            # Other dict arrays (e.g. select values) — extract label/name
+            labels = [x.get("label") or x.get("name") or x.get("display_name") or "" for x in v if isinstance(x, dict)]
+            return ", ".join(l for l in labels if l) or None
+        # Plain scalar arrays (strings, numbers from lookups/formulas)
+        return ", ".join(str(x) for x in v if x is not None and x != "") or None
+    if isinstance(v, dict):
+        # Canonical single object (collaborator, select value, etc.)
+        return v.get("display_name") or v.get("label") or v.get("name") or v.get("email") or None
+    if isinstance(v, bool):
+        return "Yes" if v else "No"
+    return v
 
 
-async def _fetch_product_names() -> dict:
-    records = await select_all(config.tables["products"], {"fields": ["Product"]})
-    return {r["id"]: r["fields"].get("Product", r["id"]) for r in records}
-
-
-async def _fetch_item_type_names() -> dict:
-    records = await select_all(config.tables["itemTypes"], {"fields": ["Item"]})
-    return {r["id"]: r["fields"].get("Item", r["id"]) for r in records}
-
-
-async def _fetch_task_names() -> dict:
-    records = await select_all(config.tables["tasks"], {"fields": ["Task"]})
-    return {r["id"]: r["fields"].get("Task", r["id"]) for r in records}
-
-
-def _normalize_asset(
-    r: dict,
-    product_names: dict = {},
-    item_type_names: dict = {},
-    linked_id_map: dict = {},
+def _build_asset_response(
+    row: dict,
+    product_id_to_name: dict,
+    product_name_to_id: dict,
+    item_type_id_to_name: dict,
+    slot_to_field_name: dict,
+    field_to_tier: dict | None = None,
 ) -> dict:
-    milestone4 = r["fields"].get("Milestone 4 [Dates]")
-    product_links = r["fields"].get("Product") or []
-    item_links = r["fields"].get("Item Type") or []
-    product_id = link_id(product_links[0]) if product_links else None
-    item_type_id = link_id(item_links[0]) if item_links else None
+    meta = row.get("meta") or {}
 
+    # Resolve product name + source ID.
+    # product_source_record_id is the stable ID; product is always the display name.
+    # Fall back to name_to_id for rows synced before the migration (no source_id column yet).
+    product_name = row.get("product")
+    product_id   = row.get("product_source_record_id")
+    if not product_id and product_name:
+        product_id = product_name_to_id.get(product_name)
+    if not product_id:
+        # Legacy meta fallback for very old rows.
+        for entry in (meta.get(slot_to_field_name.get("product", "")) or []):
+            pid = entry.get("source_id") if isinstance(entry, dict) else entry
+            if pid and pid in product_id_to_name:
+                product_name = product_id_to_name[pid]
+                product_id   = pid
+                break
+
+    # Resolve item type — slot column carries the display name after the sync fix.
+    # Fall back to meta for records synced before that fix.
+    item_type = row.get("item_type")
+    if not item_type:
+        for entry in (meta.get(slot_to_field_name.get("item_type", "")) or []):
+            if isinstance(entry, dict):
+                item_type = entry.get("display_name") or item_type_id_to_name.get(entry.get("source_id", ""))
+            elif isinstance(entry, str):
+                item_type = item_type_id_to_name.get(entry)
+            if item_type:
+                break
+
+    team = row.get("team") or None
+
+    # Fields that are internal Jira plumbing — hide from the detail panel.
+    # Includes both the raw API IDs (pre-re-sync) and display names (post-re-sync).
+    _HIDDEN = frozenset({
+        # API IDs (old records before display-name re-sync)
+        "_jira_self", "workratio", "statuscategorychangedate", "lastViewed",
+        "watches", "votes", "progress", "timespent", "timeestimate",
+        "timeoriginalestimate", "aggregatetimespent", "aggregatetimeestimate",
+        "aggregatetimeoriginalestimate",
+        # Display names (new records after re-sync)
+        "Work Ratio", "Last Viewed", "Status Category", "Status Category Changed",
+        "Status Category Change Date", "Watches", "Votes", "Progress",
+        "Time Spent", "Remaining Estimate", "Original Estimate",
+        "Σ Time Spent", "Σ Remaining Estimate", "Σ Original Estimate",
+    })
+    # Rank is a Lexorank ordering string — suppress its value but keep it off the panel.
+    _HIDDEN_VALUES = frozenset({"Rank", "rank"})
+    # Fields to surface with a friendlier label.
+    _RENAME = {"_jira_key": "Jira Key"}
+
+    _field_to_tier = field_to_tier or {}
     raw_fields = {}
-    for k, v in r["fields"].items():
-        formatted = _format_field_value(k, v)
-        if formatted is not None:
-            raw_fields[k] = formatted
-        elif isinstance(v, list) and v and all(_is_record_id(x) for x in v):
-            # Linked record IDs — resolve via pre-fetched map when possible
-            names = [linked_id_map[x] for x in v if x in linked_id_map]
-            if names:
-                raw_fields[k] = ", ".join(names)
+    for k, v in meta.items():
+        # Tier-based suppression (new studios): hidden fields never reach the UI.
+        # Fallback: hardcoded _HIDDEN list for studios without bucket data yet.
+        if _field_to_tier.get(k) == "hidden" or k in _HIDDEN or k in _HIDDEN_VALUES:
+            continue
+        display = _fmt(v)
+        if display is not None:
+            raw_fields[_RENAME.get(k, k)] = display
+
+    # Expose slot values that aren't in BUILTIN_FIELDS so they're available in the
+    # field selector's "Additional" section (e.g. Status).
+    for slot, field_name in (("status", "Status"),):
+        val = row.get(slot)
+        if val is not None and field_name not in raw_fields:
+            raw_fields[field_name] = str(val)
 
     return {
-        "id": r["id"],
-        "assetNumber": r["fields"].get("ID"),
-        "name": resolve_name(r["fields"].get("Name")),
-        "devName": resolve_name(r["fields"].get("Dev Name")),
-        "productId": product_id,
-        "product": product_names.get(product_id, product_id) if product_id else None,
-        "itemType": item_type_names.get(item_type_id, item_type_id) if item_type_id else None,
-        "team": resolve_name(r["fields"].get("Team (from Product)")),
-        "priority": r["fields"].get("Priority"),
-        "projectDate": (
-            (milestone4[0] if isinstance(milestone4, list) else milestone4)
-            if milestone4
-            else None
-        ),
-        "rawFields": raw_fields,
+        "id":           row["source_record_id"],
+        "canonicalId":  row.get("canonical_asset_id"),
+        "assetNumber":  row.get("asset_number"),
+        "name":         row.get("name") or "",
+        "devName":      row.get("dev_name"),
+        "productId":    product_id,
+        "product":      product_name,
+        "itemType":     item_type,
+        "team":         team,
+        "priority":     row.get("priority"),
+        "projectDate":  row.get("project_date"),
+        "rawFields":    raw_fields,
     }
 
 
-@router.get("/products")
-async def get_products():
-    records = await select_all(
-        config.tables["products"],
-        {"fields": ["Product"], "sort": [{"field": "Product", "direction": "asc"}]},
+async def _fetch_ref_table(owner_type: str, owner_id: str, table: str) -> list[dict]:
+    r = await db_client.get(
+        _url(f"/rest/v1/{table}"),
+        params={
+            "owner_type": f"eq.{owner_type}",
+            "owner_id":   f"eq.{owner_id}",
+            "select":     "source_record_id,name",
+        },
+        headers=_headers(),
     )
-    return [{"id": r["id"], "name": r["fields"].get("Product", r["id"])} for r in records]
+    r.raise_for_status()
+    return r.json()
 
+
+async def _fetch_products_map(owner_type: str, owner_id: str) -> tuple[dict, dict]:
+    rows = await _fetch_ref_table(owner_type, owner_id, "replicated_products")
+    id_to_name = {p["source_record_id"]: p["name"] for p in rows}
+    name_to_id = {p["name"]: p["source_record_id"] for p in rows}
+    return id_to_name, name_to_id
+
+
+async def _fetch_item_types_map(owner_type: str, owner_id: str) -> dict:
+    rows = await _fetch_ref_table(owner_type, owner_id, "replicated_item_types")
+    return {r["source_record_id"]: r["name"] for r in rows}
+
+
+async def _fetch_mapping_data(owner_type: str, owner_id: str) -> tuple[dict, dict]:
+    """
+    Return (slot_to_field_name, field_to_tier) from this owner's source_field_mappings.
+
+    slot_to_field_name: {arthound_slot: source_field_name}
+    field_to_tier:      {source_field_name: display_tier} — used to suppress hidden fields
+                        in _build_asset_response. Missing keys treated as 'secondary'.
+    """
+    r = await db_client.get(
+        _url("/rest/v1/source_field_mappings"),
+        params={
+            "owner_type": f"eq.{owner_type}",
+            "owner_id":   f"eq.{owner_id}",
+            "select":     "mappings",
+            "limit":      "1",
+        },
+        headers=_headers(),
+    )
+    if not r.is_success or not r.json():
+        return {}, {}
+    mappings = r.json()[0].get("mappings") or []
+    slot_to_field = {
+        m["arthound_slot"]: m["source_field_name"]
+        for m in mappings
+        if m.get("arthound_slot") and m.get("source_field_name")
+    }
+    field_to_tier = {
+        m["source_field_name"]: m.get("display_tier", "secondary")
+        for m in mappings
+        if m.get("source_field_name") and m.get("display_tier")
+    }
+    return slot_to_field, field_to_tier
+
+
+async def _fetch_slot_field_names(owner_type: str, owner_id: str) -> dict[str, str]:
+    """Compatibility shim — returns only slot_to_field_name."""
+    slot_to_field, _ = await _fetch_mapping_data(owner_type, owner_id)
+    return slot_to_field
+
+
+# ── Products ──────────────────────────────────────────────────────────────────
+
+@router.get("/products")
+async def get_products(user: CurrentUser = Depends(get_current_user)):
+    owner_type, owner_id = _owner(user)
+
+    # Derive the product list from the distinct values of the `product` slot
+    # across all synced assets. This works for both linked-record setups (where
+    # the slot holds a display name or source_id) and flat select-based setups
+    # (where the slot holds the select option text). Join with replicated_products
+    # to resolve source_ids back to display names where available.
+    asset_r = await db_client.get(
+        _url("/rest/v1/replicated_assets"),
+        params={
+            "owner_type": f"eq.{owner_type}",
+            "owner_id":   f"eq.{owner_id}",
+            "select":     "product,product_source_record_id",
+            "or":         "(product.not.is.null,product_source_record_id.not.is.null)",
+        },
+        headers=_headers(),
+    )
+    asset_r.raise_for_status()
+
+    seen: set[str] = set()
+    products = []
+    for row in asset_r.json():
+        # Use source_record_id as the stable product ID when available (linked-record
+        # products). Fall back to the display name as ID for select-based products.
+        prod_id   = row.get("product_source_record_id") or row.get("product")
+        prod_name = row.get("product") or prod_id
+        if not prod_id or prod_id in seen:
+            continue
+        seen.add(prod_id)
+        products.append({"id": prod_id, "name": prod_name})
+
+    return sorted(products, key=lambda p: p["name"])
+
+
+# ── Asset list ────────────────────────────────────────────────────────────────
 
 @router.get("")
 @router.get("/")
-async def get_assets(productId: Optional[str] = Query(None)):
-    records, product_names, item_type_names, task_names = await asyncio.gather(
-        select_all(
-            config.tables["assets"],
-            {"sort": [{"field": "Name", "direction": "asc"}]},
-        ),
-        _fetch_product_names(),
-        _fetch_item_type_names(),
-        _fetch_task_names(),
+async def get_assets(
+    productId: Optional[str] = Query(None),
+    unassigned: bool = Query(False),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    owner_type, owner_id = _owner(current_user)
+
+    # Fetch reference maps first — needed to resolve the product filter value.
+    (prod_id_to_name, prod_name_to_id), it_id_to_name, (slot_field_names, field_to_tier) = await asyncio.gather(
+        _fetch_products_map(owner_type, owner_id),
+        _fetch_item_types_map(owner_type, owner_id),
+        _fetch_mapping_data(owner_type, owner_id),
     )
-    linked_id_map = {**task_names}
 
-    assets = [_normalize_asset(r, product_names, item_type_names, linked_id_map) for r in records]
-    if productId:
-        assets = [a for a in assets if a["productId"] == productId]
-    return assets
+    asset_params = {
+        "owner_type": f"eq.{owner_type}",
+        "owner_id":   f"eq.{owner_id}",
+        "order":      "name.asc",
+    }
 
+    if unassigned:
+        asset_params["product"]                  = "is.null"
+        asset_params["product_source_record_id"] = "is.null"
+    elif productId:
+        if productId in prod_id_to_name:
+            # Linked-record product: filter on the stable source ID column.
+            asset_params["product_source_record_id"] = f"eq.{productId}"
+        else:
+            # Select-based product: no source ID exists; filter on display name.
+            asset_params["product"] = f"eq.{productId}"
+
+    asset_r = await db_client.get(
+        _url("/rest/v1/replicated_assets"),
+        params=asset_params,
+        headers=_headers(),
+    )
+    asset_r.raise_for_status()
+    rows = asset_r.json()
+
+    return [_build_asset_response(r, prod_id_to_name, prod_name_to_id, it_id_to_name, slot_field_names, field_to_tier) for r in rows]
+
+
+_SLOT_LABELS: dict[str, str] = {
+    "name":         "Name",
+    "dev_name":     "Dev Name",
+    "item_type":    "Item Type",
+    "priority":     "Priority",
+    "product":      "Product",
+    "project_date": "Date",
+    "status":       "Status",
+    "asset_number": "Asset #",
+}
+
+_DEFAULT_VISIBLE_SLOTS: set[str] = {"name", "item_type", "priority"}
+
+
+# ── View schema (column spec for the asset grid + detail panel) ───────────────
+
+@router.get("/view-schema")
+async def get_view_schema(user: CurrentUser = Depends(get_current_user)):
+    """Return the studio's column spec: mapped slots then unmapped meta fields."""
+    owner_type, owner_id = _owner(user)
+    r = await db_client.get(
+        _url("/rest/v1/source_field_mappings"),
+        params={
+            "owner_type": f"eq.{owner_type}",
+            "owner_id":   f"eq.{owner_id}",
+            "select":     "mappings",
+            "limit":      "1",
+        },
+        headers=_headers(),
+    )
+    r.raise_for_status()
+    rows     = r.json()
+    mappings = rows[0].get("mappings", []) if rows else []
+
+    columns: list[dict] = []
+    seen_slots: set[str] = set()
+
+    for m in mappings:
+        slot = m.get("arthound_slot")
+        if slot and slot in _SLOT_LABELS and slot not in seen_slots:
+            seen_slots.add(slot)
+            columns.append({
+                "id":             f"slot:{slot}",
+                "label":          _SLOT_LABELS[slot],
+                "source":         "slot",
+                "slotKey":        slot,
+                "fieldType":      m.get("source_field_type", "singleLineText"),
+                "defaultVisible": slot in _DEFAULT_VISIBLE_SLOTS,
+                "metaBucket":     None,
+                "displayTier":    "primary",
+                "ingestSuppressed": False,
+            })
+
+    for slot, label in _SLOT_LABELS.items():
+        if slot not in seen_slots:
+            columns.append({
+                "id":             f"slot:{slot}",
+                "label":          label,
+                "source":         "slot",
+                "slotKey":        slot,
+                "fieldType":      "singleLineText",
+                "defaultVisible": slot in _DEFAULT_VISIBLE_SLOTS,
+                "metaBucket":     None,
+                "displayTier":    "primary",
+                "ingestSuppressed": False,
+            })
+
+    for m in mappings:
+        if m.get("arthound_slot") is not None:
+            continue
+        tier      = m.get("display_tier", "secondary")
+        bucket    = m.get("meta_bucket", "custom")
+        suppressed = m.get("ingest_suppressed", False)
+        # Hidden fields are never surfaced in the grid or column picker.
+        if tier == "hidden":
+            continue
+        columns.append({
+            "id":               f"meta:{m['source_field_name']}",
+            "label":            m["source_field_name"],
+            "source":           "meta",
+            "fieldName":        m["source_field_name"],
+            "fieldType":        m.get("source_field_type", "singleLineText"),
+            "defaultVisible":   tier == "primary",
+            "metaBucket":       bucket,
+            "displayTier":      tier,
+            "ingestSuppressed": suppressed,
+        })
+
+    return {"columns": columns}
+
+
+# ── Field list (for detail panel field picker) ───────────────────────────────
 
 @router.get("/fields")
-async def get_asset_fields():
-    token = os.environ.get("AIRTABLE_TOKEN", "")
-    base_id = os.environ.get("AIRTABLE_BASE_ID", "")
-    r = await http_client.get(
-        f"https://api.airtable.com/v0/meta/bases/{base_id}/tables",
-        headers={"Authorization": f"Bearer {token}"},
+async def get_asset_fields(user: CurrentUser = Depends(get_current_user)):
+    """Return discovered source fields from the synced field mapping."""
+    owner_type, owner_id = _owner(user)
+    r = await db_client.get(
+        _url("/rest/v1/source_field_mappings"),
+        params={
+            "owner_type": f"eq.{owner_type}",
+            "owner_id":   f"eq.{owner_id}",
+            "select":     "mappings",
+            "limit":      "1",
+        },
+        headers=_headers(),
     )
-    if not r.is_success:
-        raise HTTPException(
-            status_code=502,
-            detail=f"Airtable metadata API returned {r.status_code}. "
-                   "Ensure your token has the 'schema.bases:read' scope.",
-        )
-    tables = r.json().get("tables", [])
-    table = next((t for t in tables if t["name"] == config.tables["assets"]), None)
-    if not table:
-        raise HTTPException(status_code=404, detail=f"Assets table '{config.tables['assets']}' not found in schema")
-    return [{"name": f["name"], "type": f["type"]} for f in table.get("fields", [])]
+    r.raise_for_status()
+    rows = r.json()
+    if not rows:
+        return []
+    mappings = rows[0].get("mappings") or []
+    return [{"name": m["source_field_name"], "type": "text"} for m in mappings]
 
+
+# ── Single asset ──────────────────────────────────────────────────────────────
 
 @router.get("/{asset_id}")
-async def get_asset(asset_id: str):
-    record, product_names, item_type_names, task_names = await asyncio.gather(
-        find_record(config.tables["assets"], asset_id),
-        _fetch_product_names(),
-        _fetch_item_type_names(),
-        _fetch_task_names(),
-    )
-    return _normalize_asset(record, product_names, item_type_names, {**task_names})
+async def get_asset(asset_id: str, current_user: CurrentUser = Depends(get_current_user)):
+    owner_type, owner_id = _owner(current_user)
 
+    asset_r, (prod_id_to_name, prod_name_to_id), it_id_to_name, (slot_field_names, field_to_tier) = await asyncio.gather(
+        db_client.get(
+            _url("/rest/v1/replicated_assets"),
+            params={
+                "owner_type":       f"eq.{owner_type}",
+                "owner_id":         f"eq.{owner_id}",
+                "source_record_id": f"eq.{asset_id}",
+            },
+            headers=_headers(),
+        ),
+        _fetch_products_map(owner_type, owner_id),
+        _fetch_item_types_map(owner_type, owner_id),
+        _fetch_mapping_data(owner_type, owner_id),
+    )
+    asset_r.raise_for_status()
+    rows = asset_r.json()
+    if not rows:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    return _build_asset_response(rows[0], prod_id_to_name, prod_name_to_id, it_id_to_name, slot_field_names, field_to_tier)
+
+
+# ── Name update (write-back to source) ───────────────────────────────────────
 
 class NameUpdate(BaseModel):
     name: str
@@ -186,9 +446,115 @@ class NameUpdate(BaseModel):
 
 @router.patch("/{asset_id}/name")
 async def update_asset_name(
-    asset_id: str, body: NameUpdate, _: CurrentUser = Depends(require_studio)
+    asset_id: str, body: NameUpdate, current_user: CurrentUser = Depends(require_studio)
 ):
-    if not body.name:
+    if not body.name.strip():
         raise HTTPException(status_code=400, detail="name is required")
-    await update_records(config.tables["assets"], [{"id": asset_id, "fields": {"Name": body.name}}])
+    owner_type, owner_id = _owner(current_user)
+
+    # Verify ownership and capture source_type in one query
+    r = await db_client.get(
+        _url("/rest/v1/replicated_assets"),
+        params={
+            "owner_type":       f"eq.{owner_type}",
+            "owner_id":         f"eq.{owner_id}",
+            "source_record_id": f"eq.{asset_id}",
+            "select":           "source_record_id,source_type",
+        },
+        headers=_headers(),
+    )
+    r.raise_for_status()
+    if not r.json():
+        raise HTTPException(status_code=404, detail="Asset not found")
+    source_type = r.json()[0]["source_type"]
+
+    # Parallel: credentials + entity definition + field mappings
+    creds_r, entity_r, mappings_r = await asyncio.gather(
+        db_client.get(
+            _url("/rest/v1/source_credentials"),
+            params={
+                "owner_type":  f"eq.{owner_type}",
+                "owner_id":    f"eq.{owner_id}",
+                "source_type": f"eq.{source_type}",
+                "select":      "credentials",
+            },
+            headers=_headers(),
+        ),
+        db_client.get(
+            _url("/rest/v1/source_entity_definitions"),
+            params={
+                "owner_type":  f"eq.{owner_type}",
+                "owner_id":    f"eq.{owner_id}",
+                "source_type": f"eq.{source_type}",
+                "entity_type": "eq.asset",
+                "select":      "table_id",
+            },
+            headers=_headers(),
+        ),
+        db_client.get(
+            _url("/rest/v1/source_field_mappings"),
+            params={
+                "owner_type":  f"eq.{owner_type}",
+                "owner_id":    f"eq.{owner_id}",
+                "source_type": f"eq.{source_type}",
+                "select":      "mappings",
+            },
+            headers=_headers(),
+        ),
+    )
+
+    creds_rows = creds_r.json()
+    if not creds_rows:
+        raise HTTPException(status_code=503, detail="No source credentials configured")
+    creds = decrypt_credentials(creds_rows[0]["credentials"])
+
+    entity_rows = entity_r.json()
+    if not entity_rows or not entity_rows[0].get("table_id"):
+        raise HTTPException(status_code=503, detail="Asset entity not configured")
+    table_id = entity_rows[0]["table_id"]
+
+    raw_mappings = mappings_r.json()
+    field_mappings = raw_mappings[0]["mappings"] if raw_mappings else []
+    name_m = next((m for m in field_mappings if m.get("arthound_slot") == "name"), None)
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        if source_type == "airtable":
+            field_key = (
+                name_m["source_field_id"]
+                if name_m and name_m.get("source_field_id")
+                else "Name"
+            )
+            resp = await client.patch(
+                f"https://api.airtable.com/v0/{creds['base_id']}/{table_id}",
+                headers={
+                    "Authorization": f"Bearer {creds['api_token']}",
+                    "Content-Type": "application/json",
+                },
+                json={"records": [{"id": asset_id, "fields": {field_key: body.name}}]},
+            )
+            if not resp.is_success:
+                raise HTTPException(status_code=502, detail="Airtable write-back failed")
+
+        elif source_type == "jira":
+            if creds.get("deployment", "cloud") == "cloud":
+                base = f"https://api.atlassian.com/ex/jira/{creds['cloud_id']}/rest/api/3"
+            else:
+                base = f"{creds['instance_url'].rstrip('/')}/rest/api/2"
+            resp = await client.put(
+                f"{base}/issue/{asset_id}",
+                headers={
+                    "Authorization": f"Bearer {creds['access_token']}",
+                    "Content-Type": "application/json",
+                },
+                json={"fields": {"summary": body.name}},
+            )
+            if not resp.is_success:
+                raise HTTPException(status_code=502, detail="Jira write-back failed")
+
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Name write-back not supported for source type: {source_type}",
+            )
+
     return {"ok": True}

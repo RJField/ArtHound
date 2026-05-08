@@ -1,0 +1,8 @@
+Collecting pypdf
+  Downloading pypdf-6.10.2-py3-none-any.whl.metadata (7.1 kB)
+Downloading pypdf-6.10.2-py3-none-any.whl (336 kB)
+Installing collected packages: pypdf
+Successfully installed pypdf-6.10.2
+
+[notice] A new release of pip is available: 26.0.1 -> 26.1.1
+[notice] To update, run: C:\Users\field\AppData\Local\Python\pythoncore-3.14-64\python.exe -m pip install --upgrade pip

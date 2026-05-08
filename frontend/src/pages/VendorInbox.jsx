@@ -1,0 +1,172 @@
+import { useState, useEffect, useCallback } from 'react'
+import { toast } from 'sonner'
+import { apiFetch, payloadAttachmentUrl } from '../lib/api'
+import { formatRawFields, fieldDisplayString } from '../lib/fields'
+import DetailModal from '../components/DetailModal'
+import IngestModal from '../components/IngestModal'
+
+const SKIP = new Set(['Name', 'name'])
+
+function buildModalProps(d, onIngest) {
+  const data          = d.payload_data?.data ?? {}
+  const assetGlobalId = d.payload_data?.asset_global_id
+  const name          = data['Name'] || data['name'] || '—'
+  const itemType      = fieldDisplayString(data['Item Type'] || data['item_type'] || '')
+  const priority      = d.payload_data?.priority
+  const studio        = d.payload_data?.sender_studio_name || 'Unknown Studio'
+  const date          = d.created_at ? new Date(d.created_at).toLocaleDateString() : '—'
+  const badge         = [itemType, priority != null ? `P${priority}` : ''].filter(Boolean).join(' · ')
+  const raw           = Object.fromEntries(Object.entries(data).filter(([k]) => !SKIP.has(k)))
+
+  const proxyUrlFn = assetGlobalId
+    ? (fieldKey, idx) => payloadAttachmentUrl(d.id, assetGlobalId, fieldKey, idx)
+    : null
+
+  const isIngested = !!d.payload_field_mappings?.[0]?.ingested_at
+  const isFailed   = !isIngested && !!d.payload_field_mappings?.[0]?.failed_at
+
+  return {
+    title:  name,
+    badge:  badge || undefined,
+    fields: [
+      { label: 'From',     value: studio },
+      { label: 'Received', value: date },
+      ...formatRawFields(raw, proxyUrlFn),
+    ],
+    actions: [
+      {
+        label: isIngested ? 'Ingested ✓' : isFailed ? 'Link Failed — Retry' : 'Ingest to Source',
+        style: isIngested ? undefined : 'primary',
+        onClick: closeFn => {
+          closeFn()
+          onIngest()
+        },
+      },
+    ],
+  }
+}
+
+export default function VendorInbox() {
+  const [dispatches, setDispatches]   = useState([])
+  const [loading, setLoading]         = useState(true)
+  const [activeModal, setActiveModal] = useState(null)   // DetailModal props
+  const [ingestId, setIngestId]       = useState(null)   // dispatch ID for IngestModal
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const data = await apiFetch('/api/payloads/vendor-inbox')
+      setDispatches(data)
+    } catch (err) {
+      toast.error(err.message)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => { load() }, [load])
+
+  function openDispatch(d) {
+    apiFetch(`/api/payloads/${encodeURIComponent(d.id)}/viewed`, { method: 'POST' }).catch(() => {})
+    setActiveModal(buildModalProps(d, () => setIngestId(d.id)))
+  }
+
+  function handleIngested(dispatchId, sourceRecordId) {
+    // Mark the dispatch as ingested in local state so the badge updates immediately
+    setDispatches(prev => prev.map(d => {
+      if (d.id !== dispatchId) return d
+      return {
+        ...d,
+        payload_field_mappings: [
+          { ingested_at: new Date().toISOString(), ingested_source_record_id: sourceRecordId },
+        ],
+      }
+    }))
+  }
+
+  return (
+    <main className="flex-1 flex flex-col p-6 gap-4">
+      <div className="flex items-center gap-3">
+        <h1 className="text-foreground text-lg font-semibold">Incoming Scope</h1>
+        <button
+          onClick={load}
+          className="px-3 py-1.5 rounded-md text-xs text-muted hover:text-foreground hover:bg-surface-2 transition-colors cursor-pointer"
+        >
+          Refresh
+        </button>
+      </div>
+
+      {loading && <p className="text-muted text-sm">Loading…</p>}
+
+      {!loading && dispatches.length === 0 && (
+        <p className="text-muted text-sm">No incoming assets yet.</p>
+      )}
+
+      {!loading && dispatches.length > 0 && (
+        <div className="flex flex-col gap-2">
+          {dispatches.map(d => {
+            const data      = d.payload_data?.data ?? {}
+            const name      = data['Name'] || data['name'] || '—'
+            const itemType  = fieldDisplayString(data['Item Type'] || data['item_type'] || '')
+            const priority  = d.payload_data?.priority
+            const studio    = d.payload_data?.sender_studio_name || 'Unknown Studio'
+            const date      = d.created_at ? new Date(d.created_at).toLocaleDateString() : '—'
+            const isIngested = !!d.payload_field_mappings?.[0]?.ingested_at
+            const isFailed   = !isIngested && !!d.payload_field_mappings?.[0]?.failed_at
+
+            return (
+              <div
+                key={d.id}
+                onClick={() => openDispatch(d)}
+                className="flex items-center justify-between gap-4 px-4 py-3 rounded-lg border border-border bg-surface hover:bg-surface-2 transition-colors cursor-pointer"
+              >
+                <div className="flex flex-col gap-1 min-w-0">
+                  <span className="text-foreground text-sm font-medium truncate">{name}</span>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {itemType && (
+                      <span className="px-2 py-0.5 rounded-full bg-surface-2 text-muted text-xs">{itemType}</span>
+                    )}
+                    {priority != null && (
+                      <span className="px-2 py-0.5 rounded-full bg-surface-3 text-muted text-xs">P{priority}</span>
+                    )}
+                    {isIngested && (
+                      <span className="px-2 py-0.5 rounded-full bg-accent/10 text-accent text-xs">Ingested</span>
+                    )}
+                    {isFailed && (
+                      <span className="px-2 py-0.5 rounded-full bg-error/10 text-error text-xs">Link Failed</span>
+                    )}
+                  </div>
+                </div>
+                <div className="flex items-center gap-3 shrink-0">
+                  <div className="flex flex-col items-end gap-1 text-xs text-muted">
+                    <span>{studio}</span>
+                    <span>{date}</span>
+                  </div>
+                  <button
+                    disabled
+                    onClick={e => e.stopPropagation()}
+                    className="px-3 py-1 rounded-md text-xs text-muted border border-border bg-surface opacity-40 cursor-not-allowed"
+                  >
+                    Request Refresh
+                  </button>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {activeModal && (
+        <DetailModal {...activeModal} onClose={() => setActiveModal(null)} />
+      )}
+
+      {ingestId && (
+        <IngestModal
+          dispatchId={ingestId}
+          onClose={() => setIngestId(null)}
+          onIngested={handleIngested}
+        />
+      )}
+    </main>
+  )
+}
