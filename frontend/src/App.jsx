@@ -43,7 +43,7 @@ function AuthGuard() {
 // Redirect users who haven't completed source init to the wizard.
 // Also intercepts pending users (awaiting org approval) and sends them to /pending.
 function InitGuard() {
-  const { session, loading, profile, pendingOrg, profileLoading, initialized } = useAuth()
+  const { session, loading, profile, pendingOrg, profileLoading, profileError, initialized, refreshProfile } = useAuth()
 
   if (loading || !session) return null
 
@@ -52,7 +52,19 @@ function InitGuard() {
   if (!profile) {
     return (
       <div className="flex items-center justify-center flex-1 py-24">
-        <p className="text-muted text-sm">{profileLoading ? 'Loading…' : 'Unable to load profile — please refresh.'}</p>
+        {profileError ? (
+          <div className="flex flex-col items-center gap-3">
+            <p className="text-muted text-sm">Unable to reach the server. Check your connection and try again.</p>
+            <button
+              onClick={refreshProfile}
+              className="px-4 py-2 text-sm rounded bg-surface-2 border border-border text-foreground hover:bg-surface-3 transition-colors"
+            >
+              Try again
+            </button>
+          </div>
+        ) : (
+          <p className="text-muted text-sm">{profileLoading ? 'Loading…' : 'Unable to load profile — please refresh.'}</p>
+        )}
       </div>
     )
   }

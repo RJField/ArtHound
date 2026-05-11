@@ -9,6 +9,7 @@ export function AuthProvider({ children }) {
   const [profile, setProfile]       = useState(null)      // from /api/user/me (full profile)
   const [pendingOrg, setPendingOrg] = useState(null)      // {org_name, org_type} when awaiting approval
   const [profileLoading, setProfileLoading] = useState(false)
+  const [profileError, setProfileError]     = useState(false) // true after all retries exhausted
 
   useEffect(() => {
     getSupabase().then(sb => {
@@ -36,11 +37,13 @@ export function AuthProvider({ children }) {
       setProfile(null)
       setPendingOrg(null)
       setProfileLoading(false)
+      setProfileError(false)
       return
     }
     const controller = new AbortController()
     let retryTimer = null
     setProfileLoading(true)
+    setProfileError(false)
 
     function handleProfileData(data) {
       if (data?.status === 'pending') {
@@ -50,6 +53,7 @@ export function AuthProvider({ children }) {
         setProfile(data)
         setPendingOrg(null)
       }
+      setProfileError(false)
       setProfileLoading(false)
     }
 
@@ -57,13 +61,14 @@ export function AuthProvider({ children }) {
       .then(handleProfileData)
       .catch(err => {
         if (err.name === 'AbortError') return
-        console.warn('Profile fetch failed:', err)
+        console.warn('Profile fetch failed, retrying:', err)
         retryTimer = setTimeout(() => {
           apiFetch('/api/user/me', { signal: controller.signal })
             .then(handleProfileData)
             .catch(e => {
               if (e.name !== 'AbortError') {
                 console.warn('Profile fetch retry failed:', e)
+                setProfileError(true)
                 setProfileLoading(false)
               }
             })
@@ -81,13 +86,21 @@ export function AuthProvider({ children }) {
 
   async function refreshProfile() {
     if (!session) return
-    const data = await apiFetch('/api/user/me')
-    if (data?.status === 'pending') {
-      setPendingOrg({ org_name: data.org_name, org_type: data.org_type })
-      setProfile(null)
-    } else {
-      setProfile(data)
-      setPendingOrg(null)
+    setProfileLoading(true)
+    setProfileError(false)
+    try {
+      const data = await apiFetch('/api/user/me')
+      if (data?.status === 'pending') {
+        setPendingOrg({ org_name: data.org_name, org_type: data.org_type })
+        setProfile(null)
+      } else {
+        setProfile(data)
+        setPendingOrg(null)
+      }
+    } catch {
+      setProfileError(true)
+    } finally {
+      setProfileLoading(false)
     }
   }
 
@@ -99,7 +112,7 @@ export function AuthProvider({ children }) {
 
   return (
     <AuthContext.Provider value={{
-      session, profile, pendingOrg, profileLoading,
+      session, profile, pendingOrg, profileLoading, profileError,
       role, isAdmin, loading, initialized,
       signOut, refreshProfile,
     }}>

@@ -132,6 +132,36 @@ async def _attachment_purge_loop() -> None:
         await asyncio.sleep(interval_secs)
 
 
+async def _sync_log_trim_loop() -> None:
+    """
+    Nightly trim of sync_log rows. Keeps the N most recent rows per owner
+    (default 100, configurable via SYNC_LOG_KEEP_ROWS). Disabled when
+    SYNC_LOG_TRIM_INTERVAL_HOURS is set to 0.
+    """
+    interval_hours = float(os.environ.get("SYNC_LOG_TRIM_INTERVAL_HOURS", "24"))
+    if not interval_hours:
+        return
+    keep_rows = int(os.environ.get("SYNC_LOG_KEEP_ROWS", "100"))
+    interval_secs = interval_hours * 3600
+    log.info("Sync log trim enabled — interval: %.1fh, keep: %d rows/owner", interval_hours, keep_rows)
+    await asyncio.sleep(interval_secs)
+    while True:
+        log.info("Sync log trim: starting")
+        try:
+            r = await db_client.post(
+                _url("/rest/v1/rpc/trim_sync_log"),
+                headers=_headers(),
+                json={"keep_rows": keep_rows},
+            )
+            if r.is_success:
+                log.info("Sync log trim: deleted %d rows", r.json())
+            else:
+                log.error("Sync log trim failed: %s", r.text)
+        except Exception as exc:
+            log.error("Sync log trim error: %s", exc)
+        await asyncio.sleep(interval_secs)
+
+
 async def _schema_drift_loop() -> None:
     """
     Periodic schema drift detection. Compares live source schemas against stored
@@ -224,12 +254,14 @@ async def lifespan(app: FastAPI):
     drain_task       = asyncio.create_task(_attachment_drain_loop())
     purge_task       = asyncio.create_task(_attachment_purge_loop())
     drift_task       = asyncio.create_task(_schema_drift_loop())
+    trim_task        = asyncio.create_task(_sync_log_trim_loop())
     yield
     poll_task.cancel()
     nightly_task.cancel()
     drain_task.cancel()
     purge_task.cancel()
     drift_task.cancel()
+    trim_task.cancel()
     await db_client.aclose()
 
 

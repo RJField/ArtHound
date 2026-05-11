@@ -137,5 +137,5 @@ Studios and vendors are separate roles with separate home pages (`StudioHome.jsx
 - **`POST /api/user/assign`** (`routes/user.py:77`): Dev shortcut for assigning org membership. Must be removed before production; org assignment should go through the onboarding flow only.
 - **Jira write-back edge cases** (`routes/schedule.py`): Sub-task creation (requires `parent.key`), missing `_jira_key` warning not surfaced to UI, per-item failure detail not returned to frontend.
 
-- **`sync_log` grows unboundedly**: No retention policy or purge job.
+- **`sync_log` retention**: Nightly trim keeps 100 rows/owner (`SYNC_LOG_KEEP_ROWS`, default 100). `trim_sync_log()` Postgres function — migration `20260511000003`. Skips `running` rows.
 - **Products and item types have no field mapping** (`lib/sync/normalizer.py`, `lib/sync/runner.py`): `source_field_mappings` only covers the asset entity. Products and item types are normalized via `normalize_reference()` with a primary-field heuristic: the runner fetches the schema for each entity's own table and uses its first field as the name key (separate-table setups), or falls back to the asset name-slot field for flat-table setups. No slot mapping beyond name — product fields like status, owner, and deadline are never promoted to named slots. Proper fix is part of the full PAW product field schema design.
