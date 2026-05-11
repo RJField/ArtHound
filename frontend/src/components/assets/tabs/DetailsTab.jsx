@@ -35,11 +35,46 @@ function getSlotValue(asset, slotKey) {
   }
 }
 
+function FieldRow({ f, onDrill }) {
+  const display  = f.value != null && f.value !== '' ? String(f.value) : '—'
+  const isLinked = f.type === 'linked-record' && f.resolve
+  const isLink   = f.type === 'link' && f.href
+
+  return (
+    <div
+      onClick={isLinked ? () => onDrill(f) : undefined}
+      className={cn(
+        'flex items-start gap-3 py-1.5',
+        isLinked && display !== '—' && 'cursor-pointer group'
+      )}
+    >
+      <span className="text-muted text-xs w-24 shrink-0 pt-0.5">{f.label}</span>
+      <span className={cn(
+        'text-xs flex-1 break-words',
+        display === '—'                       ? 'text-border'    : 'text-foreground',
+        isLinked && display !== '—'           ? 'text-p2 group-hover:underline' : '',
+      )}>
+        {isLink ? (
+          <a href={f.href} target="_blank" rel="noopener" className="text-p2 hover:underline">
+            {display}
+          </a>
+        ) : (
+          <>
+            {display}
+            {isLinked && display !== '—' && <span className="ml-1 text-muted">↗</span>}
+          </>
+        )}
+      </span>
+    </div>
+  )
+}
+
 export default function DetailsTab({ asset, schema }) {
   const [drillModal, setDrillModal] = useState(null)
+  const [showMore, setShowMore]     = useState(false)
 
-  const { slotFields, metaFields } = useMemo(() => {
-    if (!asset) return { slotFields: [], metaFields: [] }
+  const { slotFields, primaryMeta, secondaryMeta } = useMemo(() => {
+    if (!asset) return { slotFields: [], primaryMeta: [], secondaryMeta: [] }
 
     const slotFields = SLOT_ORDER.flatMap(slotKey => {
       const value = getSlotValue(asset, slotKey)
@@ -58,15 +93,29 @@ export default function DetailsTab({ asset, schema }) {
       return [{ label, value }]
     })
 
+    // Build field → tier lookup from schema columns
+    const fieldTierMap = {}
+    for (const col of schema?.columns ?? []) {
+      if (col.source === 'meta') fieldTierMap[col.fieldName] = col.displayTier
+    }
+
     // rawFields.Status is already covered by the 'status' slot above.
     const coveredRawKeys = new Set(['Status'])
-    const metaFields = formatRawFields(
+    const allMeta = formatRawFields(
       Object.fromEntries(
         Object.entries(asset.rawFields ?? {}).filter(([k]) => !coveredRawKeys.has(k))
       )
     )
 
-    return { slotFields, metaFields }
+    const primaryMeta   = []
+    const secondaryMeta = []
+    for (const f of allMeta) {
+      const tier = fieldTierMap[f.label] ?? 'secondary'
+      if (tier === 'primary') primaryMeta.push(f)
+      else secondaryMeta.push(f)
+    }
+
+    return { slotFields, primaryMeta, secondaryMeta }
   }, [asset?.id, schema])
 
   async function openDrill(field) {
@@ -79,49 +128,43 @@ export default function DetailsTab({ asset, schema }) {
     }
   }
 
-  const allFields = [...slotFields, ...metaFields]
+  const visibleFields = [...slotFields, ...primaryMeta]
+  const hasAny = visibleFields.length > 0 || secondaryMeta.length > 0
 
   return (
     <div className="h-full overflow-y-auto px-4 py-3">
-      {allFields.length === 0 && (
+      {!hasAny && (
         <p className="text-muted text-xs">No fields available.</p>
       )}
-      <div className="flex flex-col divide-y divide-border/40">
-        {allFields.map((f, i) => {
-          const display  = f.value != null && f.value !== '' ? String(f.value) : '—'
-          const isLinked = f.type === 'linked-record' && f.resolve
-          const isLink   = f.type === 'link' && f.href
 
-          return (
-            <div
-              key={i}
-              onClick={isLinked ? () => openDrill(f) : undefined}
-              className={cn(
-                'flex items-start gap-3 py-1.5',
-                isLinked && display !== '—' && 'cursor-pointer group'
-              )}
-            >
-              <span className="text-muted text-xs w-24 shrink-0 pt-0.5">{f.label}</span>
-              <span className={cn(
-                'text-xs flex-1 break-words',
-                display === '—'                       ? 'text-border'    : 'text-foreground',
-                isLinked && display !== '—'           ? 'text-p2 group-hover:underline' : '',
-              )}>
-                {isLink ? (
-                  <a href={f.href} target="_blank" rel="noopener" className="text-p2 hover:underline">
-                    {display}
-                  </a>
-                ) : (
-                  <>
-                    {display}
-                    {isLinked && display !== '—' && <span className="ml-1 text-muted">↗</span>}
-                  </>
-                )}
-              </span>
-            </div>
-          )
-        })}
+      <div className="flex flex-col divide-y divide-border/40">
+        {visibleFields.map((f, i) => (
+          <FieldRow key={i} f={f} onDrill={openDrill} />
+        ))}
       </div>
+
+      {secondaryMeta.length > 0 && (
+        <>
+          <button
+            onClick={() => setShowMore(v => !v)}
+            className="mt-2 w-full text-left text-muted text-xs hover:text-foreground transition-colors py-1.5 flex items-center gap-1"
+          >
+            <span className="text-border">{showMore ? '↑' : '↓'}</span>
+            {showMore
+              ? 'Show fewer fields'
+              : `${secondaryMeta.length} more field${secondaryMeta.length !== 1 ? 's' : ''}`
+            }
+          </button>
+
+          {showMore && (
+            <div className="flex flex-col divide-y divide-border/40">
+              {secondaryMeta.map((f, i) => (
+                <FieldRow key={i} f={f} onDrill={openDrill} />
+              ))}
+            </div>
+          )}
+        </>
+      )}
 
       {drillModal && <DetailModal {...drillModal} onClose={() => setDrillModal(null)} />}
     </div>

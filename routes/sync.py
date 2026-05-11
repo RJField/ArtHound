@@ -220,7 +220,7 @@ async def get_field_mapping(
         params={
             "owner_type": f"eq.{owner_type}",
             "owner_id":   f"eq.{owner_id}",
-            "select":     "source_type,mappings,updated_at",
+            "select":     "source_type,mappings,updated_at,pending_schema_review",
             "limit":      "1",
         },
         headers=_headers(),
@@ -229,10 +229,11 @@ async def get_field_mapping(
     rows = r.json()
     row  = rows[0] if rows else None
     return {
-        "source_type": row["source_type"] if row else "airtable",
-        "mappings":    row["mappings"]    if row else [],
-        "slots":       _SLOT_LABELS,
-        "updated_at":  row.get("updated_at") if row else None,
+        "source_type":           row["source_type"]           if row else "airtable",
+        "mappings":              row["mappings"]               if row else [],
+        "slots":                 _SLOT_LABELS,
+        "updated_at":            row.get("updated_at")         if row else None,
+        "pending_schema_review": row.get("pending_schema_review", False) if row else False,
     }
 
 
@@ -252,18 +253,101 @@ async def save_field_mapping(
     if not owner_id:
         raise HTTPException(status_code=403, detail="No studio/vendor linked to account")
 
+    existing_r = await db_client.get(
+        _url("/rest/v1/source_field_mappings"),
+        params={
+            "owner_type":  f"eq.{owner_type}",
+            "owner_id":    f"eq.{owner_id}",
+            "source_type": f"eq.{body.source_type}",
+            "select":      "mappings",
+        },
+        headers=_headers(),
+    )
+    existing_by_id: dict[str, dict] = {}
+    existing_rows = existing_r.json()
+    if existing_rows:
+        for m in existing_rows[0].get("mappings") or []:
+            fid = m.get("source_field_id") or m.get("source_field_name")
+            if fid:
+                existing_by_id[fid] = m
+
+    override_events = []
+    for m in body.mappings:
+        fid   = m.get("source_field_id") or m.get("source_field_name")
+        new_b = m.get("meta_bucket")
+        if not fid or not new_b:
+            continue
+        old   = existing_by_id.get(fid)
+        old_b = old.get("meta_bucket") if old else None
+        if new_b != old_b:
+            override_events.append({
+                "owner_id":        owner_id,
+                "source_type":     body.source_type,
+                "paw_level":       "asset",
+                "source_field_id": m.get("source_field_id", fid),
+                "field_name":      m.get("source_field_name", fid),
+                "field_type":      m.get("source_field_type"),
+                "from_bucket":     old_b,
+                "to_bucket":       new_b,
+            })
+
     r = await db_client.post(
         _url("/rest/v1/source_field_mappings?on_conflict=owner_type,owner_id,source_type"),
         headers=_headers({"Prefer": "resolution=merge-duplicates,return=minimal"}),
         json={
-            "owner_type":  owner_type,
-            "owner_id":    owner_id,
-            "source_type": body.source_type,
-            "mappings":    body.mappings,
+            "owner_type":           owner_type,
+            "owner_id":             owner_id,
+            "source_type":          body.source_type,
+            "mappings":             body.mappings,
+            "pending_schema_review": False,
         },
     )
     r.raise_for_status()
+
+    if override_events:
+        try:
+            await db_client.post(
+                _url("/rest/v1/field_bucket_override_log"),
+                headers=_headers({"Prefer": "return=minimal"}),
+                json=override_events,
+            )
+        except Exception:
+            log.warning("Failed to write bucket override log for %s/%s", owner_type, owner_id)
+
+    try:
+        await db_client.patch(
+            _url("/rest/v1/schema_drift_events"),
+            params={"owner_id": f"eq.{owner_id}", "resolved_at": "is.null"},
+            headers=_headers({"Prefer": "return=minimal"}),
+            json={"resolved_at": datetime.now(timezone.utc).isoformat()},
+        )
+    except Exception:
+        log.warning("Failed to resolve drift events for %s/%s", owner_type, owner_id)
+
     return {"ok": True}
+
+
+@router.get("/schema-drift")
+async def get_schema_drift(user: CurrentUser = Depends(get_current_user)):
+    """Return unresolved schema drift events for the current owner."""
+    owner_type = user.role
+    owner_id   = user.studio_id if user.role == "studio" else user.vendor_id
+    if not owner_id:
+        raise HTTPException(status_code=403, detail="No studio/vendor linked to account")
+
+    r = await db_client.get(
+        _url("/rest/v1/schema_drift_events"),
+        params={
+            "owner_id":    f"eq.{owner_id}",
+            "resolved_at": "is.null",
+            "select":      "signal,field_name,old_type,new_type,detected_at",
+            "order":       "detected_at.desc",
+        },
+        headers=_headers(),
+    )
+    r.raise_for_status()
+    events = r.json()
+    return {"pending": len(events) > 0, "count": len(events), "events": events}
 
 
 # ── Webhook (public — protected by shared secret, not JWT) ────────────────────

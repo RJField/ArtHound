@@ -188,6 +188,7 @@ def normalize_asset(
     adapter=None,
     product_rel_field_id: str | None = None,
     suppressed_names: set[str] | None = None,
+    work_link_field_id: str | None = None,
 ) -> dict:
     """
     Apply field mappings to a raw source record using the connector field adapter.
@@ -293,12 +294,21 @@ def normalize_asset(
         json.dumps(record.fields, sort_keys=True, default=str).encode()
     ).hexdigest()
 
+    work_link_ids: list[str] | None = None
+    if work_link_field_id:
+        raw_wl = record.fields.get(work_link_field_id)
+        if isinstance(raw_wl, list):
+            work_link_ids = [str(w) for w in raw_wl if isinstance(w, str) and w] or None
+        elif isinstance(raw_wl, str) and raw_wl:
+            work_link_ids = [raw_wl]
+
     return {
         **slots,
         "meta": meta,
         "source_hash": source_hash,
         "source_record_id": record.source_record_id,
         "source_last_modified_at": record.source_last_modified_at,
+        **({"work_link_ids": work_link_ids} if work_link_field_id else {}),
     }
 
 

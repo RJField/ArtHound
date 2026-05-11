@@ -131,31 +131,45 @@ async def _get_entity_definitions(owner_type: str, owner_id: str, source_type: s
     return {row["entity_type"]: row for row in data}
 
 
-async def _get_cursor(owner_type: str, owner_id: str, source_type: str) -> str | None:
+async def _get_cursor(owner_type: str, owner_id: str, source_type: str) -> tuple[str | None, bool]:
+    """Returns (last_synced_at, force_full_resync)."""
     r = await db_client.get(
         _url("/rest/v1/sync_cursors"),
         params={
             "owner_type":  f"eq.{owner_type}",
             "owner_id":    f"eq.{owner_id}",
             "source_type": f"eq.{source_type}",
-            "select":      "last_synced_at",
+            "select":      "last_synced_at,force_full_resync",
         },
         headers=_headers(),
     )
     r.raise_for_status()
     rows = r.json()
-    return rows[0]["last_synced_at"] if rows else None
+    if rows:
+        return rows[0]["last_synced_at"], bool(rows[0].get("force_full_resync", False))
+    return None, False
 
 
 async def _save_cursor(owner_type: str, owner_id: str, source_type: str, ts: str, full: bool = False) -> None:
     row: dict = {"owner_type": owner_type, "owner_id": owner_id,
-                 "source_type": source_type, "last_synced_at": ts}
+                 "source_type": source_type, "last_synced_at": ts,
+                 "force_full_resync": False}
     if full:
         row["last_full_sync_at"] = ts
     await db_client.post(
         _url("/rest/v1/sync_cursors?on_conflict=owner_type,owner_id,source_type"),
         headers=_headers({"Prefer": "resolution=merge-duplicates,return=minimal"}),
         json=row,
+    )
+
+
+async def _flag_partial_sync(owner_type: str, owner_id: str, source_type: str) -> None:
+    """Mark that the last sync failed mid-write; forces full resync on next attempt."""
+    await db_client.post(
+        _url("/rest/v1/sync_cursors?on_conflict=owner_type,owner_id,source_type"),
+        headers=_headers({"Prefer": "resolution=merge-duplicates,return=minimal"}),
+        json={"owner_type": owner_type, "owner_id": owner_id,
+              "source_type": source_type, "force_full_resync": True},
     )
 
 
@@ -431,7 +445,10 @@ async def _run_sync_locked(
         if not creds:
             raise ValueError(f"No credentials found for {owner_type}/{owner_id}/{source_type}")
 
-        cursor = None if full else await _get_cursor(owner_type, owner_id, source_type)
+        cursor, force_full_flag = (None, False) if full else await _get_cursor(owner_type, owner_id, source_type)
+        if force_full_flag:
+            log.info("Forced full resync for %s/%s — prior sync failed mid-write", owner_type, owner_id)
+            cursor = None
         is_delta = cursor is not None
 
         entity_defs   = await _get_entity_definitions(owner_type, owner_id, source_type)
@@ -826,4 +843,10 @@ async def _run_sync_locked(
     except Exception as exc:
         log.exception("Sync failed for %s/%s at phase=%s", owner_type, owner_id, _phase)
         await _finish_log(log_id, "error", 0, f"[{_phase}] {exc}")
+        _WRITE_PHASES = {"write_products", "write_item_types", "write_assets", "write_work", "delete_orphans"}
+        if _phase in _WRITE_PHASES:
+            try:
+                await _flag_partial_sync(owner_type, owner_id, source_type)
+            except Exception:
+                log.warning("Could not set force_full_resync for %s/%s — partial state may persist", owner_type, owner_id)
         return {"status": "error", "phase": _phase, "error": str(exc)}
