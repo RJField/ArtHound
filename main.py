@@ -39,6 +39,7 @@ from routes.connectors.jira_oauth import router as jira_oauth_router
 from routes.attachments import router as attachments_router
 from routes.lorebot import router as lorebot_router
 from routes.handshake import router as handshake_router
+from routes.members import router as members_router
 
 log = logging.getLogger(__name__)
 
@@ -266,7 +267,7 @@ app.include_router(workflow_steps_router, prefix="/api/workflow-steps",   depend
 app.include_router(payload_router,        prefix="/api/payloads")
 app.include_router(numbersbot_router,     prefix="/api/numbersbot",  dependencies=_auth)
 app.include_router(sync_router,           prefix="/api/sync",        dependencies=_auth)
-app.include_router(user_router,           prefix="/api/user",        dependencies=_auth)
+app.include_router(user_router,           prefix="/api/user")
 app.include_router(init_router,           prefix="/api/init",        dependencies=_auth)
 app.include_router(work_router,           prefix="/api/work",         dependencies=_auth)
 app.include_router(synthetic_router,      prefix="/api/synthetic",    dependencies=_auth)
@@ -280,6 +281,10 @@ app.include_router(jira_oauth_router,     prefix="/api/connectors/jira/oauth")
 app.include_router(attachments_router,    prefix="/api/attachments", dependencies=_auth)
 app.include_router(lorebot_router,        prefix="/api/lorebot",     dependencies=_auth)
 app.include_router(handshake_router,      prefix="/api/handshake",   dependencies=_auth)
+# Members router manages its own auth per-route:
+# GET /api/invite-code/{code}/resolve is public (rate-limited);
+# all other /api/org/* routes carry explicit Depends(get_current_user).
+app.include_router(members_router,        prefix="/api")
 
 
 _REPLICATED_TABLE: dict[str, str] = {

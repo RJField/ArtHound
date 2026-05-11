@@ -13,6 +13,7 @@ const STUDIO_NAV = [
   { label: 'Shares',  to: '/shares' },
   { label: 'Reviews', to: '/reviews' },
   { label: 'Vendors', to: '/vendors' },
+  { label: 'Org',     to: '/org' },
 ]
 
 const VENDOR_NAV = [
@@ -20,6 +21,7 @@ const VENDOR_NAV = [
   { label: 'Assets',  to: '/assets' },
   { label: 'Inbox',   to: '/inbox' },
   { label: 'Studios', to: '/studios' },
+  { label: 'Org',     to: '/org' },
 ]
 
 export default function Topbar() {

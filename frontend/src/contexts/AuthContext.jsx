@@ -6,7 +6,8 @@ const AuthContext = createContext(null)
 
 export function AuthProvider({ children }) {
   const [session, setSession]       = useState(undefined) // undefined = loading
-  const [profile, setProfile]       = useState(null)      // from /api/user/me
+  const [profile, setProfile]       = useState(null)      // from /api/user/me (full profile)
+  const [pendingOrg, setPendingOrg] = useState(null)      // {org_name, org_type} when awaiting approval
   const [profileLoading, setProfileLoading] = useState(false)
 
   useEffect(() => {
@@ -31,21 +32,44 @@ export function AuthProvider({ children }) {
   // so depending on session?.user?.id avoids spurious profile refetches and
   // prevents InitGuard from remounting the page component unnecessarily.
   useEffect(() => {
-    if (!session) { setProfile(null); setProfileLoading(false); return }
+    if (!session) {
+      setProfile(null)
+      setPendingOrg(null)
+      setProfileLoading(false)
+      return
+    }
     const controller = new AbortController()
     let retryTimer = null
     setProfileLoading(true)
+
+    function handleProfileData(data) {
+      if (data?.status === 'pending') {
+        setPendingOrg({ org_name: data.org_name, org_type: data.org_type })
+        setProfile(null)
+      } else {
+        setProfile(data)
+        setPendingOrg(null)
+      }
+      setProfileLoading(false)
+    }
+
     apiFetch('/api/user/me', { signal: controller.signal })
-      .then(data => { setProfile(data); setProfileLoading(false) })
+      .then(handleProfileData)
       .catch(err => {
         if (err.name === 'AbortError') return
         console.warn('Profile fetch failed:', err)
         retryTimer = setTimeout(() => {
           apiFetch('/api/user/me', { signal: controller.signal })
-            .then(data => { setProfile(data); setProfileLoading(false) })
-            .catch(e => { if (e.name !== 'AbortError') { console.warn('Profile fetch retry failed:', e); setProfileLoading(false) } })
+            .then(handleProfileData)
+            .catch(e => {
+              if (e.name !== 'AbortError') {
+                console.warn('Profile fetch retry failed:', e)
+                setProfileLoading(false)
+              }
+            })
         }, 1500)
       })
+
     return () => { controller.abort(); if (retryTimer) clearTimeout(retryTimer) }
   }, [session?.user?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -58,16 +82,27 @@ export function AuthProvider({ children }) {
   async function refreshProfile() {
     if (!session) return
     const data = await apiFetch('/api/user/me')
-    setProfile(data)
+    if (data?.status === 'pending') {
+      setPendingOrg({ org_name: data.org_name, org_type: data.org_type })
+      setProfile(null)
+    } else {
+      setProfile(data)
+      setPendingOrg(null)
+    }
   }
 
   const role        = session?.user?.app_metadata?.role ?? null
-  const isAdmin     = session?.user?.app_metadata?.is_admin === true
+  // isAdmin derives from member_role in the profile (set by the DB), not from JWT metadata.
+  const isAdmin     = profile?.member_role === 'owner' || profile?.member_role === 'admin'
   const loading     = session === undefined
   const initialized = profile?.org?.initialized_at != null
 
   return (
-    <AuthContext.Provider value={{ session, profile, profileLoading, role, isAdmin, loading, initialized, signOut, refreshProfile }}>
+    <AuthContext.Provider value={{
+      session, profile, pendingOrg, profileLoading,
+      role, isAdmin, loading, initialized,
+      signOut, refreshProfile,
+    }}>
       {children}
     </AuthContext.Provider>
   )

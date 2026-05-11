@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { apiFetch } from '../lib/api'
@@ -13,12 +13,11 @@ function handleErrorMessage(detail) {
 }
 
 export default function UserModal({ onClose }) {
-  const { profile, role, isAdmin, refreshProfile, signOut } = useAuth()
+  const { session, profile, pendingOrg, role, isAdmin, refreshProfile, signOut } = useAuth()
   const navigate = useNavigate()
-  const [orgs, setOrgs]           = useState(null)
-  const [selectedOrg, setSelected] = useState('')
-  const [assigning, setAssigning] = useState(false)
-  const [error, setError]         = useState(null)
+
+  // Email comes from profile when fully active, from session when pending.
+  const email = profile?.email ?? session?.user?.email ?? '—'
 
   // Handle edit state (vendor only)
   const [editingHandle, setEditingHandle] = useState(false)
@@ -36,31 +35,6 @@ export default function UserModal({ onClose }) {
   const [purging, setPurging]       = useState(false)
   const [purgeResult, setPurgeResult] = useState(null)
   const [purgeError, setPurgeError] = useState(null)
-
-  useEffect(() => {
-    if (profile?.org) return
-    const controller = new AbortController()
-    apiFetch('/api/user/orgs', { signal: controller.signal }).then(setOrgs).catch(e => { if (e.name !== 'AbortError') console.warn(e) })
-    return () => controller.abort()
-  }, [profile])
-
-  async function handleAssign(e) {
-    e.preventDefault()
-    if (!selectedOrg) return
-    setError(null)
-    setAssigning(true)
-    try {
-      await apiFetch('/api/user/assign', {
-        method: 'POST',
-        body: JSON.stringify({ org_id: selectedOrg }),
-      })
-      await refreshProfile()
-    } catch (err) {
-      setError(err.message)
-    } finally {
-      setAssigning(false)
-    }
-  }
 
   function startHandleEdit() {
     setHandleDraft(profile?.org?.handle ?? '')
@@ -138,14 +112,19 @@ export default function UserModal({ onClose }) {
         </div>
 
         <div className="flex flex-col gap-3">
-          <Row label="Email">{profile?.email ?? '—'}</Row>
+          <Row label="Email">{email}</Row>
           <Row label="Role">
             <span className="capitalize px-2 py-0.5 rounded-full bg-surface-2 text-xs text-muted">
               {role ?? '—'}
             </span>
           </Row>
           <Row label="Org">
-            {profile?.org ? profile.org.name : <span className="text-muted text-xs italic">Not assigned</span>}
+            {profile?.org
+              ? profile.org.name
+              : pendingOrg
+                ? <span className="text-muted text-xs italic">{pendingOrg.org_name} (pending approval)</span>
+                : <span className="text-muted text-xs italic">Not assigned</span>
+            }
           </Row>
 
           {role === 'vendor' && (
@@ -205,31 +184,6 @@ export default function UserModal({ onClose }) {
             )
           )}
         </div>
-
-        {/* Self-assign (only when no org set) */}
-        {!profile?.org && orgs && (
-          <form onSubmit={handleAssign} className="flex flex-col gap-3 pt-2 border-t border-border">
-            <p className="text-muted text-xs">Assign yourself to a {role}:</p>
-            <select
-              value={selectedOrg}
-              onChange={e => setSelected(e.target.value)}
-              className="bg-surface-2 border border-border rounded-lg px-3 py-2 text-foreground text-sm outline-none focus:border-accent"
-            >
-              <option value="">Select…</option>
-              {orgs.map(o => (
-                <option key={o.id} value={o.id}>{o.name}</option>
-              ))}
-            </select>
-            {error && <p className="text-error text-xs">{error}</p>}
-            <button
-              type="submit"
-              disabled={assigning || !selectedOrg}
-              className="px-4 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:bg-accent-hover transition-colors cursor-pointer disabled:opacity-50"
-            >
-              {assigning ? 'Saving…' : 'Assign'}
-            </button>
-          </form>
-        )}
 
         {/* Admin tools */}
         {isAdmin && (

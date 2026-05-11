@@ -7,7 +7,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from lib.auth import CurrentUser, get_current_user, require_admin
+from lib.auth import CurrentUser, PendingUser, get_current_user, get_current_user_or_pending
 from lib.db import db_client, _url, _headers
 
 _HANDLE_RE = re.compile(r'^[a-z0-9][a-z0-9_-]{2,31}$')
@@ -25,8 +25,19 @@ def _owner(user: CurrentUser) -> tuple[str, str]:
 
 
 @router.get("/me")
-async def get_me(user: CurrentUser = Depends(get_current_user)):
-    """Return current user identity and their assigned studio/vendor."""
+async def get_me(user=Depends(get_current_user_or_pending)):
+    """
+    Return current user identity. If the user has a pending join request,
+    returns {status: "pending", org_name, org_type} instead of the full profile.
+    AuthContext uses this to route pending users to the approval-wait screen.
+    """
+    if isinstance(user, PendingUser):
+        return {
+            "status":   "pending",
+            "org_name": user.org_name,
+            "org_type": user.org_type,
+        }
+
     org = None
     if user.role == "studio" and user.studio_id:
         r = await db_client.get(
@@ -50,10 +61,11 @@ async def get_me(user: CurrentUser = Depends(get_current_user)):
             org = rows[0]
 
     return {
-        "id":    user.id,
-        "email": user.email,
-        "role":  user.role,
-        "org":   org,
+        "id":          user.id,
+        "email":       user.email,
+        "role":        user.role,
+        "member_role": user.member_role,
+        "org":         org,
     }
 
 
@@ -68,45 +80,6 @@ async def list_orgs(user: CurrentUser = Depends(get_current_user)):
     )
     r.raise_for_status()
     return r.json()
-
-
-class AssignBody(BaseModel):
-    org_id: str
-
-
-@router.post("/assign")
-async def assign_org(body: AssignBody, user: CurrentUser = Depends(get_current_user)):
-    """
-    Assign the current user to a studio or vendor by replacing any existing membership.
-
-    TEMPORARY: This is a manual dev/admin shortcut for the pre-onboarding phase.
-    Proper membership assignment should be driven by studio/vendor onboarding and
-    invite flows, not self-selection. Gate behind an admin role or remove entirely
-    once that flow is built.
-    """
-    require_admin(user)
-    if user.role == "studio":
-        table  = "studio_members"
-        payload = {"studio_id": body.org_id, "user_id": user.id}
-    else:
-        table  = "vendor_members"
-        payload = {"vendor_id": body.org_id, "user_id": user.id}
-
-    # Remove any existing membership before inserting — ensures one org per user.
-    await db_client.delete(
-        _url(f"/rest/v1/{table}"),
-        params={"user_id": f"eq.{user.id}"},
-        headers=_headers(),
-    )
-
-    r = await db_client.post(
-        _url(f"/rest/v1/{table}"),
-        json=payload,
-        headers=_headers({"Prefer": "return=minimal"}),
-    )
-    if r.status_code not in (200, 201):
-        raise HTTPException(status_code=500, detail="Failed to save assignment")
-    return {"ok": True}
 
 
 # ── Vendor handle ────────────────────────────────────────────────────────────

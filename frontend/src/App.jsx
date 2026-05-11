@@ -16,6 +16,8 @@ import ProjectInit from './pages/ProjectInit'
 import VendorConnections from './pages/VendorConnections'
 import StudioConnections from './pages/StudioConnections'
 import AuthCallback from './pages/AuthCallback'
+import PendingApproval from './pages/PendingApproval'
+import OrgHub from './pages/OrgHub'
 
 function AuthGuard() {
   const { session, loading } = useAuth()
@@ -39,10 +41,13 @@ function AuthGuard() {
 }
 
 // Redirect users who haven't completed source init to the wizard.
+// Also intercepts pending users (awaiting org approval) and sends them to /pending.
 function InitGuard() {
-  const { session, loading, profile, profileLoading, initialized } = useAuth()
+  const { session, loading, profile, pendingOrg, profileLoading, initialized } = useAuth()
 
   if (loading || !session) return null
+
+  if (pendingOrg) return <Navigate to="/pending" replace />
 
   if (!profile) {
     return (
@@ -82,6 +87,8 @@ export default function App() {
             <Route path="/login" element={<Login />} />
             <Route path="/auth/callback" element={<AuthCallback />} />
             <Route element={<AuthGuard />}>
+              {/* Pending approval — shown to users awaiting org admin acceptance */}
+              <Route path="/pending" element={<PendingApproval />} />
               {/* Init wizard — shown to studio users before first sync */}
               <Route path="/init" element={<ProjectInit />} />
               {/* App routes — gated behind InitGuard for studio users */}
@@ -96,7 +103,8 @@ export default function App() {
                 <Route path="/reviews"     element={<Reviews />} />
                 <Route path="/inbox"       element={<VendorInbox />} />
                 <Route path="/vendors"     element={<VendorConnections />} />
-                <Route path="/studios"    element={<StudioConnections />} />
+                <Route path="/studios"     element={<StudioConnections />} />
+                <Route path="/org"         element={<OrgHub />} />
               </Route>
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
