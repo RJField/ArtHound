@@ -1,0 +1,195 @@
+/* ─────────────────────────────────────────────────────────────────────────
+   ArtHound Design System — Colors & Type
+   Source of truth for the dark, purple-accented production data UI.
+   Mirrors the production tailwind theme in frontend/src/index.css and
+   exposes both base tokens and semantic helpers.
+   ───────────────────────────────────────────────────────────────────────── */
+
+:root {
+  /* ── Brand ──────────────────────────────────────────────────────────── */
+  --ah-brand-purple:        #7c6af4;   /* primary action, "ArtHound" lavender */
+  --ah-brand-purple-soft:   #b6a8ff;   /* logo lavender outline tint        */
+  --ah-brand-purple-deep:   #4d3ad6;   /* hover/pressed deepening           */
+  --ah-brand-violet-glow:   #863bff;   /* favicon gradient highlight        */
+  --ah-brand-violet-deep:   #7e14ff;   /* favicon gradient base             */
+  --ah-brand-cyan-spark:    #47bfff;   /* favicon accent — used sparingly   */
+
+  /* ── Surface ramp (dark, near-black with violet hue) ───────────────── */
+  --ah-bg:          #0d0a1a;   /* page background                          */
+  --ah-surface:     #161229;   /* cards, top bar, modals                   */
+  --ah-surface-2:   #1f1a3a;   /* inputs, hover row, sidebar selected      */
+  --ah-surface-3:   #2a2350;   /* secondary buttons, deepest layered chip  */
+  --ah-overlay:     rgba(0, 0, 0, 0.60);  /* modal scrim                   */
+
+  /* ── Borders ──────────────────────────────────────────────────────── */
+  --ah-border:      #3a2f6b;
+  --ah-border-soft: #2a2350;   /* table row dividers (border-border/50)    */
+  --ah-border-on-accent: rgba(124, 106, 244, 0.50);
+
+  /* ── Foreground ───────────────────────────────────────────────────── */
+  --ah-fg:           #ece6ff;  /* primary text (off-white lavender)         */
+  --ah-fg-muted:     #a89cd6;  /* labels, captions, secondary               */
+  --ah-fg-disabled:  #6b62a3;
+  --ah-fg-on-accent: #ffffff;
+  --ah-fg-link:      #b6a8ff;
+
+  /* ── Action ───────────────────────────────────────────────────────── */
+  --ah-accent:        #7c6af4;
+  --ah-accent-hover:  #9b8ef8;
+  --ah-accent-tint:   rgba(124, 106, 244, 0.10);  /* selected-bg, focus row */
+  --ah-accent-tint-2: rgba(124, 106, 244, 0.20);
+
+  /* ── Semantic / Status ────────────────────────────────────────────── */
+  --ah-success:       #34d399;
+  --ah-success-tint:  rgba(52, 211, 153, 0.12);
+  --ah-info:          #60a5fa;
+  --ah-info-tint:     rgba(96, 165, 250, 0.12);
+  --ah-warning:       #fbbf24;
+  --ah-warning-tint:  rgba(251, 191, 36, 0.12);
+  --ah-error:         #f87171;
+  --ah-error-tint:    rgba(248, 113, 113, 0.12);
+
+  /* ── Priority scale (P1–P5) ───────────────────────────────────────── */
+  --ah-p1: #34d399;  /* highest priority    */
+  --ah-p2: #60a5fa;
+  --ah-p3: #fbbf24;
+  --ah-p4: #f97316;
+  --ah-p5: #f87171;  /* lowest priority    */
+
+  /* ── Type ─────────────────────────────────────────────────────────── */
+  --ah-font-sans: "Geist", system-ui, -apple-system, "Segoe UI", Roboto,
+                  "Helvetica Neue", Arial, sans-serif;
+  --ah-font-display: "Geist", system-ui, -apple-system, sans-serif;
+  --ah-font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo,
+                  Consolas, monospace;
+  --ah-font-tabular: var(--ah-font-sans);
+
+  /* Type scale — terse and dense; the app is data-heavy.                */
+  --ah-text-2xs:   10px;
+  --ah-text-xs:    12px;   /* table cells, labels, chips                  */
+  --ah-text-sm:    14px;   /* primary body, form fields                   */
+  --ah-text-base:  16px;
+  --ah-text-lg:    18px;   /* page titles                                 */
+  --ah-text-xl:    20px;
+  --ah-text-2xl:   24px;   /* welcome / hero titles                       */
+  --ah-text-3xl:   30px;
+
+  --ah-leading-tight:  1.2;
+  --ah-leading-snug:   1.35;
+  --ah-leading-normal: 1.5;
+
+  --ah-weight-regular:  400;
+  --ah-weight-medium:   500;
+  --ah-weight-semibold: 600;
+  --ah-weight-bold:     700;
+
+  --ah-tracking-wide:   0.04em;   /* uppercase eyebrows, logo wordmark   */
+  --ah-tracking-snug:   0.01em;
+
+  /* ── Radii ────────────────────────────────────────────────────────── */
+  --ah-radius-sm:   4px;
+  --ah-radius-md:   6px;   /* buttons                                    */
+  --ah-radius-lg:   8px;   /* inputs, smaller cards                      */
+  --ah-radius-xl:   12px;  /* primary cards, modals                      */
+  --ah-radius-2xl:  16px;
+  --ah-radius-pill: 9999px;
+
+  /* ── Spacing scale ────────────────────────────────────────────────── */
+  --ah-space-0:  0;
+  --ah-space-1:  4px;
+  --ah-space-2:  8px;
+  --ah-space-3:  12px;
+  --ah-space-4:  16px;
+  --ah-space-5:  20px;
+  --ah-space-6:  24px;
+  --ah-space-8:  32px;
+  --ah-space-10: 40px;
+  --ah-space-12: 48px;
+
+  /* ── Elevation ────────────────────────────────────────────────────── */
+  --ah-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.30);
+  --ah-shadow-md: 0 4px 14px rgba(0, 0, 0, 0.35);
+  --ah-shadow-lg: 0 24px 48px -12px rgba(0, 0, 0, 0.55);
+  --ah-shadow-glow: 0 0 0 1px rgba(124, 106, 244, 0.55),
+                    0 8px 24px rgba(124, 106, 244, 0.35);
+  --ah-ring-focus: 0 0 0 2px rgba(124, 106, 244, 0.55);
+
+  /* ── Motion ───────────────────────────────────────────────────────── */
+  --ah-duration-fast:    120ms;
+  --ah-duration-normal:  180ms;
+  --ah-duration-slow:    300ms;
+  --ah-ease-standard:    cubic-bezier(0.2, 0, 0, 1);
+  --ah-ease-emphasized:  cubic-bezier(0.2, 0, 0, 1.1);
+}
+
+/* ── Semantic typographic helpers ──────────────────────────────────── */
+/* Use these as defaults inside an `.ah` scope so root-level pages stay
+   un-restyled. Pair with the surface tokens above. */
+
+.ah {
+  font-family: var(--ah-font-sans);
+  color: var(--ah-fg);
+  background: var(--ah-bg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: "cv11", "ss01";
+}
+
+.ah h1, .ah .h1 {
+  font: var(--ah-weight-semibold) var(--ah-text-2xl) / var(--ah-leading-tight) var(--ah-font-display);
+  letter-spacing: -0.01em;
+  color: var(--ah-fg);
+}
+.ah h2, .ah .h2 {
+  font: var(--ah-weight-semibold) var(--ah-text-lg) / var(--ah-leading-snug) var(--ah-font-display);
+  color: var(--ah-fg);
+}
+.ah h3, .ah .h3 {
+  font: var(--ah-weight-semibold) var(--ah-text-sm) / var(--ah-leading-snug) var(--ah-font-display);
+  color: var(--ah-fg);
+}
+.ah .eyebrow {
+  font: var(--ah-weight-semibold) var(--ah-text-xs) / var(--ah-leading-snug) var(--ah-font-sans);
+  text-transform: uppercase;
+  letter-spacing: var(--ah-tracking-wide);
+  color: var(--ah-fg);
+}
+.ah p, .ah .body {
+  font: var(--ah-weight-regular) var(--ah-text-sm) / var(--ah-leading-normal) var(--ah-font-sans);
+  color: var(--ah-fg);
+}
+.ah .body-sm {
+  font-size: var(--ah-text-xs);
+  line-height: var(--ah-leading-normal);
+}
+.ah .label {
+  font: var(--ah-weight-regular) var(--ah-text-xs) / var(--ah-leading-snug) var(--ah-font-sans);
+  color: var(--ah-fg-muted);
+}
+.ah .num {
+  font-family: var(--ah-font-tabular);
+  font-variant-numeric: tabular-nums;
+}
+.ah .mono {
+  font-family: var(--ah-font-mono);
+  font-size: 0.92em;
+}
+.ah a {
+  color: var(--ah-fg-link);
+  text-decoration: none;
+}
+.ah a:hover { color: var(--ah-fg); }
+
+/* Re-usable chip + status pill building blocks (consumed by UI kit) */
+.ah .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ah-space-1);
+  padding: 2px 8px;
+  border-radius: var(--ah-radius-pill);
+  background: var(--ah-surface-2);
+  color: var(--ah-fg-muted);
+  font-size: var(--ah-text-xs);
+  line-height: 1.4;
+}
+.ah .chip--accent { color: var(--ah-accent); border: 1px solid var(--ah-accent); background: transparent; }

@@ -6,8 +6,10 @@ const AuthContext = createContext(null)
 
 export function AuthProvider({ children }) {
   const [session, setSession]       = useState(undefined) // undefined = loading
-  const [profile, setProfile]       = useState(null)      // from /api/user/me
+  const [profile, setProfile]       = useState(null)      // from /api/user/me (full profile)
+  const [pendingOrg, setPendingOrg] = useState(null)      // {org_name, org_type} when awaiting approval
   const [profileLoading, setProfileLoading] = useState(false)
+  const [profileError, setProfileError]     = useState(false) // true after all retries exhausted
 
   useEffect(() => {
     getSupabase().then(sb => {
@@ -31,19 +33,49 @@ export function AuthProvider({ children }) {
   // so depending on session?.user?.id avoids spurious profile refetches and
   // prevents InitGuard from remounting the page component unnecessarily.
   useEffect(() => {
-    if (!session) { setProfile(null); setProfileLoading(false); return }
+    if (!session) {
+      setProfile(null)
+      setPendingOrg(null)
+      setProfileLoading(false)
+      setProfileError(false)
+      return
+    }
+    const controller = new AbortController()
+    let retryTimer = null
     setProfileLoading(true)
-    apiFetch('/api/user/me')
-      .then(data => { setProfile(data); setProfileLoading(false) })
+    setProfileError(false)
+
+    function handleProfileData(data) {
+      if (data?.status === 'pending') {
+        setPendingOrg({ org_name: data.org_name, org_type: data.org_type })
+        setProfile(null)
+      } else {
+        setProfile(data)
+        setPendingOrg(null)
+      }
+      setProfileError(false)
+      setProfileLoading(false)
+    }
+
+    apiFetch('/api/user/me', { signal: controller.signal })
+      .then(handleProfileData)
       .catch(err => {
-        console.warn('Profile fetch failed:', err)
-        // Retry once after a short delay — handles transient token-propagation races
-        setTimeout(() => {
-          apiFetch('/api/user/me')
-            .then(data => { setProfile(data); setProfileLoading(false) })
-            .catch(e => { console.warn('Profile fetch retry failed:', e); setProfileLoading(false) })
+        if (err.name === 'AbortError') return
+        console.warn('Profile fetch failed, retrying:', err)
+        retryTimer = setTimeout(() => {
+          apiFetch('/api/user/me', { signal: controller.signal })
+            .then(handleProfileData)
+            .catch(e => {
+              if (e.name !== 'AbortError') {
+                console.warn('Profile fetch retry failed:', e)
+                setProfileError(true)
+                setProfileLoading(false)
+              }
+            })
         }, 1500)
       })
+
+    return () => { controller.abort(); if (retryTimer) clearTimeout(retryTimer) }
   }, [session?.user?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
 
@@ -54,17 +86,36 @@ export function AuthProvider({ children }) {
 
   async function refreshProfile() {
     if (!session) return
-    const data = await apiFetch('/api/user/me')
-    setProfile(data)
+    setProfileLoading(true)
+    setProfileError(false)
+    try {
+      const data = await apiFetch('/api/user/me')
+      if (data?.status === 'pending') {
+        setPendingOrg({ org_name: data.org_name, org_type: data.org_type })
+        setProfile(null)
+      } else {
+        setProfile(data)
+        setPendingOrg(null)
+      }
+    } catch {
+      setProfileError(true)
+    } finally {
+      setProfileLoading(false)
+    }
   }
 
   const role        = session?.user?.app_metadata?.role ?? null
-  const isAdmin     = session?.user?.app_metadata?.is_admin === true
+  // isAdmin derives from member_role in the profile (set by the DB), not from JWT metadata.
+  const isAdmin     = profile?.member_role === 'owner' || profile?.member_role === 'admin'
   const loading     = session === undefined
   const initialized = profile?.org?.initialized_at != null
 
   return (
-    <AuthContext.Provider value={{ session, profile, profileLoading, role, isAdmin, loading, initialized, signOut, refreshProfile }}>
+    <AuthContext.Provider value={{
+      session, profile, pendingOrg, profileLoading, profileError,
+      role, isAdmin, loading, initialized,
+      signOut, refreshProfile,
+    }}>
       {children}
     </AuthContext.Provider>
   )

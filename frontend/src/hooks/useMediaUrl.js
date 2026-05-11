@@ -21,33 +21,30 @@ export function useMediaUrl(proxyUrl) {
     if (!proxyUrl) { setBlobUrl(null); setPending(false); return }
 
     let objectUrl = null
-    let cancelled = false
+    const controller = new AbortController()
     setLoading(true)
     setError(null)
     setPending(false)
     setBlobUrl(null)
 
-    apiFetchRaw(proxyUrl)
+    apiFetchRaw(proxyUrl, { signal: controller.signal })
       .then(r => {
-        if (r.status === 202) {
-          if (!cancelled) { setPending(true); setLoading(false) }
-          return null
-        }
+        if (r.status === 202) { setPending(true); setLoading(false); return null }
         if (!r.ok) throw new Error(`${r.status} ${r.statusText}`)
         return r.blob()
       })
       .then(blob => {
-        if (!blob || cancelled) return
+        if (!blob) return
         objectUrl = URL.createObjectURL(blob)
         setBlobUrl(objectUrl)
         setLoading(false)
       })
       .catch(err => {
-        if (!cancelled) { setError(err.message); setLoading(false) }
+        if (err.name !== 'AbortError') { setError(err.message); setLoading(false) }
       })
 
     return () => {
-      cancelled = true
+      controller.abort()
       if (objectUrl) URL.revokeObjectURL(objectUrl)
     }
   }, [proxyUrl])

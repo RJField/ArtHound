@@ -3,6 +3,10 @@ load_dotenv()
 
 import asyncio
 import logging
+
+logging.basicConfig(level=logging.INFO)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, Request
@@ -35,6 +39,7 @@ from routes.connectors.jira_oauth import router as jira_oauth_router
 from routes.attachments import router as attachments_router
 from routes.lorebot import router as lorebot_router
 from routes.handshake import router as handshake_router
+from routes.members import router as members_router
 
 log = logging.getLogger(__name__)
 
@@ -127,6 +132,36 @@ async def _attachment_purge_loop() -> None:
         await asyncio.sleep(interval_secs)
 
 
+async def _sync_log_trim_loop() -> None:
+    """
+    Nightly trim of sync_log rows. Keeps the N most recent rows per owner
+    (default 100, configurable via SYNC_LOG_KEEP_ROWS). Disabled when
+    SYNC_LOG_TRIM_INTERVAL_HOURS is set to 0.
+    """
+    interval_hours = float(os.environ.get("SYNC_LOG_TRIM_INTERVAL_HOURS", "24"))
+    if not interval_hours:
+        return
+    keep_rows = int(os.environ.get("SYNC_LOG_KEEP_ROWS", "100"))
+    interval_secs = interval_hours * 3600
+    log.info("Sync log trim enabled — interval: %.1fh, keep: %d rows/owner", interval_hours, keep_rows)
+    await asyncio.sleep(interval_secs)
+    while True:
+        log.info("Sync log trim: starting")
+        try:
+            r = await db_client.post(
+                _url("/rest/v1/rpc/trim_sync_log"),
+                headers=_headers(),
+                json={"keep_rows": keep_rows},
+            )
+            if r.is_success:
+                log.info("Sync log trim: deleted %d rows", r.json())
+            else:
+                log.error("Sync log trim failed: %s", r.text)
+        except Exception as exc:
+            log.error("Sync log trim error: %s", exc)
+        await asyncio.sleep(interval_secs)
+
+
 async def _schema_drift_loop() -> None:
     """
     Periodic schema drift detection. Compares live source schemas against stored
@@ -183,7 +218,7 @@ async def _nightly_full_sync_loop() -> None:
                         )
                     )
         except Exception as exc:
-            log.warning("Nightly full sync error: %s", exc)
+            log.error("Nightly full sync error: %s", exc)
         await asyncio.sleep(interval_secs)
 
 
@@ -219,12 +254,14 @@ async def lifespan(app: FastAPI):
     drain_task       = asyncio.create_task(_attachment_drain_loop())
     purge_task       = asyncio.create_task(_attachment_purge_loop())
     drift_task       = asyncio.create_task(_schema_drift_loop())
+    trim_task        = asyncio.create_task(_sync_log_trim_loop())
     yield
     poll_task.cancel()
     nightly_task.cancel()
     drain_task.cancel()
     purge_task.cancel()
     drift_task.cancel()
+    trim_task.cancel()
     await db_client.aclose()
 
 
@@ -262,7 +299,7 @@ app.include_router(workflow_steps_router, prefix="/api/workflow-steps",   depend
 app.include_router(payload_router,        prefix="/api/payloads")
 app.include_router(numbersbot_router,     prefix="/api/numbersbot",  dependencies=_auth)
 app.include_router(sync_router,           prefix="/api/sync",        dependencies=_auth)
-app.include_router(user_router,           prefix="/api/user",        dependencies=_auth)
+app.include_router(user_router,           prefix="/api/user")
 app.include_router(init_router,           prefix="/api/init",        dependencies=_auth)
 app.include_router(work_router,           prefix="/api/work",         dependencies=_auth)
 app.include_router(synthetic_router,      prefix="/api/synthetic",    dependencies=_auth)
@@ -276,6 +313,10 @@ app.include_router(jira_oauth_router,     prefix="/api/connectors/jira/oauth")
 app.include_router(attachments_router,    prefix="/api/attachments", dependencies=_auth)
 app.include_router(lorebot_router,        prefix="/api/lorebot",     dependencies=_auth)
 app.include_router(handshake_router,      prefix="/api/handshake",   dependencies=_auth)
+# Members router manages its own auth per-route:
+# GET /api/invite-code/{code}/resolve is public (rate-limited);
+# all other /api/org/* routes carry explicit Depends(get_current_user).
+app.include_router(members_router,        prefix="/api")
 
 
 _REPLICATED_TABLE: dict[str, str] = {

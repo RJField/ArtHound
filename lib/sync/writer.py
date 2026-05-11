@@ -69,6 +69,7 @@ async def upsert_assets(
             "status":                  r.get("status"),
             "asset_number":            r.get("asset_number"),
             "meta":                    r.get("meta", {}),
+            "work_link_ids":           r.get("work_link_ids"),
             "synced_at":               now,
         }
         for r in records

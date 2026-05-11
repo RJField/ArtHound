@@ -1,0 +1,128 @@
+<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="_card.css">
+<style>
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+  /* Plain card — the system default */
+  .c-base {
+    background: var(--ah-surface);
+    border: 1px solid var(--ah-border);
+    border-radius: var(--ah-radius-xl);
+    padding: 16px 18px;
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .c-int { transition: border-color 120ms; }
+  .c-int.is-hover { border-color: rgba(124,106,244,0.55); }
+
+  .c-label {
+    font-size: 11px; font-weight: 600; color: var(--ah-fg-muted);
+    text-transform: uppercase; letter-spacing: 0.08em;
+  }
+  .c-value {
+    font-size: 26px; font-weight: 600; color: var(--ah-fg);
+    font-variant-numeric: tabular-nums; line-height: 1.1;
+    letter-spacing: -0.01em;
+  }
+  .c-delta { font-size: 12px; font-weight: 500; color: var(--ah-success); }
+  .c-delta.down { color: var(--ah-error); }
+  .c-state {
+    font-family: var(--ah-font-mono); font-size: 10px;
+    color: var(--ah-fg-muted); margin-top: 2px;
+  }
+
+  /* Skeleton */
+  .skeleton {
+    background: linear-gradient(90deg, var(--ah-surface-2) 0%, var(--ah-surface-3) 50%, var(--ah-surface-2) 100%);
+    background-size: 200% 100%;
+    border-radius: 4px;
+    animation: shimmer 1.4s ease-in-out infinite;
+  }
+  @keyframes shimmer { 0%,100% { background-position: 200% 0; } 50% { background-position: -200% 0; } }
+  .sk-1 { height: 11px; width: 35%; }
+  .sk-2 { height: 24px; width: 55%; }
+  .sk-3 { height: 11px; width: 50%; }
+
+  /* Bot tile (Cu-TOOL-u) */
+  .bot {
+    background: var(--ah-surface);
+    border: 1px solid var(--ah-border);
+    border-radius: var(--ah-radius-lg);
+    padding: 12px 14px;
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .bot-head { display: flex; align-items: center; justify-content: space-between; }
+  .bot-mark {
+    width: 28px; height: 28px; border-radius: 8px;
+    background: var(--ah-accent-tint);
+    border: 1px solid rgba(124,106,244,0.35);
+    display: grid; place-items: center;
+    color: var(--ah-fg-link); font-size: 13px; font-weight: 600;
+  }
+  .bot-cta {
+    background: transparent; border: 1px solid var(--ah-accent);
+    color: var(--ah-accent);
+    padding: 2px 10px; border-radius: 9999px;
+    font-size: 11px; font-weight: 500; cursor: pointer;
+    font-family: inherit;
+  }
+  .bot-name { font-size: 13px; font-weight: 600; color: var(--ah-fg); }
+  .bot-desc { font-size: 12px; color: var(--ah-fg-muted); line-height: 1.45; }
+</style>
+</head><body>
+  <div class="ds-head">
+    <h1>Cards</h1>
+    <p>The default container in ArtHound. <code style="font-family:var(--ah-font-mono);font-size:11px">--ah-surface</code> fill, 1px <code style="font-family:var(--ah-font-mono);font-size:11px">--ah-border</code>, 12px radius. Interactive variant lifts the border to lavender on hover.</p>
+  </div>
+
+  <div class="ds-stage">
+    <div class="ds-sub">StatCard · resting / hovered</div>
+    <div class="row2">
+      <div class="c-base">
+        <span class="c-label">Assets</span>
+        <span class="c-value">12,471</span>
+        <span class="c-delta">▲ 124 this week</span>
+        <span class="c-state">resting</span>
+      </div>
+      <div class="c-base c-int is-hover">
+        <span class="c-label">Active shares</span>
+        <span class="c-value">38</span>
+        <span class="c-delta down">▼ 4 vs last week</span>
+        <span class="c-state" style="color:var(--ah-fg-link)">hover · accent border</span>
+      </div>
+    </div>
+
+    <div class="ds-divider"></div>
+
+    <div class="ds-sub">Skeleton · loading</div>
+    <div class="c-base" style="gap:10px">
+      <div class="skeleton sk-1"></div>
+      <div class="skeleton sk-2"></div>
+      <div class="skeleton sk-3"></div>
+    </div>
+
+    <div class="ds-divider"></div>
+
+    <div class="ds-sub">Bot tile · Cu-TOOL-u panel</div>
+    <div class="row2">
+      <div class="bot">
+        <div class="bot-head">
+          <div class="bot-mark">N</div>
+          <button class="bot-cta">Ask</button>
+        </div>
+        <div class="bot-name">NumberBot</div>
+        <div class="bot-desc">Estimation audits and variance flags across active workflows.</div>
+      </div>
+      <div class="bot">
+        <div class="bot-head">
+          <div class="bot-mark">L</div>
+          <button class="bot-cta">Ask</button>
+        </div>
+        <div class="bot-name">LoreBot</div>
+        <div class="bot-desc">Canonical naming, IP rules, and continuity for every asset.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="ds-foot">
+    Tokens: <code>--ah-surface</code> · <code>--ah-border</code> · <code>--ah-radius-xl</code> · <code>--ah-accent-tint</code>. Skeleton uses <code>--ah-surface-2</code> ↔ <code>--ah-surface-3</code> shimmer.
+  </div>
+</body></html>

@@ -76,6 +76,10 @@ def classify_field(
     """
     name_lower = field_name.lower().strip()
 
+    # 0. [IGNORE]-prefixed — studio-explicitly excluded fields; suppressed regardless of type
+    if name_lower.startswith("[ignore]"):
+        return "source_native", "hidden", True
+
     # 1. source_native — type-based (highest priority)
     if field_type in _SOURCE_NATIVE_TYPES:
         return "source_native", "hidden", True
@@ -164,6 +168,15 @@ def default_mappings_from_schema(
             "ingest_suppressed":    suppressed,
         })
 
+    # TECH DEBT: Products and item types have no dedicated field mapping — only assets
+    # get a full source_field_mappings entry. Until proper PAW product field mapping is
+    # built (see "Decide core product field schema" TODO), we fall back to promoting the
+    # primary field (first in Airtable schema) to the name slot when no alias matches.
+    # This handles arbitrary primary field names (e.g. "Record" in flat-table setups)
+    # without relying on studios naming their fields predictably.
+    if "name" not in seen_slots and mappings:
+        mappings[0]["arthound_slot"] = "name"
+
     return mappings
 
 
@@ -175,6 +188,7 @@ def normalize_asset(
     adapter=None,
     product_rel_field_id: str | None = None,
     suppressed_names: set[str] | None = None,
+    work_link_field_id: str | None = None,
 ) -> dict:
     """
     Apply field mappings to a raw source record using the connector field adapter.
@@ -280,12 +294,21 @@ def normalize_asset(
         json.dumps(record.fields, sort_keys=True, default=str).encode()
     ).hexdigest()
 
+    work_link_ids: list[str] | None = None
+    if work_link_field_id:
+        raw_wl = record.fields.get(work_link_field_id)
+        if isinstance(raw_wl, list):
+            work_link_ids = [str(w) for w in raw_wl if isinstance(w, str) and w] or None
+        elif isinstance(raw_wl, str) and raw_wl:
+            work_link_ids = [raw_wl]
+
     return {
         **slots,
         "meta": meta,
         "source_hash": source_hash,
         "source_record_id": record.source_record_id,
         "source_last_modified_at": record.source_last_modified_at,
+        **({"work_link_ids": work_link_ids} if work_link_field_id else {}),
     }
 
 

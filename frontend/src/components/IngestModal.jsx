@@ -157,7 +157,8 @@ export default function IngestModal({ dispatchId, onClose, onIngested }) {
   const [retrying, setRetrying]   = useState(false)
 
   useEffect(() => {
-    apiFetch(`/api/payloads/${encodeURIComponent(dispatchId)}/ingest-schema`)
+    const controller = new AbortController()
+    apiFetch(`/api/payloads/${encodeURIComponent(dispatchId)}/ingest-schema`, { signal: controller.signal })
       .then(data => {
         setSchema(data)
 
@@ -186,7 +187,8 @@ export default function IngestModal({ dispatchId, onClose, onIngested }) {
           setStep('drift')
         }
       })
-      .catch(err => setLoadError(err.message))
+      .catch(err => { if (err.name !== 'AbortError') setLoadError(err.message) })
+    return () => controller.abort()
   }, [dispatchId])
 
   const isJira     = schema?.source_type === 'jira'

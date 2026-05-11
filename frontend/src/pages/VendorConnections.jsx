@@ -33,7 +33,8 @@ function CancelLinkModal({ link, vendorName, onConfirm, onClose }) {
   const [cancelling, setCancelling] = useState(false)
 
   useEffect(() => {
-    apiFetch('/api/payloads/outbox')
+    const controller = new AbortController()
+    apiFetch('/api/payloads/outbox', { signal: controller.signal })
       .then(outbox => {
         const now = new Date()
         const vendorRows = outbox.filter(d => d.recipient_vendor_id === link.vendor_id)
@@ -47,8 +48,9 @@ function CancelLinkModal({ link, vendorName, onConfirm, onClose }) {
         ).length
         setCounts({ outstanding, completed })
       })
-      .catch(() => setCounts({ outstanding: '?', completed: '?' }))
+      .catch(e => { if (e.name !== 'AbortError') setCounts({ outstanding: '?', completed: '?' }) })
       .finally(() => setLoading(false))
+    return () => controller.abort()
   }, [link.vendor_id])
 
   async function confirm() {

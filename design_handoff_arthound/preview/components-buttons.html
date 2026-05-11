@@ -1,0 +1,60 @@
+<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="_card.css">
+<style>
+  .btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 7px 14px;
+    border-radius: var(--ah-radius-md);
+    font-family: inherit; font-size: 13px; font-weight: 500;
+    letter-spacing: -0.005em;
+    border: 0; cursor: pointer;
+    transition: background-color 120ms, color 120ms, border-color 120ms;
+  }
+  .btn-primary  { background: var(--ah-accent); color: #fff; }
+  .btn-primary.is-hover { background: var(--ah-accent-hover); }
+  .btn-primary.is-disabled { opacity: 0.45; cursor: not-allowed; }
+  .btn-secondary { background: var(--ah-surface-2); color: var(--ah-fg); }
+  .btn-secondary.is-hover { background: var(--ah-surface-3); }
+  .btn-ghost     { background: transparent; color: var(--ah-fg-muted); }
+  .btn-ghost.is-hover { background: var(--ah-surface-2); color: var(--ah-fg); }
+  .btn-danger    { background: var(--ah-error); color: #fff; }
+
+  .state-tag {
+    font-family: var(--ah-font-mono);
+    font-size: 10px; color: var(--ah-fg-muted);
+    margin-left: 4px;
+  }
+</style>
+</head><body>
+  <div class="ds-head">
+    <h1>Buttons</h1>
+    <p>Primary, secondary, ghost, danger. 13&nbsp;/&nbsp;500, 6px radius, 28px tall. Hover swaps the fill via 120ms transition.</p>
+  </div>
+
+  <div class="ds-stage">
+    <div class="ds-sub">Primary · Secondary · Ghost · Danger</div>
+    <div class="ds-row">
+      <button class="btn btn-primary">Sign in</button>
+      <button class="btn btn-primary is-hover">Hover</button>
+      <button class="btn btn-primary is-disabled">Disabled</button>
+      <button class="btn btn-secondary">Generate work</button>
+      <button class="btn btn-ghost">Cancel</button>
+      <button class="btn btn-danger">Remove</button>
+    </div>
+
+    <div class="ds-divider"></div>
+
+    <div class="ds-sub">Toolbar · inline filter</div>
+    <div class="ds-row">
+      <button class="btn btn-ghost">Refresh</button>
+      <button class="btn btn-secondary">+ Add asset</button>
+      <button class="btn btn-primary">+ New review</button>
+      <span class="btn" style="border:1px solid var(--ah-accent);background:var(--ah-accent-tint);color:var(--ah-accent)">
+        Status <span style="color:var(--ah-fg-muted);font-weight:400">All</span> ▾
+      </span>
+    </div>
+  </div>
+
+  <div class="ds-foot">
+    Tokens: <code>--ah-accent</code> · <code>--ah-accent-hover</code> · <code>--ah-surface-2</code> · <code>--ah-surface-3</code> · <code>--ah-error</code>. Focus ring uses <code>--ah-ring-focus</code>.
+  </div>
+</body></html>

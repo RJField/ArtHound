@@ -346,13 +346,15 @@ function NewReviewModal({ onClose, onCreated }) {
   })
 
   useEffect(() => {
-    apiFetch('/api/reviews/assets')
+    const controller = new AbortController()
+    apiFetch('/api/reviews/assets', { signal: controller.signal })
       .then(data => {
         setAssets(data)
         if (data.length === 1) setForm(f => ({ ...f, canonical_asset_id: data[0].id }))
       })
-      .catch(err => toast.error(err.message))
+      .catch(err => { if (err.name !== 'AbortError') toast.error(err.message) })
       .finally(() => setLoading(false))
+    return () => controller.abort()
   }, [])
 
   async function submit() {

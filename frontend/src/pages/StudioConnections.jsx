@@ -29,10 +29,12 @@ function AcceptInvitePanel({ invite, onAccepted, onRejected, onClose }) {
   const [savingMapping, setSavingMapping]   = useState(false)
 
   useEffect(() => {
-    apiFetch(`/api/handshake/invites/${invite.id}/preview`)
+    const controller = new AbortController()
+    apiFetch(`/api/handshake/invites/${invite.id}/preview`, { signal: controller.signal })
       .then(setPreview)
-      .catch(err => toast.error(err.message))
+      .catch(err => { if (err.name !== 'AbortError') toast.error(err.message) })
       .finally(() => setLoadingPreview(false))
+    return () => controller.abort()
   }, [invite.id])
 
   async function accept() {

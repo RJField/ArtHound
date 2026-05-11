@@ -251,12 +251,22 @@ class AirtableConnector(BaseConnector):
             for f in target.get("fields", [])
         ]
 
-    async def create_record(self, table_id: str, fields: dict) -> str:
-        """Create a record in the given table. Returns the new record ID."""
+    async def create_record(self, table_id: str, fields: dict, qualifier_defaults: dict) -> str:
+        """
+        Create a record in the given table. Returns the new record ID.
+
+        qualifier_defaults (from lib.sync.qualifiers.airtable_write_defaults) are merged
+        under fields so explicit field values always win:
+            effective = {**qualifier_defaults, **fields}
+
+        Callers must NOT pre-merge qualifier_defaults into fields — this method is the
+        sole merge site. Pass raw fields and the defaults dict separately.
+        """
         _TRANSIENT = {429, 500, 502, 503, 504}
+        effective_fields = {**qualifier_defaults, **fields}
         url     = f"{_AT_BASE}/{self._base_id}/{quote(table_id, safe='')}"
         headers = {**self._headers(), "Content-Type": "application/json"}
-        payload = {"fields": fields, "typecast": True}
+        payload = {"fields": effective_fields, "typecast": True}
         r = None
         for attempt in range(3):
             if attempt:
@@ -281,6 +291,6 @@ class AirtableConnector(BaseConnector):
         if r is None:
             raise RuntimeError("Airtable create_record: exhausted retries on transient error")
         if r.is_error:
-            log.error("Airtable create_record %s — %s %s", r.status_code, r.text, fields)
+            log.error("Airtable create_record %s — %s %s", r.status_code, r.text, effective_fields)
         r.raise_for_status()
         return r.json()["id"]

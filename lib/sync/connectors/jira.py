@@ -359,16 +359,26 @@ class JiraConnector(BaseConnector):
             if not it.get("subtask", False)
         ]
 
-    async def create_issue(self, fields: dict) -> str:
-        """Create a Jira issue and return the new issue ID (numeric string)."""
+    async def create_issue(self, fields: dict, qualifier_defaults: dict) -> str:
+        """
+        Create a Jira issue and return the new issue ID (numeric string).
+
+        qualifier_defaults (from lib.sync.qualifiers.jira_write_defaults) are merged
+        under fields so explicit field values always win:
+            effective = {**qualifier_defaults, **fields}
+
+        Callers must NOT pre-merge qualifier_defaults into fields — this method is the
+        sole merge site. Pass raw fields and the defaults dict separately.
+        """
         _SERVER_ERROR = {500, 502, 503, 504}
+        effective_fields = {**qualifier_defaults, **fields}
         r = None
         for attempt in range(_MAX_RETRIES):
             try:
                 r = await self._client.post(
                     f"{self._base}/issue",
                     headers={**self._headers(), "Content-Type": "application/json"},
-                    json={"fields": fields},
+                    json={"fields": effective_fields},
                 )
             except httpx.TransportError as exc:
                 log.warning("Jira create_issue network error (attempt %d/%d): %s", attempt + 1, _MAX_RETRIES, exc)

@@ -19,14 +19,15 @@ export default function PayloadTemplateModal({ template, onClose, onSaved }) {
   const [saving, setSaving]         = useState(false)
 
   useEffect(() => {
-    apiFetch('/api/payloads/field-preview')
+    const controller = new AbortController()
+    apiFetch('/api/payloads/field-preview', { signal: controller.signal })
       .then(fields => {
         setAvailableFields(fields)
-        // For new templates, pre-select all fields
         if (!isEdit) setSelectedKeys(new Set(fields.map(f => f.key)))
       })
-      .catch(err => toast.error(`Could not load fields: ${err.message}`))
+      .catch(err => { if (err.name !== 'AbortError') toast.error(`Could not load fields: ${err.message}`) })
       .finally(() => setLoadingFields(false))
+    return () => controller.abort()
   }, [])
 
   function toggle(key) {

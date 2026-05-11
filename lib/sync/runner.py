@@ -131,31 +131,45 @@ async def _get_entity_definitions(owner_type: str, owner_id: str, source_type: s
     return {row["entity_type"]: row for row in data}
 
 
-async def _get_cursor(owner_type: str, owner_id: str, source_type: str) -> str | None:
+async def _get_cursor(owner_type: str, owner_id: str, source_type: str) -> tuple[str | None, bool]:
+    """Returns (last_synced_at, force_full_resync)."""
     r = await db_client.get(
         _url("/rest/v1/sync_cursors"),
         params={
             "owner_type":  f"eq.{owner_type}",
             "owner_id":    f"eq.{owner_id}",
             "source_type": f"eq.{source_type}",
-            "select":      "last_synced_at",
+            "select":      "last_synced_at,force_full_resync",
         },
         headers=_headers(),
     )
     r.raise_for_status()
     rows = r.json()
-    return rows[0]["last_synced_at"] if rows else None
+    if rows:
+        return rows[0]["last_synced_at"], bool(rows[0].get("force_full_resync", False))
+    return None, False
 
 
 async def _save_cursor(owner_type: str, owner_id: str, source_type: str, ts: str, full: bool = False) -> None:
     row: dict = {"owner_type": owner_type, "owner_id": owner_id,
-                 "source_type": source_type, "last_synced_at": ts}
+                 "source_type": source_type, "last_synced_at": ts,
+                 "force_full_resync": False}
     if full:
         row["last_full_sync_at"] = ts
     await db_client.post(
         _url("/rest/v1/sync_cursors?on_conflict=owner_type,owner_id,source_type"),
         headers=_headers({"Prefer": "resolution=merge-duplicates,return=minimal"}),
         json=row,
+    )
+
+
+async def _flag_partial_sync(owner_type: str, owner_id: str, source_type: str) -> None:
+    """Mark that the last sync failed mid-write; forces full resync on next attempt."""
+    await db_client.post(
+        _url("/rest/v1/sync_cursors?on_conflict=owner_type,owner_id,source_type"),
+        headers=_headers({"Prefer": "resolution=merge-duplicates,return=minimal"}),
+        json={"owner_type": owner_type, "owner_id": owner_id,
+              "source_type": source_type, "force_full_resync": True},
     )
 
 
@@ -431,7 +445,10 @@ async def _run_sync_locked(
         if not creds:
             raise ValueError(f"No credentials found for {owner_type}/{owner_id}/{source_type}")
 
-        cursor = None if full else await _get_cursor(owner_type, owner_id, source_type)
+        cursor, force_full_flag = (None, False) if full else await _get_cursor(owner_type, owner_id, source_type)
+        if force_full_flag:
+            log.info("Forced full resync for %s/%s — prior sync failed mid-write", owner_type, owner_id)
+            cursor = None
         is_delta = cursor is not None
 
         entity_defs   = await _get_entity_definitions(owner_type, owner_id, source_type)
@@ -499,7 +516,7 @@ async def _run_sync_locked(
                     filter_formula=connector.build_entity_filter(product_def),
                 )
             else:
-                raw_products = await connector.fetch_products()
+                raw_products = []
 
             if item_type_def and item_type_def.get("item_type_source") == "field_values":
                 # Derive item types from a field on asset records — no separate API call.
@@ -529,8 +546,47 @@ async def _run_sync_locked(
             # ── Normalize reference entities first ────────────────────────────
             # Reference tables are always fetched in full and normalized before
             # assets so their IDs are available for linked record resolution.
-            norm_products = [normalize_reference(r, "Product") for r in raw_products]
-            norm_item_types = [normalize_reference(r, "Item") for r in raw_item_types]
+            #
+            # Name-field resolution: flat-table setups share one table for all
+            # entity types, so the asset name-slot field also names products/item
+            # types. Separate-table setups (each entity in its own table) need the
+            # primary field of THAT table — the asset mapping's name slot won't
+            # exist in product or item-type records at all, causing normalize_reference
+            # to fall through to the string-scan fallback and pick up status values.
+            _asset_name_field = next(
+                (m["source_field_name"] for m in mappings if m.get("arthound_slot") == "name"),
+                schema_fields[0].name if schema_fields else "Name",
+            )
+
+            _product_name_field = _asset_name_field
+            if raw_products and product_def and (
+                not asset_def or product_def.get("table_id") != asset_def.get("table_id")
+            ):
+                try:
+                    _ps = await connector.fetch_asset_schema(table_id=product_def["table_id"])
+                    if _ps:
+                        _product_name_field = _ps[0].name
+                except Exception:
+                    log.warning("Could not fetch product table schema for name resolution — using asset name field fallback")
+
+            # field_values item types are synthetic records with a "name" key — use
+            # it directly. For table-based item types in their own table, fetch primary.
+            if item_type_def and item_type_def.get("item_type_source") == "field_values":
+                _item_type_name_field = "name"
+            elif raw_item_types and item_type_def and (
+                not asset_def or item_type_def.get("table_id") != asset_def.get("table_id")
+            ):
+                try:
+                    _its = await connector.fetch_asset_schema(table_id=item_type_def["table_id"])
+                    _item_type_name_field = _its[0].name if _its else _asset_name_field
+                except Exception:
+                    log.warning("Could not fetch item_type table schema for name resolution — using asset name field fallback")
+                    _item_type_name_field = _asset_name_field
+            else:
+                _item_type_name_field = _asset_name_field
+
+            norm_products = [normalize_reference(r, _product_name_field) for r in raw_products]
+            norm_item_types = [normalize_reference(r, _item_type_name_field) for r in raw_item_types]
 
             # Build resolver from synced reference data so the asset normalizer
             # can resolve linked record IDs to display names without extra API calls.
@@ -597,6 +653,10 @@ async def _run_sync_locked(
                 # field. Fall back to it when no explicit rel is stored in the entity def.
                 product_rel_field_id = asset_def.get("rel_field_id") or "parent"
 
+            _work_link_field = (
+                work_def.get("rel_field_name") if work_def and work_def.get("rel_direction") == "parent_holds_link" else None
+            )
+
             norm_assets = [
                 normalize_asset(
                     r, mappings,
@@ -605,6 +665,7 @@ async def _run_sync_locked(
                     adapter=field_adapter,
                     product_rel_field_id=product_rel_field_id,
                     suppressed_names=excluded_field_ids or None,
+                    work_link_field_id=_work_link_field,
                 )
                 for r in raw_assets
             ]
@@ -691,27 +752,22 @@ async def _run_sync_locked(
 
                 # On delta sync raw_assets is incomplete — supplement from the DB
                 # so work items linked to unchanged assets also get resolved.
+                # Reads work_link_ids (text[]) instead of full meta JSONB.
                 if is_delta:
                     _rows = await drain_pages(
                         _url("/rest/v1/replicated_assets"),
                         {
                             "owner_type": f"eq.{owner_type}",
                             "owner_id":   f"eq.{owner_id}",
-                            "select":     "source_record_id,canonical_asset_id,meta",
+                            "select":     "source_record_id,canonical_asset_id,work_link_ids",
                         },
                     )
                     for row in _rows:
                         cid = row.get("canonical_asset_id")
                         if not cid:
                             continue
-                        meta = row.get("meta") or {}
-                        lv = meta.get(work_rel_field)
-                        if isinstance(lv, list):
-                            for wid in lv:
-                                if isinstance(wid, str) and wid:
-                                    work_to_canonical.setdefault(wid, cid)
-                        elif isinstance(lv, str) and lv:
-                            work_to_canonical.setdefault(lv, cid)
+                        for wid in (row.get("work_link_ids") or []):
+                            work_to_canonical.setdefault(wid, cid)
 
             elif work_direction != "parent_holds_link" and raw_work and work_rel_field and is_delta:
                 # child_holds_link + delta sync: canonical_map only covers changed
@@ -787,4 +843,10 @@ async def _run_sync_locked(
     except Exception as exc:
         log.exception("Sync failed for %s/%s at phase=%s", owner_type, owner_id, _phase)
         await _finish_log(log_id, "error", 0, f"[{_phase}] {exc}")
+        _WRITE_PHASES = {"write_products", "write_item_types", "write_assets", "write_work", "delete_orphans"}
+        if _phase in _WRITE_PHASES:
+            try:
+                await _flag_partial_sync(owner_type, owner_id, source_type)
+            except Exception:
+                log.warning("Could not set force_full_resync for %s/%s — partial state may persist", owner_type, owner_id)
         return {"status": "error", "phase": _phase, "error": str(exc)}

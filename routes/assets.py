@@ -1,4 +1,5 @@
 import asyncio
+import time
 from typing import Optional
 
 import httpx
@@ -10,6 +11,34 @@ from lib.crypto import decrypt_credentials
 from lib.db import db_client, _url, _headers
 
 router = APIRouter()
+
+# ── Reference map cache ───────────────────────────────────────────────────────
+# Products, item_types, and field_mappings only change on sync. Caching them
+# eliminates Phase 1 round-trips (~150ms) for all but the first request per
+# studio within the TTL window.
+
+_REF_CACHE: dict[str, tuple[float, tuple, dict, tuple]] = {}
+_REF_TTL = 60.0  # seconds
+
+
+async def _get_ref_maps(owner_type: str, owner_id: str) -> tuple[tuple, dict, tuple]:
+    key = f"{owner_type}:{owner_id}"
+    entry = _REF_CACHE.get(key)
+    if entry and (time.monotonic() - entry[0]) < _REF_TTL:
+        _, prod_maps, it_map, mapping_data = entry
+        return prod_maps, it_map, mapping_data
+
+    prod_maps, it_map, mapping_data = await asyncio.gather(
+        _fetch_products_map(owner_type, owner_id),
+        _fetch_item_types_map(owner_type, owner_id),
+        _fetch_mapping_data(owner_type, owner_id),
+    )
+    _REF_CACHE[key] = (time.monotonic(), prod_maps, it_map, mapping_data)
+    return prod_maps, it_map, mapping_data
+
+
+def _invalidate_ref_cache(owner_type: str, owner_id: str) -> None:
+    _REF_CACHE.pop(f"{owner_type}:{owner_id}", None)
 
 
 def _owner(user: CurrentUser) -> tuple[str, str]:
@@ -261,12 +290,8 @@ async def get_assets(
 ):
     owner_type, owner_id = _owner(current_user)
 
-    # Fetch reference maps first — needed to resolve the product filter value.
-    (prod_id_to_name, prod_name_to_id), it_id_to_name, (slot_field_names, field_to_tier) = await asyncio.gather(
-        _fetch_products_map(owner_type, owner_id),
-        _fetch_item_types_map(owner_type, owner_id),
-        _fetch_mapping_data(owner_type, owner_id),
-    )
+    (prod_id_to_name, prod_name_to_id), it_id_to_name, (slot_field_names, field_to_tier) = \
+        await _get_ref_maps(owner_type, owner_id)
 
     asset_params = {
         "owner_type": f"eq.{owner_type}",
@@ -279,11 +304,13 @@ async def get_assets(
         asset_params["product_source_record_id"] = "is.null"
     elif productId:
         if productId in prod_id_to_name:
-            # Linked-record product: filter on the stable source ID column.
+            # Linked-record product confirmed in replicated_products.
             asset_params["product_source_record_id"] = f"eq.{productId}"
         else:
-            # Select-based product: no source ID exists; filter on display name.
-            asset_params["product"] = f"eq.{productId}"
+            # Either a select-based product (display name as ID) or a linked-record
+            # product whose source isn't in replicated_products (e.g. vendor with no
+            # product entity definition). OR covers both columns.
+            asset_params["or"] = f"(product.eq.{productId},product_source_record_id.eq.{productId})"
 
     asset_r = await db_client.get(
         _url("/rest/v1/replicated_assets"),
@@ -417,7 +444,8 @@ async def get_asset_fields(user: CurrentUser = Depends(get_current_user)):
 async def get_asset(asset_id: str, current_user: CurrentUser = Depends(get_current_user)):
     owner_type, owner_id = _owner(current_user)
 
-    asset_r, (prod_id_to_name, prod_name_to_id), it_id_to_name, (slot_field_names, field_to_tier) = await asyncio.gather(
+    ref_maps, asset_r = await asyncio.gather(
+        _get_ref_maps(owner_type, owner_id),
         db_client.get(
             _url("/rest/v1/replicated_assets"),
             params={
@@ -427,10 +455,8 @@ async def get_asset(asset_id: str, current_user: CurrentUser = Depends(get_curre
             },
             headers=_headers(),
         ),
-        _fetch_products_map(owner_type, owner_id),
-        _fetch_item_types_map(owner_type, owner_id),
-        _fetch_mapping_data(owner_type, owner_id),
     )
+    (prod_id_to_name, prod_name_to_id), it_id_to_name, (slot_field_names, field_to_tier) = ref_maps
     asset_r.raise_for_status()
     rows = asset_r.json()
     if not rows:

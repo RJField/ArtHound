@@ -96,11 +96,13 @@ function MatrixTable({ reloadKey }) {
   const tableRef = useRef(null)
 
   useEffect(() => {
+    const controller = new AbortController()
     setLoading(true)
     setError(null)
-    apiFetch('/api/setup/matrix-table-pg')
+    apiFetch('/api/setup/matrix-table-pg', { signal: controller.signal })
       .then(d => { setData(d); setLoading(false) })
-      .catch(e => { setError(e.message); setLoading(false) })
+      .catch(e => { if (e.name !== 'AbortError') { setError(e.message); setLoading(false) } })
+    return () => controller.abort()
   }, [reloadKey])
 
   // Apply sticky left offsets after table renders

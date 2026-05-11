@@ -1,0 +1,131 @@
+<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="_card.css">
+<style>
+  .stage {
+    position: relative;
+    height: 380px;
+    background:
+      radial-gradient(circle at 28% 30%, rgba(124,106,244,0.10), transparent 50%),
+      var(--ah-bg);
+    border: 1px solid var(--ah-border);
+    border-radius: var(--ah-radius-xl);
+    overflow: hidden;
+    display: grid; place-items: center;
+  }
+  .scrim { position: absolute; inset: 0; background: rgba(0,0,0,0.55); backdrop-filter: blur(3px); }
+
+  .modal {
+    position: relative;
+    width: 440px;
+    background: var(--ah-surface);
+    border: 1px solid var(--ah-border);
+    border-radius: var(--ah-radius-xl);
+    box-shadow: 0 24px 48px -12px rgba(0,0,0,0.55);
+    display: flex; flex-direction: column;
+  }
+  .modal-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--ah-border-soft);
+  }
+  .modal-head h2 {
+    margin: 0;
+    font-family: var(--ah-font-display);
+    font-size: 15px; font-weight: 600;
+    color: var(--ah-fg); letter-spacing: -0.005em;
+  }
+  .x-btn {
+    width: 26px; height: 26px;
+    border: 0; background: transparent;
+    color: var(--ah-fg-muted); font-size: 18px; line-height: 1;
+    border-radius: var(--ah-radius-md); cursor: pointer;
+  }
+  .x-btn:hover { background: var(--ah-surface-2); color: var(--ah-fg); }
+
+  .modal-body { padding: 16px 18px; display: flex; flex-direction: column; gap: 14px; }
+  .lbl {
+    font-size: 11px; font-weight: 600; color: var(--ah-fg-muted);
+    text-transform: uppercase; letter-spacing: 0.08em;
+    margin-bottom: 6px;
+  }
+  .asset-row {
+    display: flex; align-items: center; gap: 10px;
+    background: var(--ah-surface-2);
+    border: 1px solid var(--ah-border);
+    border-radius: var(--ah-radius-md);
+    padding: 8px 10px;
+  }
+  .asset-thumb {
+    width: 32px; height: 32px;
+    border-radius: 6px;
+    background: linear-gradient(135deg, #4d3ad6, #7c6af4);
+    flex-shrink: 0;
+  }
+  .asset-name { font-size: 13px; font-weight: 500; color: var(--ah-fg); }
+  .asset-id   { font-family: var(--ah-font-mono); font-size: 11px; color: var(--ah-fg-muted); margin-top: 1px; }
+
+  .input {
+    width: 100%; box-sizing: border-box;
+    background: var(--ah-surface-2);
+    border: 1px solid var(--ah-border);
+    border-radius: var(--ah-radius-md);
+    color: var(--ah-fg-muted);
+    font-family: inherit; font-size: 13px;
+    padding: 8px 12px;
+  }
+
+  .modal-foot {
+    display: flex; justify-content: flex-end; gap: 8px;
+    padding: 12px 18px;
+    border-top: 1px solid var(--ah-border-soft);
+  }
+  .btn {
+    padding: 7px 14px; border-radius: var(--ah-radius-md);
+    font-family: inherit; font-size: 13px; font-weight: 500;
+    border: 0; cursor: pointer;
+    letter-spacing: -0.005em;
+  }
+  .btn-ghost   { background: transparent; color: var(--ah-fg-muted); }
+  .btn-ghost:hover { background: var(--ah-surface-2); color: var(--ah-fg); }
+  .btn-primary { background: var(--ah-accent); color: #fff; }
+  .btn-primary:hover { background: var(--ah-accent-hover); }
+</style>
+</head><body>
+  <div class="ds-head">
+    <h1>Modal</h1>
+    <p>Centered dialog over a 55% scrim with 3px blur. <code style="font-family:var(--ah-font-mono);font-size:11px">--ah-surface</code> body, 12px radius, <code style="font-family:var(--ah-font-mono);font-size:11px">shadow-lg</code>. Header and footer separated by a soft 1px divider.</p>
+  </div>
+
+  <div class="stage">
+    <div class="scrim"></div>
+    <div class="modal">
+      <div class="modal-head">
+        <h2>New review</h2>
+        <button class="x-btn">×</button>
+      </div>
+      <div class="modal-body">
+        <div>
+          <div class="lbl">Asset</div>
+          <div class="asset-row">
+            <div class="asset-thumb"></div>
+            <div>
+              <div class="asset-name">Hero — Jett</div>
+              <div class="asset-id">CHAR_HERO_v0014 · Battlepass IX</div>
+            </div>
+          </div>
+        </div>
+        <div>
+          <div class="lbl">Title</div>
+          <div class="input">Briefly describe what to review…</div>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn btn-ghost">Cancel</button>
+        <button class="btn btn-primary">Create review</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="ds-foot">
+    Tokens: <code>--ah-overlay</code> · <code>--ah-surface</code> · <code>--ah-border-soft</code> · <code>--ah-shadow-lg</code> · <code>--ah-accent</code>.
+  </div>
+</body></html>

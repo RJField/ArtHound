@@ -128,31 +128,35 @@ export default function WorkTab({ asset, workRefreshKey }) {
     if (!asset) { setWork(null); return }
     setWork(null)
     setLoading(true)
+    const controller = new AbortController()
+    const { signal } = controller
 
     async function load() {
       try {
         if (source === 'source') {
           if (!asset.canonicalId) { setWork([]); return }
           const data = await apiFetch(
-            `/api/work/?canonical_asset_id=${encodeURIComponent(asset.canonicalId)}`
+            `/api/work/?canonical_asset_id=${encodeURIComponent(asset.canonicalId)}`,
+            { signal }
           )
           setWork(data)
         } else {
           if (!asset.canonicalId) { setWork([]); return }
           const data = await apiFetch(
-            `/api/schedule/work-local?canonicalAssetId=${encodeURIComponent(asset.canonicalId)}`
+            `/api/schedule/work-local?canonicalAssetId=${encodeURIComponent(asset.canonicalId)}`,
+            { signal }
           )
           setWork(data)
         }
       } catch (err) {
-        toast.error(err.message)
-        setWork([])
+        if (err.name !== 'AbortError') { toast.error(err.message); setWork([]) }
       } finally {
         setLoading(false)
       }
     }
 
     load()
+    return () => controller.abort()
   }, [asset?.id, source, workRefreshKey])
 
   function emptyMessage() {

@@ -23,9 +23,11 @@ export default function LoreBotModal({ onClose }) {
   const inputRef  = useRef(null)
 
   useEffect(() => {
-    apiFetch('/api/lorebot/items')
+    const controller = new AbortController()
+    apiFetch('/api/lorebot/items', { signal: controller.signal })
       .then(data => { setItems(data); setItemsLoading(false) })
-      .catch(() => setItemsLoading(false))
+      .catch(e => { if (e.name !== 'AbortError') setItemsLoading(false) })
+    return () => controller.abort()
   }, [])
 
   useEffect(() => {

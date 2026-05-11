@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { NavLink } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
+import { apiFetch } from '../lib/api'
 import UserModal from './UserModal'
 import FieldMappingModal from './FieldMappingModal'
 import SyntheticDataModal from './SyntheticDataModal'
@@ -12,6 +13,7 @@ const STUDIO_NAV = [
   { label: 'Shares',  to: '/shares' },
   { label: 'Reviews', to: '/reviews' },
   { label: 'Vendors', to: '/vendors' },
+  { label: 'Org',     to: '/org' },
 ]
 
 const VENDOR_NAV = [
@@ -19,6 +21,7 @@ const VENDOR_NAV = [
   { label: 'Assets',  to: '/assets' },
   { label: 'Inbox',   to: '/inbox' },
   { label: 'Studios', to: '/studios' },
+  { label: 'Org',     to: '/org' },
 ]
 
 export default function Topbar() {
@@ -26,8 +29,41 @@ export default function Topbar() {
   const [userOpen, setUserOpen]           = useState(false)
   const [settingsOpen, setSettingsOpen]   = useState(false)
   const [syntheticOpen, setSyntheticOpen] = useState(false)
+  const [syncing, setSyncing]             = useState(false)
+  const [syncMsg, setSyncMsg]             = useState(null)
+  const [driftPending, setDriftPending]   = useState(false)
 
   const nav = role === 'vendor' ? VENDOR_NAV : STUDIO_NAV
+
+  useEffect(() => {
+    if (role !== 'studio') return
+    apiFetch('/api/sync/schema-drift')
+      .then(d => setDriftPending(d.pending))
+      .catch(() => {})
+  }, [role])
+
+  function handleSettingsClose() {
+    setSettingsOpen(false)
+    if (role === 'studio') {
+      apiFetch('/api/sync/schema-drift')
+        .then(d => setDriftPending(d.pending))
+        .catch(() => {})
+    }
+  }
+
+  async function handleSync() {
+    setSyncing(true)
+    setSyncMsg(null)
+    try {
+      await apiFetch('/api/sync/run', { method: 'POST', body: JSON.stringify({ full: true }) })
+      setSyncMsg('ok')
+    } catch {
+      setSyncMsg('err')
+    } finally {
+      setSyncing(false)
+      setTimeout(() => setSyncMsg(null), 3000)
+    }
+  }
 
   return (
     <>
@@ -58,6 +94,20 @@ export default function Topbar() {
 
         {/* Right controls */}
         <div className="flex items-center gap-2">
+          {(role === 'studio' || role === 'vendor') && (
+            <button
+              onClick={handleSync}
+              disabled={syncing}
+              className={cn(
+                'px-3 py-1.5 rounded-md text-xs transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed',
+                syncMsg === 'ok'  ? 'text-success' :
+                syncMsg === 'err' ? 'text-error' :
+                'text-muted hover:text-foreground hover:bg-surface-2'
+              )}
+            >
+              {syncing ? 'Syncing…' : syncMsg === 'ok' ? 'Synced ✓' : syncMsg === 'err' ? 'Failed' : 'Sync'}
+            </button>
+          )}
           {isAdmin && (
             <button
               onClick={() => setSyntheticOpen(true)}
@@ -68,9 +118,12 @@ export default function Topbar() {
           )}
           <button
             onClick={() => setSettingsOpen(true)}
-            className="px-3 py-1.5 rounded-md text-xs text-muted hover:text-foreground hover:bg-surface-2 transition-colors cursor-pointer"
+            className="relative px-3 py-1.5 rounded-md text-xs text-muted hover:text-foreground hover:bg-surface-2 transition-colors cursor-pointer"
           >
             Settings
+            {driftPending && (
+              <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-error" />
+            )}
           </button>
           <button
             onClick={() => setUserOpen(true)}
@@ -88,7 +141,7 @@ export default function Topbar() {
       </header>
 
       {userOpen      && <UserModal          onClose={() => setUserOpen(false)} />}
-      {settingsOpen  && <FieldMappingModal  onClose={() => setSettingsOpen(false)} />}
+      {settingsOpen  && <FieldMappingModal  onClose={handleSettingsClose} />}
       {syntheticOpen && <SyntheticDataModal onClose={() => setSyntheticOpen(false)} />}
     </>
   )

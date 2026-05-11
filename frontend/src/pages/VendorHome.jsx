@@ -12,15 +12,18 @@ export default function VendorHome() {
   const [inboxCount, setInboxCount]     = useState(null)
 
   useEffect(() => {
-    apiFetch('/api/handshake/invites/incoming')
+    const controller = new AbortController()
+    const { signal } = controller
+    apiFetch('/api/handshake/invites/incoming', { signal })
       .then(inv => setInviteCount(inv.length))
-      .catch(() => setInviteCount(0))
-    apiFetch('/api/handshake/links')
+      .catch(e => { if (e.name !== 'AbortError') setInviteCount(0) })
+    apiFetch('/api/handshake/links', { signal })
       .then(links => setStudioCount(links.length))
-      .catch(() => setStudioCount(0))
-    apiFetch('/api/payloads/vendor-inbox')
+      .catch(e => { if (e.name !== 'AbortError') setStudioCount(0) })
+    apiFetch('/api/payloads/vendor-inbox', { signal })
       .then(items => setInboxCount(items.length))
-      .catch(() => setInboxCount(0))
+      .catch(e => { if (e.name !== 'AbortError') setInboxCount(0) })
+    return () => controller.abort()
   }, [])
 
   return (

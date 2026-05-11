@@ -589,6 +589,16 @@ async def save_field_mappings(
         except Exception:
             log.warning("Failed to write bucket override log for %s/%s", owner_type, owner_id)
 
+    try:
+        await db_client.patch(
+            _url("/rest/v1/schema_drift_events"),
+            params={"owner_id": f"eq.{owner_id}", "resolved_at": "is.null"},
+            headers=_headers({"Prefer": "return=minimal"}),
+            json={"resolved_at": datetime.now(timezone.utc).isoformat()},
+        )
+    except Exception:
+        log.warning("Failed to resolve drift events for %s/%s", owner_type, owner_id)
+
     return {"ok": True, "mapped_slots": sorted(mapped_slots)}
 
 

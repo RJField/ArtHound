@@ -55,23 +55,26 @@ export default function SendVendorModal({ selectedAssets, onClose, onSent }) {
   const canonicalIds = new Set(selectedAssets.filter(a => a.canonicalId).map(a => a.canonicalId))
 
   useEffect(() => {
+    const controller = new AbortController()
+    const { signal } = controller
     async function init() {
       try {
         const [vs, outbox, tmpl] = await Promise.all([
-          apiFetch('/api/payloads/vendors'),
-          apiFetch('/api/payloads/outbox'),
-          apiFetch('/api/payloads/templates'),
+          apiFetch('/api/payloads/vendors', { signal }),
+          apiFetch('/api/payloads/outbox', { signal }),
+          apiFetch('/api/payloads/templates', { signal }),
         ])
         setVendors(vs)
         setExisting(outbox.filter(d => canonicalIds.has(d.asset_id) && !d.revoked_at))
         setTemplates(tmpl)
       } catch (err) {
-        toast.error(err.message)
+        if (err.name !== 'AbortError') toast.error(err.message)
       } finally {
         setLoading(false)
       }
     }
     init()
+    return () => controller.abort()
   }, [])
 
   async function revoke(id) {

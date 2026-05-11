@@ -1,64 +1,72 @@
 import { useState } from 'react'
 import { apiFetch } from '../lib/api'
 
-const STEP = { ROLE: 1, CREDENTIALS: 2, HANDLE: 3, SUCCESS: 4 }
+const STEP = {
+  CHOICE:          0,  // create new org vs join existing
+  ROLE:            1,  // studio or vendor (create path)
+  CREDENTIALS:     2,  // org name + email + password (create path)
+  HANDLE:          3,  // vendor handle (create path)
+  JOIN_CODE:       4,  // invite code entry + live validation (join path)
+  JOIN_CREDENTIALS: 5, // email + password (join path)
+  SUCCESS:         6,
+}
 
 const HANDLE_RE = /^[a-z0-9][a-z0-9_-]{2,31}$/
-const HANDLE_HINT = 'Lowercase letters, numbers, hyphens and underscores only. 3–32 characters, must start with a letter or number.'
+const HANDLE_HINT = 'Lowercase letters, numbers, hyphens and underscores only. 3–32 characters.'
 
 function handleErrorMessage(detail) {
-  if (detail === 'HANDLE_TAKEN')    return 'That handle is already taken — try a different one.'
-  if (detail === 'HANDLE_INVALID')  return HANDLE_HINT
+  if (detail === 'HANDLE_TAKEN')        return 'That handle is already taken — try a different one.'
+  if (detail === 'HANDLE_INVALID')      return HANDLE_HINT
+  if (detail === 'INVITE_CODE_INVALID') return 'Invite code not found. Check the code and try again.'
+  if (detail === 'ROLE_ORG_MISMATCH')   return 'This invite code is for a different account type.'
   return detail
 }
 
 export default function SignupModal({ onClose }) {
-  const [step, setStep]         = useState(STEP.ROLE)
+  // Create path state
   const [role, setRole]         = useState(null)
   const [orgName, setOrgName]   = useState('')
-  const [email, setEmail]       = useState('')
-  const [password, setPassword] = useState('')
   const [handle, setHandle]     = useState('')
   const [handleError, setHandleError] = useState(null)
+
+  // Join path state
+  const [inviteCode, setInviteCode]       = useState('')
+  const [resolvedOrg, setResolvedOrg]     = useState(null)  // {org_name, org_type}
+  const [codeError, setCodeError]         = useState(null)
+  const [codeChecking, setCodeChecking]   = useState(false)
+
+  // Shared state
+  const [step, setStep]         = useState(STEP.CHOICE)
+  const [email, setEmail]       = useState('')
+  const [password, setPassword] = useState('')
   const [error, setError]       = useState(null)
   const [busy, setBusy]         = useState(false)
-  const [emailConfirmRequired, setEmailConfirmRequired] = useState(false)
+  const [successData, setSuccessData] = useState(null) // {emailConfirmRequired, pending, org_name}
+
+  // ── Create path ─────────────────────────────────────────────────────────────
 
   function advanceFromCredentials(e) {
     e.preventDefault()
-    if (role === 'vendor') {
-      setStep(STEP.HANDLE)
-    } else {
-      submitSignup()
-    }
+    if (role === 'vendor') setStep(STEP.HANDLE)
+    else submitCreate()
   }
 
-  async function submitSignup(e) {
+  async function submitCreate(e) {
     if (e) e.preventDefault()
-
     if (role === 'vendor') {
-      if (!HANDLE_RE.test(handle)) {
-        setHandleError(HANDLE_HINT)
-        return
-      }
+      if (!HANDLE_RE.test(handle)) { setHandleError(HANDLE_HINT); return }
       setHandleError(null)
     }
-
     setError(null)
     setBusy(true)
     try {
       const body = { email, password, role, org_name: orgName }
       if (role === 'vendor') body.handle = handle
-
-      const data = await apiFetch('/api/auth/signup', {
-        method: 'POST',
-        body: JSON.stringify(body),
-      })
-      setEmailConfirmRequired(data.email_confirmation_required)
+      const data = await apiFetch('/api/auth/signup', { method: 'POST', body: JSON.stringify(body) })
+      setSuccessData({ emailConfirmRequired: data.email_confirmation_required, pending: false })
       setStep(STEP.SUCCESS)
     } catch (err) {
       const msg = handleErrorMessage(err.message)
-      // If the error is handle-related, drop back to handle step with inline error
       if (err.message === 'HANDLE_TAKEN' || err.message === 'HANDLE_INVALID') {
         setHandleError(msg)
         setStep(STEP.HANDLE)
@@ -70,7 +78,55 @@ export default function SignupModal({ onClose }) {
     }
   }
 
-  const orgLabel = role === 'studio' ? 'Studio name' : 'Vendor / company name'
+  // ── Join path ───────────────────────────────────────────────────────────────
+
+  async function resolveCode(e) {
+    e.preventDefault()
+    if (!inviteCode.trim()) return
+    setCodeError(null)
+    setResolvedOrg(null)
+    setCodeChecking(true)
+    try {
+      const data = await apiFetch(`/api/invite-code/${inviteCode.trim().toUpperCase()}/resolve`)
+      setResolvedOrg(data)
+      setStep(STEP.JOIN_CREDENTIALS)
+    } catch (err) {
+      setCodeError(handleErrorMessage(err.message === 'Not Found' ? 'INVITE_CODE_INVALID' : err.message))
+    } finally {
+      setCodeChecking(false)
+    }
+  }
+
+  async function submitJoin(e) {
+    e.preventDefault()
+    setError(null)
+    setBusy(true)
+    try {
+      const body = {
+        email,
+        password,
+        role:        resolvedOrg.org_type,
+        invite_code: inviteCode.trim().toUpperCase(),
+      }
+      const data = await apiFetch('/api/auth/signup', { method: 'POST', body: JSON.stringify(body) })
+      setSuccessData({
+        emailConfirmRequired: data.email_confirmation_required,
+        pending: true,
+        org_name: data.org_name,
+      })
+      setStep(STEP.SUCCESS)
+    } catch (err) {
+      setError(handleErrorMessage(err.message))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  // ── Shared UI helpers ────────────────────────────────────────────────────────
+
+  const inputCls = 'bg-surface-2 border border-border rounded-lg px-3 py-2 text-foreground text-sm outline-none focus:border-accent'
+  const btnPrimary = 'px-4 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:bg-accent-hover transition-colors cursor-pointer disabled:opacity-50'
+  const btnBack = 'text-muted hover:text-foreground cursor-pointer text-sm'
 
   return (
     <div
@@ -79,11 +135,39 @@ export default function SignupModal({ onClose }) {
     >
       <div className="bg-surface border border-border rounded-xl p-8 w-full max-w-sm flex flex-col gap-5">
 
-        {/* Step 1 — Role */}
+        {/* CHOICE — create vs join */}
+        {step === STEP.CHOICE && (
+          <>
+            <h2 className="text-foreground text-lg font-semibold">Get started</h2>
+            <div className="flex flex-col gap-3">
+              <button
+                onClick={() => setStep(STEP.ROLE)}
+                className="px-4 py-3 rounded-lg border border-border text-left text-foreground text-sm hover:border-accent hover:bg-surface-2 transition-colors cursor-pointer"
+              >
+                <div className="font-medium">Create a new organisation</div>
+                <div className="text-muted text-xs mt-0.5">Set up a new studio or vendor account</div>
+              </button>
+              <button
+                onClick={() => setStep(STEP.JOIN_CODE)}
+                className="px-4 py-3 rounded-lg border border-border text-left text-foreground text-sm hover:border-accent hover:bg-surface-2 transition-colors cursor-pointer"
+              >
+                <div className="font-medium">Join with an invite code</div>
+                <div className="text-muted text-xs mt-0.5">Request access to an existing organisation</div>
+              </button>
+            </div>
+            <button onClick={onClose} className="text-muted text-xs text-center hover:text-foreground cursor-pointer">
+              Cancel
+            </button>
+          </>
+        )}
+
+        {/* ROLE — studio vs vendor (create path) */}
         {step === STEP.ROLE && (
           <>
-            <h2 className="text-foreground text-lg font-semibold">Create account</h2>
-            <p className="text-muted text-sm">What best describes you?</p>
+            <div className="flex items-center gap-2">
+              <button onClick={() => setStep(STEP.CHOICE)} className={btnBack}>←</button>
+              <h2 className="text-foreground text-lg font-semibold">What best describes you?</h2>
+            </div>
             <div className="flex flex-col gap-3">
               {['studio', 'vendor'].map(r => (
                 <button
@@ -95,136 +179,147 @@ export default function SignupModal({ onClose }) {
                 </button>
               ))}
             </div>
-            <button onClick={onClose} className="text-muted text-xs text-center hover:text-foreground cursor-pointer">
-              Cancel
-            </button>
           </>
         )}
 
-        {/* Step 2 — Org name + credentials */}
+        {/* CREDENTIALS — org name + email + password (create path) */}
         {step === STEP.CREDENTIALS && (
           <form onSubmit={advanceFromCredentials} className="flex flex-col gap-4">
             <div className="flex items-center gap-2">
-              <button type="button" onClick={() => setStep(STEP.ROLE)} className="text-muted hover:text-foreground cursor-pointer text-sm">←</button>
+              <button type="button" onClick={() => setStep(STEP.ROLE)} className={btnBack}>←</button>
               <h2 className="text-foreground text-lg font-semibold">Create account</h2>
               <span className="ml-auto text-xs px-2 py-0.5 rounded-full bg-surface-2 text-muted capitalize">{role}</span>
             </div>
-
             <div className="flex flex-col gap-1">
-              <label className="text-muted text-xs">{orgLabel}</label>
-              <input
-                type="text"
-                value={orgName}
-                onChange={e => setOrgName(e.target.value)}
-                required
-                autoFocus
-                placeholder={role === 'studio' ? 'Acme Studio' : 'Acme VFX'}
-                className="bg-surface-2 border border-border rounded-lg px-3 py-2 text-foreground text-sm outline-none focus:border-accent"
-              />
+              <label className="text-muted text-xs">{role === 'studio' ? 'Studio name' : 'Vendor / company name'}</label>
+              <input type="text" value={orgName} onChange={e => setOrgName(e.target.value)}
+                required autoFocus placeholder={role === 'studio' ? 'Acme Studio' : 'Acme VFX'}
+                className={inputCls} />
             </div>
-
             <div className="flex flex-col gap-1">
               <label className="text-muted text-xs">Email</label>
-              <input
-                type="text"
-                inputMode="email"
-                autoComplete="email"
-                value={email}
-                onChange={e => setEmail(e.target.value)}
-                required
-                className="bg-surface-2 border border-border rounded-lg px-3 py-2 text-foreground text-sm outline-none focus:border-accent"
-              />
+              <input type="text" inputMode="email" autoComplete="email" value={email}
+                onChange={e => setEmail(e.target.value)} required className={inputCls} />
             </div>
-
             <div className="flex flex-col gap-1">
               <label className="text-muted text-xs">Password</label>
-              <input
-                type="password"
-                value={password}
-                onChange={e => setPassword(e.target.value)}
-                required
-                minLength={8}
-                className="bg-surface-2 border border-border rounded-lg px-3 py-2 text-foreground text-sm outline-none focus:border-accent"
-              />
+              <input type="password" value={password} onChange={e => setPassword(e.target.value)}
+                required minLength={8} className={inputCls} />
             </div>
-
             {error && <p className="text-error text-xs">{error}</p>}
-
-            <button
-              type="submit"
-              disabled={busy || !orgName.trim()}
-              className="px-4 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:bg-accent-hover transition-colors cursor-pointer disabled:opacity-50"
-            >
+            <button type="submit" disabled={busy || !orgName.trim()} className={btnPrimary}>
               {role === 'vendor' ? 'Next →' : (busy ? 'Creating…' : 'Create account')}
             </button>
           </form>
         )}
 
-        {/* Step 3 — Handle (vendor only) */}
+        {/* HANDLE — vendor only (create path) */}
         {step === STEP.HANDLE && (
-          <form onSubmit={submitSignup} className="flex flex-col gap-4">
+          <form onSubmit={submitCreate} className="flex flex-col gap-4">
             <div className="flex items-center gap-2">
-              <button type="button" onClick={() => setStep(STEP.CREDENTIALS)} className="text-muted hover:text-foreground cursor-pointer text-sm">←</button>
+              <button type="button" onClick={() => setStep(STEP.CREDENTIALS)} className={btnBack}>←</button>
               <h2 className="text-foreground text-lg font-semibold">Choose a handle</h2>
             </div>
-
-            <p className="text-muted text-sm">
-              Studios use your handle to find and invite you. You can't change it later without contacting support.
-            </p>
-
+            <p className="text-muted text-sm">Studios use your handle to find and invite you.</p>
             <div className="flex flex-col gap-1">
               <label className="text-muted text-xs">Handle</label>
               <div className="flex items-center bg-surface-2 border border-border rounded-lg px-3 py-2 focus-within:border-accent">
                 <span className="text-muted text-sm select-none mr-0.5">@</span>
-                <input
-                  type="text"
-                  value={handle}
-                  onChange={e => {
-                    setHandle(e.target.value.toLowerCase())
-                    setHandleError(null)
-                  }}
-                  required
-                  autoFocus
-                  placeholder="acme-vfx"
-                  className="bg-transparent text-foreground text-sm outline-none flex-1 min-w-0"
-                />
+                <input type="text" value={handle}
+                  onChange={e => { setHandle(e.target.value.toLowerCase()); setHandleError(null) }}
+                  required autoFocus placeholder="acme-vfx"
+                  className="bg-transparent text-foreground text-sm outline-none flex-1 min-w-0" />
               </div>
               {handleError
                 ? <p className="text-error text-xs mt-0.5">{handleError}</p>
                 : <p className="text-muted text-xs mt-0.5">{HANDLE_HINT}</p>
               }
             </div>
-
-            <button
-              type="submit"
-              disabled={busy || !handle.trim()}
-              className="px-4 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:bg-accent-hover transition-colors cursor-pointer disabled:opacity-50"
-            >
+            <button type="submit" disabled={busy || !handle.trim()} className={btnPrimary}>
               {busy ? 'Creating…' : 'Create account'}
             </button>
           </form>
         )}
 
-        {/* Step 4 — Success */}
-        {step === STEP.SUCCESS && (
+        {/* JOIN_CODE — enter invite code (join path) */}
+        {step === STEP.JOIN_CODE && (
+          <form onSubmit={resolveCode} className="flex flex-col gap-4">
+            <div className="flex items-center gap-2">
+              <button type="button" onClick={() => setStep(STEP.CHOICE)} className={btnBack}>←</button>
+              <h2 className="text-foreground text-lg font-semibold">Enter invite code</h2>
+            </div>
+            <p className="text-muted text-sm">
+              Ask an admin at the organisation you're joining for their invite code.
+            </p>
+            <div className="flex flex-col gap-1">
+              <label className="text-muted text-xs">Invite code</label>
+              <input
+                type="text"
+                value={inviteCode}
+                onChange={e => { setInviteCode(e.target.value.toUpperCase()); setCodeError(null) }}
+                required autoFocus
+                placeholder="ABCD1234"
+                maxLength={8}
+                className={`${inputCls} tracking-widest font-mono uppercase`}
+              />
+              {codeError && <p className="text-error text-xs mt-0.5">{codeError}</p>}
+            </div>
+            <button type="submit" disabled={codeChecking || !inviteCode.trim()} className={btnPrimary}>
+              {codeChecking ? 'Checking…' : 'Continue →'}
+            </button>
+          </form>
+        )}
+
+        {/* JOIN_CREDENTIALS — email + password (join path) */}
+        {step === STEP.JOIN_CREDENTIALS && resolvedOrg && (
+          <form onSubmit={submitJoin} className="flex flex-col gap-4">
+            <div className="flex items-center gap-2">
+              <button type="button" onClick={() => setStep(STEP.JOIN_CODE)} className={btnBack}>←</button>
+              <h2 className="text-foreground text-lg font-semibold">Create account</h2>
+            </div>
+            <div className="px-3 py-2 rounded-lg bg-surface-2 border border-border">
+              <p className="text-xs text-muted">Requesting access to</p>
+              <p className="text-sm text-foreground font-medium">{resolvedOrg.org_name}</p>
+              <p className="text-xs text-muted capitalize">{resolvedOrg.org_type}</p>
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-muted text-xs">Email</label>
+              <input type="text" inputMode="email" autoComplete="email" value={email}
+                onChange={e => setEmail(e.target.value)} required autoFocus className={inputCls} />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-muted text-xs">Password</label>
+              <input type="password" value={password} onChange={e => setPassword(e.target.value)}
+                required minLength={8} className={inputCls} />
+            </div>
+            {error && <p className="text-error text-xs">{error}</p>}
+            <button type="submit" disabled={busy} className={btnPrimary}>
+              {busy ? 'Submitting…' : 'Request access'}
+            </button>
+          </form>
+        )}
+
+        {/* SUCCESS */}
+        {step === STEP.SUCCESS && successData && (
           <>
             <h2 className="text-foreground text-lg font-semibold">
-              {emailConfirmRequired ? 'Check your email' : 'Account created'}
+              {successData.emailConfirmRequired ? 'Check your email' : (successData.pending ? 'Request sent' : 'Account created')}
             </h2>
             <p className="text-muted text-sm">
-              {emailConfirmRequired
-                ? <>We sent a confirmation link to <span className="text-foreground">{email}</span>. Click the link to activate your account, then come back to sign in.</>
-                : <>Your account is ready. Sign in with <span className="text-foreground">{email}</span> to get started.</>
-              }
+              {successData.emailConfirmRequired ? (
+                <>We sent a confirmation link to <span className="text-foreground">{email}</span>. Click it to activate your account, then sign in.</>
+              ) : successData.pending ? (
+                <>Your request to join <span className="text-foreground">{successData.org_name}</span> is pending admin approval. Sign in after you're approved.</>
+              ) : (
+                <>Your account is ready. Sign in with <span className="text-foreground">{email}</span>.</>
+              )}
             </p>
-            <button
-              onClick={onClose}
-              className="px-4 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:bg-accent-hover transition-colors cursor-pointer"
-            >
-              {emailConfirmRequired ? 'Back to sign in' : 'Sign in now'}
+            <button onClick={onClose} className={btnPrimary}>
+              {successData.emailConfirmRequired || successData.pending ? 'Back to sign in' : 'Sign in now'}
             </button>
           </>
         )}
+
       </div>
     </div>
   )
