@@ -653,6 +653,10 @@ async def _run_sync_locked(
                 # field. Fall back to it when no explicit rel is stored in the entity def.
                 product_rel_field_id = asset_def.get("rel_field_id") or "parent"
 
+            _work_link_field = (
+                work_def.get("rel_field_name") if work_def and work_def.get("rel_direction") == "parent_holds_link" else None
+            )
+
             norm_assets = [
                 normalize_asset(
                     r, mappings,
@@ -661,6 +665,7 @@ async def _run_sync_locked(
                     adapter=field_adapter,
                     product_rel_field_id=product_rel_field_id,
                     suppressed_names=excluded_field_ids or None,
+                    work_link_field_id=_work_link_field,
                 )
                 for r in raw_assets
             ]
@@ -747,27 +752,22 @@ async def _run_sync_locked(
 
                 # On delta sync raw_assets is incomplete — supplement from the DB
                 # so work items linked to unchanged assets also get resolved.
+                # Reads work_link_ids (text[]) instead of full meta JSONB.
                 if is_delta:
                     _rows = await drain_pages(
                         _url("/rest/v1/replicated_assets"),
                         {
                             "owner_type": f"eq.{owner_type}",
                             "owner_id":   f"eq.{owner_id}",
-                            "select":     "source_record_id,canonical_asset_id,meta",
+                            "select":     "source_record_id,canonical_asset_id,work_link_ids",
                         },
                     )
                     for row in _rows:
                         cid = row.get("canonical_asset_id")
                         if not cid:
                             continue
-                        meta = row.get("meta") or {}
-                        lv = meta.get(work_rel_field)
-                        if isinstance(lv, list):
-                            for wid in lv:
-                                if isinstance(wid, str) and wid:
-                                    work_to_canonical.setdefault(wid, cid)
-                        elif isinstance(lv, str) and lv:
-                            work_to_canonical.setdefault(lv, cid)
+                        for wid in (row.get("work_link_ids") or []):
+                            work_to_canonical.setdefault(wid, cid)
 
             elif work_direction != "parent_holds_link" and raw_work and work_rel_field and is_delta:
                 # child_holds_link + delta sync: canonical_map only covers changed
