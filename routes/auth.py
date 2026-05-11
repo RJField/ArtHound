@@ -5,6 +5,8 @@ Public auth routes — no JWT required.
 import logging
 import os
 import re
+import secrets
+import string
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
@@ -21,6 +23,10 @@ _AUTO_CONFIRM = os.environ.get("SIGNUP_AUTO_CONFIRM", "false").lower() == "true"
 
 
 _HANDLE_RE = re.compile(r'^[a-z0-9][a-z0-9_-]{2,31}$')
+_INVITE_ALPHABET = string.ascii_uppercase + string.digits
+
+def _generate_invite_code() -> str:
+    return ''.join(secrets.choice(_INVITE_ALPHABET) for _ in range(8))
 
 
 class SignupBody(BaseModel):
@@ -86,7 +92,7 @@ async def _signup_create(body: SignupBody) -> dict:
 
     # ── 2. Create org row ─────────────────────────────────────────────────────
     org_table = "studios" if body.role == "studio" else "vendors"
-    org_payload: dict = {"name": body.org_name.strip()}
+    org_payload: dict = {"name": body.org_name.strip(), "invite_code": _generate_invite_code()}
     if body.role == "vendor" and body.handle:
         org_payload["handle"] = body.handle
 
