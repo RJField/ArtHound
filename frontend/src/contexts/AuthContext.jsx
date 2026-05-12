@@ -104,16 +104,17 @@ export function AuthProvider({ children }) {
     }
   }
 
-  const role        = session?.user?.app_metadata?.role ?? null
+  const role            = session?.user?.app_metadata?.role ?? null
   // isAdmin derives from member_role in the profile (set by the DB), not from JWT metadata.
-  const isAdmin     = profile?.member_role === 'owner' || profile?.member_role === 'admin'
-  const loading     = session === undefined
-  const initialized = profile?.org?.initialized_at != null
+  const isAdmin         = profile?.member_role === 'owner' || profile?.member_role === 'admin'
+  const isPlatformAdmin = profile?.is_platform_admin === true
+  const loading         = session === undefined
+  const initialized     = profile?.org?.initialized_at != null
 
   return (
     <AuthContext.Provider value={{
       session, profile, pendingOrg, profileLoading, profileError,
-      role, isAdmin, loading, initialized,
+      role, isAdmin, isPlatformAdmin, loading, initialized,
       signOut, refreshProfile,
     }}>
       {children}

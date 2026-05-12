@@ -18,6 +18,7 @@ import StudioConnections from './pages/StudioConnections'
 import AuthCallback from './pages/AuthCallback'
 import PendingApproval from './pages/PendingApproval'
 import OrgHub from './pages/OrgHub'
+import AdminPanel from './pages/AdminPanel'
 
 function AuthGuard() {
   const { session, loading } = useAuth()
@@ -103,6 +104,8 @@ export default function App() {
               <Route path="/pending" element={<PendingApproval />} />
               {/* Init wizard — shown to studio users before first sync */}
               <Route path="/init" element={<ProjectInit />} />
+              {/* Platform admin settings — not gated behind InitGuard */}
+              <Route path="/admin" element={<AdminPanel />} />
               {/* App routes — gated behind InitGuard for studio users */}
               <Route element={<InitGuard />}>
                 <Route index element={<RoleRedirect />} />

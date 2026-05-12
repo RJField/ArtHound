@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { NavLink } from 'react-router-dom'
+import { NavLink, useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { apiFetch } from '../lib/api'
 import UserModal from './UserModal'
@@ -25,7 +25,8 @@ const VENDOR_NAV = [
 ]
 
 export default function Topbar() {
-  const { role, isAdmin, signOut } = useAuth()
+  const { role, isAdmin, isPlatformAdmin, signOut } = useAuth()
+  const navigate = useNavigate()
   const [userOpen, setUserOpen]           = useState(false)
   const [settingsOpen, setSettingsOpen]   = useState(false)
   const [syntheticOpen, setSyntheticOpen] = useState(false)
@@ -114,6 +115,14 @@ export default function Topbar() {
               className="px-3 py-1.5 rounded-md text-xs text-muted hover:text-foreground hover:bg-surface-2 transition-colors cursor-pointer"
             >
               Synthetic Data
+            </button>
+          )}
+          {isPlatformAdmin && (
+            <button
+              onClick={() => navigate('/admin')}
+              className="px-3 py-1.5 rounded-md text-xs text-muted hover:text-foreground hover:bg-surface-2 transition-colors cursor-pointer"
+            >
+              Platform Admin
             </button>
           )}
           <button
