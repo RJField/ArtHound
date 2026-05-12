@@ -17,6 +17,52 @@ from lib.db import db_client, _url, _headers
 log = logging.getLogger(__name__)
 router = APIRouter()
 
+
+# ── System settings helpers ──────────────────────────────────────────────────
+
+async def _get_system_settings() -> dict:
+    """Fetch the system_settings singleton. Returns defaults on any failure."""
+    r = await db_client.get(
+        _url("/rest/v1/system_settings"),
+        params={
+            "id":     "eq.true",
+            "select": "registration_invite_required,registration_invite_code",
+        },
+        headers=_headers(),
+    )
+    if r.is_success and r.json():
+        return r.json()[0]
+    return {"registration_invite_required": False, "registration_invite_code": None}
+
+
+async def _check_system_invite(code: Optional[str]) -> None:
+    """Raise 422 SYSTEM_INVITE_INVALID if the platform gate is active and code is wrong."""
+    settings = await _get_system_settings()
+    if not settings.get("registration_invite_required"):
+        return
+    stored = (settings.get("registration_invite_code") or "").strip()
+    if not stored:
+        return  # gate is on but no code is configured — allow through
+    if not code or code.strip().upper() != stored.upper():
+        raise HTTPException(status_code=422, detail="SYSTEM_INVITE_INVALID")
+
+
+@router.get("/config")
+async def get_auth_config():
+    """Public — returns whether a system-level invite code is required to register."""
+    settings = await _get_system_settings()
+    return {"registration_invite_required": settings.get("registration_invite_required", False)}
+
+
+@router.get("/system-invite/{code}/validate")
+async def validate_system_invite(code: str):
+    """
+    Public — validates a system-level invite code without completing signup.
+    Returns 200 {valid: true} or raises 422 SYSTEM_INVITE_INVALID.
+    """
+    await _check_system_invite(code)
+    return {"valid": True}
+
 # Set SIGNUP_AUTO_CONFIRM=true in dev to skip email confirmation.
 # Defaults to false (require confirmation) for safe production behaviour.
 _AUTO_CONFIRM = os.environ.get("SIGNUP_AUTO_CONFIRM", "false").lower() == "true"
@@ -30,12 +76,13 @@ def _generate_invite_code() -> str:
 
 
 class SignupBody(BaseModel):
-    email:       str
-    password:    str
-    role:        str              # "studio" | "vendor"
-    org_name:    Optional[str] = None   # required when creating a new org
-    handle:      Optional[str] = None   # vendor only, new org path
-    invite_code: Optional[str] = None   # present when joining an existing org
+    email:              str
+    password:           str
+    role:               str              # "studio" | "vendor"
+    org_name:           Optional[str] = None   # required when creating a new org
+    handle:             Optional[str] = None   # vendor only, new org path
+    invite_code:        Optional[str] = None   # present when joining an existing org
+    system_invite_code: Optional[str] = None   # ArtHound-level gate (when enabled)
 
 
 @router.post("/signup")
@@ -49,11 +96,16 @@ async def signup(body: SignupBody):
     2. Join existing org (invite_code present):
        Resolve org by invite code → create auth user → insert pending join request.
        The user must be accepted by an org admin before they can access the app.
+
+    If the platform registration gate is enabled, system_invite_code must match
+    the configured code or the request is rejected before any auth user is created.
     """
     if body.role not in ("studio", "vendor"):
         raise HTTPException(status_code=422, detail="role must be 'studio' or 'vendor'")
     if len(body.password) < 8:
         raise HTTPException(status_code=422, detail="Password must be at least 8 characters")
+
+    await _check_system_invite(body.system_invite_code)
 
     if body.invite_code:
         return await _signup_join(body)

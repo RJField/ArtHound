@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import re
 from datetime import datetime, timezone
 from typing import Optional
@@ -9,6 +10,12 @@ from pydantic import BaseModel
 
 from lib.auth import CurrentUser, PendingUser, get_current_user, get_current_user_or_pending
 from lib.db import db_client, _url, _headers
+
+_PLATFORM_ADMIN_EMAILS: set[str] = {
+    e.strip().lower()
+    for e in os.environ.get("PLATFORM_ADMIN_EMAILS", "").split(",")
+    if e.strip()
+}
 
 _HANDLE_RE = re.compile(r'^[a-z0-9][a-z0-9_-]{2,31}$')
 
@@ -61,11 +68,12 @@ async def get_me(user=Depends(get_current_user_or_pending)):
             org = rows[0]
 
     return {
-        "id":          user.id,
-        "email":       user.email,
-        "role":        user.role,
-        "member_role": user.member_role,
-        "org":         org,
+        "id":                user.id,
+        "email":             user.email,
+        "role":              user.role,
+        "member_role":       user.member_role,
+        "org":               org,
+        "is_platform_admin": user.email.lower() in _PLATFORM_ADMIN_EMAILS,
     }
 
 
