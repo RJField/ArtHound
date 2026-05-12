@@ -1,5 +1,7 @@
 # Studio↔Vendor Handshake
 
+_Last updated: 2026-05-11_
+
 The handshake system governs how studios and vendors establish, maintain, and terminate relationships inside ArtHound. It is the prerequisite gate for all payload dispatch — a studio cannot send an asset payload to a vendor until an active link exists between them.
 
 ---
@@ -255,4 +257,4 @@ Two-step flow:
 
 **Audit trail is append-only.** Cancelled invites and links are never deleted — only status-updated. The `link_cancellation_audit` and `link_cancellation_dispatches` tables provide a full record of what was revoked and when.
 
-**Review collaboration mode is set at invite time.** It's stored on the invite and copied to the link. Currently only `none` (simple delivery) is live — `isolated` and `collaborative` are stubbed in the schema and UI for a future review-sharing feature.
+**Review collaboration mode is set at invite time.** It's stored on the invite and copied to the link. Currently only `none` (simple delivery) is live — `isolated` and `collaborative` are stubbed in the schema and UI. Cross-org review visibility (studios sharing reviews with vendors, joint review threads) is a known open gap tracked separately; see [Reviews — Known Gaps](reviews.md#known-gaps).
