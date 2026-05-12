@@ -40,6 +40,7 @@ from routes.attachments import router as attachments_router
 from routes.lorebot import router as lorebot_router
 from routes.handshake import router as handshake_router
 from routes.members import router as members_router
+from routes.admin import router as admin_router
 
 log = logging.getLogger(__name__)
 
@@ -317,6 +318,7 @@ app.include_router(handshake_router,      prefix="/api/handshake",   dependencie
 # GET /api/invite-code/{code}/resolve is public (rate-limited);
 # all other /api/org/* routes carry explicit Depends(get_current_user).
 app.include_router(members_router,        prefix="/api")
+app.include_router(admin_router,          prefix="/api/admin")
 
 
 _REPLICATED_TABLE: dict[str, str] = {

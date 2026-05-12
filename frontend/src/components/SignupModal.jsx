@@ -1,28 +1,35 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { apiFetch } from '../lib/api'
 
 const STEP = {
-  CHOICE:          0,  // create new org vs join existing
-  ROLE:            1,  // studio or vendor (create path)
-  CREDENTIALS:     2,  // org name + email + password (create path)
-  HANDLE:          3,  // vendor handle (create path)
-  JOIN_CODE:       4,  // invite code entry + live validation (join path)
+  SYSTEM_INVITE:   -1, // ArtHound-level gate (shown only when required)
+  CHOICE:           0, // create new org vs join existing
+  ROLE:             1, // studio or vendor (create path)
+  CREDENTIALS:      2, // org name + email + password (create path)
+  HANDLE:           3, // vendor handle (create path)
+  JOIN_CODE:        4, // invite code entry + live validation (join path)
   JOIN_CREDENTIALS: 5, // email + password (join path)
-  SUCCESS:         6,
+  SUCCESS:          6,
 }
 
 const HANDLE_RE = /^[a-z0-9][a-z0-9_-]{2,31}$/
 const HANDLE_HINT = 'Lowercase letters, numbers, hyphens and underscores only. 3–32 characters.'
 
 function handleErrorMessage(detail) {
-  if (detail === 'HANDLE_TAKEN')        return 'That handle is already taken — try a different one.'
-  if (detail === 'HANDLE_INVALID')      return HANDLE_HINT
-  if (detail === 'INVITE_CODE_INVALID') return 'Invite code not found. Check the code and try again.'
-  if (detail === 'ROLE_ORG_MISMATCH')   return 'This invite code is for a different account type.'
+  if (detail === 'HANDLE_TAKEN')          return 'That handle is already taken — try a different one.'
+  if (detail === 'HANDLE_INVALID')        return HANDLE_HINT
+  if (detail === 'INVITE_CODE_INVALID')   return 'Invite code not found. Check the code and try again.'
+  if (detail === 'ROLE_ORG_MISMATCH')     return 'This invite code is for a different account type.'
+  if (detail === 'SYSTEM_INVITE_INVALID') return 'Invalid access code. Contact ArtHound to get one.'
   return detail
 }
 
 export default function SignupModal({ onClose }) {
+  // System invite gate state
+  const [systemInviteCode, setSystemInviteCode]       = useState('')
+  const [systemInviteError, setSystemInviteError]     = useState(null)
+  const [systemInviteChecking, setSystemInviteChecking] = useState(false)
+
   // Create path state
   const [role, setRole]         = useState(null)
   const [orgName, setOrgName]   = useState('')
@@ -43,6 +50,32 @@ export default function SignupModal({ onClose }) {
   const [busy, setBusy]         = useState(false)
   const [successData, setSuccessData] = useState(null) // {emailConfirmRequired, pending, org_name}
 
+  // Check whether the platform-level gate is enabled and set the initial step.
+  useEffect(() => {
+    apiFetch('/api/auth/config')
+      .then(data => {
+        if (data.registration_invite_required) setStep(STEP.SYSTEM_INVITE)
+      })
+      .catch(() => {}) // fail open — if we can't reach the config, show the normal flow
+  }, [])
+
+  // ── System invite gate ──────────────────────────────────────────────────────
+
+  async function validateSystemInvite(e) {
+    e.preventDefault()
+    if (!systemInviteCode.trim()) return
+    setSystemInviteError(null)
+    setSystemInviteChecking(true)
+    try {
+      await apiFetch(`/api/auth/system-invite/${systemInviteCode.trim().toUpperCase()}/validate`)
+      setStep(STEP.CHOICE)
+    } catch (err) {
+      setSystemInviteError(handleErrorMessage(err.message === 'Not Found' ? 'SYSTEM_INVITE_INVALID' : err.message))
+    } finally {
+      setSystemInviteChecking(false)
+    }
+  }
+
   // ── Create path ─────────────────────────────────────────────────────────────
 
   function advanceFromCredentials(e) {
@@ -62,6 +95,7 @@ export default function SignupModal({ onClose }) {
     try {
       const body = { email, password, role, org_name: orgName }
       if (role === 'vendor') body.handle = handle
+      if (systemInviteCode.trim()) body.system_invite_code = systemInviteCode.trim().toUpperCase()
       const data = await apiFetch('/api/auth/signup', { method: 'POST', body: JSON.stringify(body) })
       setSuccessData({ emailConfirmRequired: data.email_confirmation_required, pending: false })
       setStep(STEP.SUCCESS)
@@ -108,6 +142,7 @@ export default function SignupModal({ onClose }) {
         role:        resolvedOrg.org_type,
         invite_code: inviteCode.trim().toUpperCase(),
       }
+      if (systemInviteCode.trim()) body.system_invite_code = systemInviteCode.trim().toUpperCase()
       const data = await apiFetch('/api/auth/signup', { method: 'POST', body: JSON.stringify(body) })
       setSuccessData({
         emailConfirmRequired: data.email_confirmation_required,
@@ -134,6 +169,35 @@ export default function SignupModal({ onClose }) {
       onClick={e => e.target === e.currentTarget && onClose()}
     >
       <div className="bg-surface border border-border rounded-xl p-8 w-full max-w-sm flex flex-col gap-5">
+
+        {/* SYSTEM_INVITE — platform-level access gate */}
+        {step === STEP.SYSTEM_INVITE && (
+          <form onSubmit={validateSystemInvite} className="flex flex-col gap-4">
+            <h2 className="text-foreground text-lg font-semibold">Access code required</h2>
+            <p className="text-muted text-sm">
+              ArtHound is currently invite-only. Enter your access code to continue.
+            </p>
+            <div className="flex flex-col gap-1">
+              <label className="text-muted text-xs">Access code</label>
+              <input
+                type="text"
+                value={systemInviteCode}
+                onChange={e => { setSystemInviteCode(e.target.value.toUpperCase()); setSystemInviteError(null) }}
+                required
+                autoFocus
+                placeholder="XXXXXXXX"
+                className={`${inputCls} tracking-widest font-mono uppercase`}
+              />
+              {systemInviteError && <p className="text-error text-xs mt-0.5">{systemInviteError}</p>}
+            </div>
+            <button type="submit" disabled={systemInviteChecking || !systemInviteCode.trim()} className={btnPrimary}>
+              {systemInviteChecking ? 'Checking…' : 'Continue →'}
+            </button>
+            <button type="button" onClick={onClose} className="text-muted text-xs text-center hover:text-foreground cursor-pointer">
+              Cancel
+            </button>
+          </form>
+        )}
 
         {/* CHOICE — create vs join */}
         {step === STEP.CHOICE && (
