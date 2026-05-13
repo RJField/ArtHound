@@ -41,6 +41,7 @@ from routes.lorebot import router as lorebot_router
 from routes.handshake import router as handshake_router
 from routes.members import router as members_router
 from routes.admin import router as admin_router
+from routes.scenario import router as scenario_router
 
 log = logging.getLogger(__name__)
 
@@ -163,6 +164,98 @@ async def _sync_log_trim_loop() -> None:
         await asyncio.sleep(interval_secs)
 
 
+async def _scenario_generation_loop() -> None:
+    """
+    Picks up scenario sessions in pending_generation state and runs two-pass
+    Sonnet generation. Runs every 30s — independent of the sync poll interval.
+    Uses a durable DB status rather than BackgroundTasks so generation survives
+    worker restarts and proxy timeouts.
+    """
+    from lib.scenario.generator import run_generation
+    log.info("Scenario generation loop started — interval: 30s")
+    while True:
+        await asyncio.sleep(30)
+        try:
+            r = await db_client.get(
+                _url("/rest/v1/scenario_sessions"),
+                params={
+                    "ai_stage": "eq.pending_generation",
+                    "status":   "eq.active",
+                    "select":   "id,studio_id,scope_json",
+                },
+                headers=_headers(),
+            )
+            if not r.is_success:
+                log.warning("Scenario generation loop — failed to fetch sessions: %s", r.text)
+                continue
+            sessions = r.json()
+            for session in sessions:
+                sid = session["id"]
+                log.info("Scenario generation loop — picking up session %s", sid)
+                # Mark as generating so the loop won't double-pick it.
+                await db_client.patch(
+                    _url("/rest/v1/scenario_sessions"),
+                    params={"id": f"eq.{sid}"},
+                    json={"ai_stage": "generating"},
+                    headers=_headers({"Prefer": "return=minimal"}),
+                )
+                asyncio.create_task(_run_generation_task(
+                    session_id=sid,
+                    studio_id=session["studio_id"],
+                    scope=session.get("scope_json") or {},
+                    run_generation=run_generation,
+                ))
+        except Exception as exc:
+            log.warning("Scenario generation loop error: %s", exc)
+
+
+async def _run_generation_task(session_id: str, studio_id: str, scope: dict, run_generation) -> None:
+    try:
+        await run_generation(session_id, studio_id, scope)
+        await db_client.patch(
+            _url("/rest/v1/scenario_sessions"),
+            params={"id": f"eq.{session_id}"},
+            json={"ai_stage": "discussion"},
+            headers=_headers({"Prefer": "return=minimal"}),
+        )
+        log.info("Scenario %s — generation complete, stage → discussion", session_id)
+    except Exception as exc:
+        log.error("Scenario %s — generation failed: %s", session_id, exc)
+        await db_client.patch(
+            _url("/rest/v1/scenario_sessions"),
+            params={"id": f"eq.{session_id}"},
+            json={"ai_stage": "generation_failed"},
+            headers=_headers({"Prefer": "return=minimal"}),
+        )
+
+
+async def _scenario_cleanup_loop() -> None:
+    """
+    Nightly deletion of expired scenario sessions. FKs cascade to all child tables.
+    Disabled when SCENARIO_CLEANUP_INTERVAL_HOURS is set to 0.
+    """
+    interval_hours = float(os.environ.get("SCENARIO_CLEANUP_INTERVAL_HOURS", "24"))
+    if not interval_hours:
+        return
+    interval_secs = interval_hours * 3600
+    log.info("Scenario cleanup loop started — interval: %.1fh", interval_hours)
+    await asyncio.sleep(interval_secs)
+    while True:
+        try:
+            r = await db_client.delete(
+                _url("/rest/v1/scenario_sessions"),
+                params={"expires_at": "lt.now()"},
+                headers=_headers({"Prefer": "return=minimal"}),
+            )
+            if r.is_success:
+                log.info("Scenario cleanup: expired sessions deleted")
+            else:
+                log.warning("Scenario cleanup failed: %s", r.text)
+        except Exception as exc:
+            log.warning("Scenario cleanup error: %s", exc)
+        await asyncio.sleep(interval_secs)
+
+
 async def _schema_drift_loop() -> None:
     """
     Periodic schema drift detection. Compares live source schemas against stored
@@ -250,12 +343,27 @@ def _validate_env() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _validate_env()
+
+    # Reset any scenario sessions that were stuck mid-generation when the
+    # previous worker died. The generation loop will re-pick them up.
+    try:
+        await db_client.patch(
+            _url("/rest/v1/scenario_sessions"),
+            params={"ai_stage": "eq.generating"},
+            json={"ai_stage": "pending_generation"},
+            headers=_headers({"Prefer": "return=minimal"}),
+        )
+    except Exception as exc:
+        log.warning("Startup: failed to reset stuck scenario sessions: %s", exc)
+
     poll_task        = asyncio.create_task(_poll_loop())
     nightly_task     = asyncio.create_task(_nightly_full_sync_loop())
     drain_task       = asyncio.create_task(_attachment_drain_loop())
     purge_task       = asyncio.create_task(_attachment_purge_loop())
     drift_task       = asyncio.create_task(_schema_drift_loop())
     trim_task        = asyncio.create_task(_sync_log_trim_loop())
+    scenario_gen_task     = asyncio.create_task(_scenario_generation_loop())
+    scenario_cleanup_task = asyncio.create_task(_scenario_cleanup_loop())
     yield
     poll_task.cancel()
     nightly_task.cancel()
@@ -263,6 +371,8 @@ async def lifespan(app: FastAPI):
     purge_task.cancel()
     drift_task.cancel()
     trim_task.cancel()
+    scenario_gen_task.cancel()
+    scenario_cleanup_task.cancel()
     await db_client.aclose()
 
 
@@ -319,6 +429,7 @@ app.include_router(handshake_router,      prefix="/api/handshake",   dependencie
 # all other /api/org/* routes carry explicit Depends(get_current_user).
 app.include_router(members_router,        prefix="/api")
 app.include_router(admin_router,          prefix="/api/admin")
+app.include_router(scenario_router,       prefix="/api/scenario",    dependencies=_auth)
 
 
 _REPLICATED_TABLE: dict[str, str] = {
