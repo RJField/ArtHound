@@ -19,6 +19,7 @@ import AuthCallback from './pages/AuthCallback'
 import PendingApproval from './pages/PendingApproval'
 import OrgHub from './pages/OrgHub'
 import AdminPanel from './pages/AdminPanel'
+import ScenarioPlanner from './pages/ScenarioPlanner'
 
 function AuthGuard() {
   const { session, loading } = useAuth()
@@ -119,7 +120,8 @@ export default function App() {
                 <Route path="/inbox"       element={<VendorInbox />} />
                 <Route path="/vendors"     element={<VendorConnections />} />
                 <Route path="/studios"     element={<StudioConnections />} />
-                <Route path="/org"         element={<OrgHub />} />
+                <Route path="/org"               element={<OrgHub />} />
+                <Route path="/scenario-planner" element={<ScenarioPlanner />} />
               </Route>
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />

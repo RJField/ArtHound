@@ -8,12 +8,13 @@ import SyntheticDataModal from './SyntheticDataModal'
 import { cn } from '../lib/utils'
 
 const STUDIO_NAV = [
-  { label: 'Home',    to: '/home' },
-  { label: 'Assets',  to: '/assets' },
-  { label: 'Shares',  to: '/shares' },
-  { label: 'Reviews', to: '/reviews' },
-  { label: 'Vendors', to: '/vendors' },
-  { label: 'Org',     to: '/org' },
+  { label: 'Home',     to: '/home' },
+  { label: 'Assets',   to: '/assets' },
+  { label: 'Shares',   to: '/shares' },
+  { label: 'Reviews',  to: '/reviews' },
+  { label: 'Vendors',  to: '/vendors' },
+  { label: 'Org',      to: '/org' },
+  { label: 'Scenario', to: '/scenario-planner' },
 ]
 
 const VENDOR_NAV = [
