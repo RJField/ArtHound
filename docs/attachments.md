@@ -1,5 +1,7 @@
 # Attachment Architecture
 
+_Last updated: 2026-05-11_
+
 ArtHound surfaces attachments (images, video, PDFs, documents) from source tools inline in the UI — viewable in-browser, not just downloadable. The system is designed around two principles:
 
 1. **User-intent-driven copying.** No proactive crawling. A file is copied to ArtHound's storage only when a user explicitly triggers it — either by dispatching an asset to a vendor, or by opening an attachment in the Asset Viewer.
