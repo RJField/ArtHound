@@ -168,6 +168,7 @@ class CreateMatrixBody(BaseModel):
     variables: List[VariableFieldItem]
     combinations: List[dict]
     clearExisting: bool = False
+    prefillFromDefault: bool = False
 
 
 @router.post("/create-matrix-pg")
@@ -203,17 +204,33 @@ async def create_matrix_pg(
     )
     workflow_steps = r_steps.json()
 
+    # Fetch existing defaults per step if prefill is requested
+    default_by_step: dict = {}
+    if body.prefillFromDefault:
+        r_defaults = await db_client.get(
+            _url("/rest/v1/estimate_matrix"),
+            params={
+                "studio_id": f"eq.{studio_id}",
+                "variable_values": "eq.{}",
+                "select": "workflow_step_id,estimate_days",
+            },
+            headers=_headers(),
+        )
+        for row in r_defaults.json():
+            default_by_step[row["workflow_step_id"]] = row["estimate_days"]
+
     active_combos = body.combinations
     matrix_rows = []
     for step in workflow_steps:
         step_id = step["id"]
+        seed = default_by_step.get(step_id, 0) if body.prefillFromDefault else 0
         for combo in active_combos:
             variable_values = {f: combo["values"].get(f, {}).get("name", "") for f in variable_fields}
             matrix_rows.append({
                 "studio_id": studio_id,
                 "workflow_step_id": step_id,
                 "variable_values": variable_values,
-                "estimate_days": 0,
+                "estimate_days": seed,
             })
 
     if matrix_rows:

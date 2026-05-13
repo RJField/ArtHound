@@ -504,6 +504,21 @@ function Step4({ wiz, setWiz }) {
           <span className="text-sm text-foreground">Clear existing matrix</span>
         </label>
       </div>
+      <div>
+        <p className="text-foreground text-sm font-medium mb-0.5">Prefill from Default</p>
+        <p className="text-muted text-xs mb-2">
+          If enabled, new combination rows will be seeded with each step's current Default column value instead of zero.
+        </p>
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={wiz.prefillFromDefault}
+            onChange={e => setWiz(w => ({ ...w, prefillFromDefault: e.target.checked }))}
+            className="accent-accent"
+          />
+          <span className="text-sm text-foreground">Prefill from Default</span>
+        </label>
+      </div>
     </div>
   )
 }
@@ -534,6 +549,7 @@ function Step5({ wiz, onCreated }) {
         variables,
         combinations: activeCombos,
         clearExisting: wiz.clearExisting,
+        prefillFromDefault: wiz.prefillFromDefault,
       }),
     })
       .then(data => { setResult(data); setStatus('success'); onCreated?.() })
@@ -591,6 +607,7 @@ export default function EstimateWizardModal({ onClose, onComplete }) {
     groupBy: '',
     result: null,
     clearExisting: false,
+    prefillFromDefault: false,
   })
 
   async function goNext() {
