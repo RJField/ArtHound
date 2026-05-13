@@ -113,7 +113,12 @@ async def run_generation(session_id: str, studio_id: str, scope: dict) -> None:
     log.info("Scenario %s — pass 2 stop_reason=%s content_blocks=%d input_tokens=%s output_tokens=%s",
              session_id, p2.stop_reason, len(p2.content),
              getattr(p2.usage, "input_tokens", "?"), getattr(p2.usage, "output_tokens", "?"))
-    p2_text = p2.content[0].text.strip() if p2.content else ""
+    p2_block = p2.content[0] if p2.content else None
+    p2_block_type = type(p2_block).__name__ if p2_block else "none"
+    p2_raw = getattr(p2_block, "text", None)
+    log.info("Scenario %s — pass 2 block_type=%s raw_len=%s raw_preview=%r",
+             session_id, p2_block_type, len(p2_raw) if p2_raw else 0, (p2_raw or "")[:120])
+    p2_text = (p2_raw or "").strip()
     if not p2_text or p2.stop_reason == "max_tokens":
         log.warning("Scenario %s — pass 2 empty/truncated (stop_reason=%s output_tokens=%s), retrying",
                     session_id, p2.stop_reason, getattr(p2.usage, "output_tokens", "?"))
@@ -121,9 +126,11 @@ async def run_generation(session_id: str, studio_id: str, scope: dict) -> None:
             model=_MODEL, max_tokens=4096, system=_PASS2_SYSTEM,
             messages=[{"role": "user", "content": p2_prompt}],
         )
-        p2_text = p2.content[0].text.strip() if p2.content else ""
-        log.info("Scenario %s — pass 2 retry stop_reason=%s output_tokens=%s",
-                 session_id, p2.stop_reason, getattr(p2.usage, "output_tokens", "?"))
+        p2_block = p2.content[0] if p2.content else None
+        p2_raw = getattr(p2_block, "text", None)
+        p2_text = (p2_raw or "").strip()
+        log.info("Scenario %s — pass 2 retry stop_reason=%s raw_len=%s raw_preview=%r",
+                 session_id, p2.stop_reason, len(p2_raw) if p2_raw else 0, (p2_raw or "")[:120])
     p2_data = _parse_json(p2_text, "pass 2")
     templates = p2_data.get("templates", [])
 
