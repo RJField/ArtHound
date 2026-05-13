@@ -68,16 +68,11 @@ JSON — no prose, no markdown fences.
 
 
 async def _json_call(client, *, system: str, prompt: str, max_tokens: int, prefill: str = "{") -> str:
-    """Call the model with a JSON prefill so it cannot output prose before the JSON."""
     msg = await client.messages.create(
         model=_MODEL, max_tokens=max_tokens, system=system,
-        messages=[
-            {"role": "user", "content": prompt},
-            {"role": "assistant", "content": prefill},
-        ],
+        messages=[{"role": "user", "content": prompt}],
     )
-    text = msg.content[0].text if msg.content else ""
-    return prefill + text
+    return msg.content[0].text if msg.content else ""
 
 
 async def run_generation(session_id: str, studio_id: str, scope: dict) -> None:
