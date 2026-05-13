@@ -1,11 +1,12 @@
 import asyncio
 import logging
+import random
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from lib.auth import CurrentUser, require_studio
+from lib.auth import CurrentUser, require_studio, require_admin
 from lib.db import db_client, _url, _headers
 
 log = logging.getLogger(__name__)
@@ -260,3 +261,41 @@ async def create_matrix_pg(
         "matrixRows": len(matrix_rows),
         "cleared": body.clearExisting,
     }
+
+
+@router.post("/randomize-matrix")
+async def randomize_matrix(current_user: CurrentUser = Depends(require_studio)):
+    """Admin-only: overwrite every existing matrix cell with a random value between 5 and 25."""
+    require_admin(current_user)
+    studio_id = current_user.studio_id
+
+    r = await db_client.get(
+        _url("/rest/v1/estimate_matrix"),
+        params={
+            "studio_id": f"eq.{studio_id}",
+            "select": "workflow_step_id,variable_values",
+            "limit": "10000",
+        },
+        headers=_headers(),
+    )
+    rows = r.json()
+    if not rows:
+        return {"updated": 0}
+
+    updates = [
+        {
+            "studio_id": studio_id,
+            "workflow_step_id": row["workflow_step_id"],
+            "variable_values": row["variable_values"],
+            "estimate_days": random.randint(5, 25),
+        }
+        for row in rows
+    ]
+
+    await db_client.post(
+        _url("/rest/v1/estimate_matrix"),
+        params={"on_conflict": "studio_id,workflow_step_id,variable_values"},
+        headers=_headers({"Prefer": "resolution=merge-duplicates,return=minimal"}),
+        json=updates,
+    )
+    return {"updated": len(updates)}

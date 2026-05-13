@@ -3,6 +3,7 @@ import { toast } from 'sonner'
 import { apiFetch } from '../lib/api'
 import { cn } from '../lib/utils'
 import EstimateWizardModal from '../components/EstimateWizardModal'
+import { useAuth } from '../contexts/AuthContext'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -231,8 +232,10 @@ function MatrixTable({ reloadKey }) {
 // ── Estimates Page ────────────────────────────────────────────────────────────
 
 export default function Estimates() {
+  const { isAdmin } = useAuth()
   const [showWizard, setShowWizard] = useState(false)
   const [reloadKey, setReloadKey] = useState(0)
+  const [randomizing, setRandomizing] = useState(false)
 
   function handleComplete() {
     setShowWizard(false)
@@ -252,6 +255,19 @@ export default function Estimates() {
     setShowWizard(true)
   }
 
+  async function handleRandomize() {
+    setRandomizing(true)
+    try {
+      const { updated } = await apiFetch('/api/setup/randomize-matrix', { method: 'POST' })
+      toast.success(`Randomized ${updated} cell${updated !== 1 ? 's' : ''}`)
+      setReloadKey(k => k + 1)
+    } catch (e) {
+      toast.error(`Failed: ${e.message}`)
+    } finally {
+      setRandomizing(false)
+    }
+  }
+
   const btn = 'px-3 py-1.5 rounded-md text-xs font-medium cursor-pointer border transition-colors'
 
   return (
@@ -265,6 +281,15 @@ export default function Estimates() {
         >
           Setup
         </button>
+        {isAdmin && (
+          <button
+            onClick={handleRandomize}
+            disabled={randomizing}
+            className={cn(btn, 'border-border text-muted hover:text-foreground hover:border-foreground/40 disabled:opacity-40 disabled:cursor-wait')}
+          >
+            {randomizing ? 'Randomizing…' : 'Randomize'}
+          </button>
+        )}
       </div>
 
       {/* Matrix table */}
