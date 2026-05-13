@@ -591,16 +591,27 @@ async def _rollback(session_id: str) -> None:
 def _parse_json(text: str, label: str):
     if not text:
         raise ValueError(f"Scenario {label} returned an empty response")
+    # Strip markdown fences
     if text.startswith("```"):
         lines = text.splitlines()
         inner = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:]).strip()
         text = inner if inner else text
     if not text:
         raise ValueError(f"Scenario {label} returned an empty response")
+    # Try direct parse first
     try:
         return json.loads(text)
-    except json.JSONDecodeError as e:
-        raise ValueError(f"Scenario {label} returned invalid JSON: {e}") from e
+    except json.JSONDecodeError:
+        pass
+    # Model included prose before/after the JSON — find the first { or [ and parse from there
+    for ch in ('{', '['):
+        idx = text.find(ch)
+        if idx != -1:
+            try:
+                return json.loads(text[idx:])
+            except json.JSONDecodeError:
+                pass
+    raise ValueError(f"Scenario {label} returned no parseable JSON")
 
 
 def _chunk(lst: list, size: int):
