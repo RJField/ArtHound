@@ -105,11 +105,20 @@ async def run_generation(session_id: str, studio_id: str, scope: dict) -> None:
 
     # ── Pass 2: work templates per profile ────────────────────────────────────
     log.info("Scenario %s — pass 2 (work templates)", session_id)
+    p2_prompt = _prompt_2(scope, matrix_section, variable_fields)
     p2 = await client.messages.create(
         model=_MODEL, max_tokens=4096, system=_PASS2_SYSTEM,
-        messages=[{"role": "user", "content": _prompt_2(scope, matrix_section, variable_fields)}],
+        messages=[{"role": "user", "content": p2_prompt}],
     )
-    p2_data = _parse_json(p2.content[0].text.strip(), "pass 2")
+    p2_text = p2.content[0].text.strip() if p2.content else ""
+    if not p2_text or p2.stop_reason == "max_tokens":
+        log.warning("Scenario %s — pass 2 empty/truncated (stop_reason=%s), retrying", session_id, p2.stop_reason)
+        p2 = await client.messages.create(
+            model=_MODEL, max_tokens=4096, system=_PASS2_SYSTEM,
+            messages=[{"role": "user", "content": p2_prompt}],
+        )
+        p2_text = p2.content[0].text.strip() if p2.content else ""
+    p2_data = _parse_json(p2_text, "pass 2")
     templates = p2_data.get("templates", [])
 
     # Validate and repair step names (step_names is now a flat list of strings).
@@ -567,9 +576,14 @@ async def _rollback(session_id: str) -> None:
 
 
 def _parse_json(text: str, label: str):
+    if not text:
+        raise ValueError(f"Scenario {label} returned an empty response")
     if text.startswith("```"):
         lines = text.splitlines()
-        text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+        inner = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:]).strip()
+        text = inner if inner else text
+    if not text:
+        raise ValueError(f"Scenario {label} returned an empty response")
     try:
         return json.loads(text)
     except json.JSONDecodeError as e:
