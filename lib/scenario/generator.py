@@ -110,14 +110,20 @@ async def run_generation(session_id: str, studio_id: str, scope: dict) -> None:
         model=_MODEL, max_tokens=4096, system=_PASS2_SYSTEM,
         messages=[{"role": "user", "content": p2_prompt}],
     )
+    log.info("Scenario %s — pass 2 stop_reason=%s content_blocks=%d input_tokens=%s output_tokens=%s",
+             session_id, p2.stop_reason, len(p2.content),
+             getattr(p2.usage, "input_tokens", "?"), getattr(p2.usage, "output_tokens", "?"))
     p2_text = p2.content[0].text.strip() if p2.content else ""
     if not p2_text or p2.stop_reason == "max_tokens":
-        log.warning("Scenario %s — pass 2 empty/truncated (stop_reason=%s), retrying", session_id, p2.stop_reason)
+        log.warning("Scenario %s — pass 2 empty/truncated (stop_reason=%s output_tokens=%s), retrying",
+                    session_id, p2.stop_reason, getattr(p2.usage, "output_tokens", "?"))
         p2 = await client.messages.create(
             model=_MODEL, max_tokens=4096, system=_PASS2_SYSTEM,
             messages=[{"role": "user", "content": p2_prompt}],
         )
         p2_text = p2.content[0].text.strip() if p2.content else ""
+        log.info("Scenario %s — pass 2 retry stop_reason=%s output_tokens=%s",
+                 session_id, p2.stop_reason, getattr(p2.usage, "output_tokens", "?"))
     p2_data = _parse_json(p2_text, "pass 2")
     templates = p2_data.get("templates", [])
 
