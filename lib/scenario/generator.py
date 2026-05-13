@@ -72,7 +72,9 @@ async def _json_call(client, *, system: str, prompt: str, max_tokens: int, prefi
         model=_MODEL, max_tokens=max_tokens, system=system,
         messages=[{"role": "user", "content": prompt}],
     )
-    return msg.content[0].text if msg.content else ""
+    text = msg.content[0].text if msg.content else ""
+    log.debug("_json_call raw response (first 500): %s", text[:500])
+    return text
 
 
 async def run_generation(session_id: str, studio_id: str, scope: dict) -> None:
@@ -565,26 +567,34 @@ async def _rollback(session_id: str) -> None:
 def _parse_json(text: str, label: str):
     if not text:
         raise ValueError(f"Scenario {label} returned an empty response")
-    # Strip markdown fences
-    if text.startswith("```"):
-        lines = text.splitlines()
-        inner = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:]).strip()
-        text = inner if inner else text
-    if not text:
-        raise ValueError(f"Scenario {label} returned an empty response")
-    # Try direct parse first
+
+    # Try direct parse first.
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
-    # Model included prose before/after the JSON — find the first { or [ and parse from there
+
+    # Extract from a fenced code block anywhere in the response.
+    import re
+    fence_match = re.search(r"```(?:json)?\s*\n([\s\S]*?)\n```", text)
+    if fence_match:
+        try:
+            return json.loads(fence_match.group(1).strip())
+        except json.JSONDecodeError:
+            pass
+
+    # Find the first { or [ and use raw_decode so trailing prose is ignored.
+    decoder = json.JSONDecoder()
     for ch in ('{', '['):
         idx = text.find(ch)
         if idx != -1:
             try:
-                return json.loads(text[idx:])
+                obj, _ = decoder.raw_decode(text, idx)
+                return obj
             except json.JSONDecodeError:
                 pass
+
+    log.error("Scenario %s — unparseable response: %s", label, text[:800])
     raise ValueError(f"Scenario {label} returned no parseable JSON")
 
 
