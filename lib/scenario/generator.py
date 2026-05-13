@@ -105,6 +105,7 @@ async def run_generation(session_id: str, studio_id: str, scope: dict) -> None:
     for p in profiles:
         p["variable_values"] = _normalize_vv_keys(p.get("variable_values") or {}, variable_fields)
     _validate_profiles(profiles, variable_fields, known_combo_keys)
+    profiles = _normalize_profile_counts(profiles, scope, session_id)
     asset_rows = await _expand_and_insert_assets(session_id, studio_id, profiles, inserted_products, variable_fields, scope)
 
     # ── Pass 2: work templates per profile ────────────────────────────────────
@@ -134,19 +135,27 @@ async def run_generation(session_id: str, studio_id: str, scope: dict) -> None:
 # ── Prompt builders ───────────────────────────────────────────────────────────
 
 def _prompt_1a(scope: dict) -> str:
-    horizon     = scope.get("horizon_months", 6)
-    cadence     = scope.get("release_cadence", "regular_releases")
-    constraints = scope.get("constraints") or []
+    horizon      = scope.get("horizon_months", 6)
+    cadence      = scope.get("release_cadence", "regular_releases")
+    num_products = scope.get("num_products")
+    constraints  = scope.get("constraints") or []
     c_str = ("\nConstraints:\n" + "\n".join(f"- {c}" for c in constraints)) if constraints else ""
     today = date.today().isoformat()
+    count_rule = (
+        f"- You MUST generate EXACTLY {num_products} product(s) — no more, no fewer."
+        if num_products else
+        "- Infer the number of products from the cadence and horizon."
+    )
     return f"""Today: {today}
 Planning horizon: {horizon} months
-Release cadence: {cadence}{c_str}
+Release cadence: {cadence}
+Number of products: {num_products if num_products else "infer from cadence/horizon"}{c_str}
 
 Generate the product/release list as JSON:
 {{"products": [{{"name": "...", "target_release_date": "YYYY-MM-DD"}}]}}
 
 RULES:
+{count_rule}
 - Product names must be ≤20 characters (e.g. "Patch 1.0", "v2.3 Launch").
 - Space releases evenly across the horizon.
 - Return ONLY the JSON object — no prose, no markdown."""
@@ -247,6 +256,42 @@ def _normalize_vv_keys(vv: dict, variable_fields: list[str]) -> dict:
 
 
 # ── Validation ────────────────────────────────────────────────────────────────
+
+def _normalize_profile_counts(profiles: list, scope: dict, session_id: str) -> list:
+    """
+    Adjust per-profile total_counts so they sum to the total requested in scope.
+    Logs a warning and corrects in-place if the AI-generated total is off.
+    """
+    scale = scope.get("scale") or {}
+    if not scale:
+        return profiles
+
+    expected_total = sum(int(v) for v in scale.values() if isinstance(v, (int, float)))
+    if expected_total <= 0:
+        return profiles
+
+    actual_total = sum(max(int(p.get("total_count") or 1), 1) for p in profiles)
+    if actual_total == expected_total:
+        return profiles
+
+    log.warning(
+        "Scenario %s — profile count mismatch: AI generated %d assets, scope requested %d; correcting",
+        session_id, actual_total, expected_total,
+    )
+
+    # Proportional scaling; rounding error absorbed by the largest profile.
+    scaled = [max(1, round(max(int(p.get("total_count") or 1), 1) * expected_total / actual_total))
+              for p in profiles]
+    diff = expected_total - sum(scaled)
+    if diff != 0:
+        largest = max(range(len(profiles)), key=lambda i: profiles[i].get("total_count") or 1)
+        scaled[largest] = max(1, scaled[largest] + diff)
+
+    for p, count in zip(profiles, scaled):
+        p["total_count"] = count
+
+    return profiles
+
 
 def _validate_profiles(profiles: list, variable_fields: list, known_combo_keys: set) -> None:
     for p in profiles:

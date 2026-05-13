@@ -20,11 +20,11 @@ _SUBMIT_SCOPE_TOOL = {
     "description": (
         "Call this when you have gathered enough information to generate the scenario. "
         "Do not call it until you have at least horizon_months, release_cadence, "
-        "distribution, and scale."
+        "num_products, distribution, and scale."
     ),
     "input_schema": {
         "type": "object",
-        "required": ["horizon_months", "release_cadence", "distribution", "scale"],
+        "required": ["horizon_months", "release_cadence", "num_products", "distribution", "scale"],
         "properties": {
             "horizon_months": {
                 "type": "integer",
@@ -35,6 +35,10 @@ _SUBMIT_SCOPE_TOOL = {
                 "enum": ["single_launch", "regular_releases", "milestone_batched", "continuous"],
                 "description": "How often finished content ships to end users",
             },
+            "num_products": {
+                "type": "integer",
+                "description": "Exact number of products/releases to generate",
+            },
             "distribution": {
                 "type": "string",
                 "enum": ["even", "front_loaded", "back_loaded", "milestone_batched"],
@@ -42,7 +46,12 @@ _SUBMIT_SCOPE_TOOL = {
             },
             "scale": {
                 "type": "object",
-                "description": 'Asset count per classification profile e.g. {"Hero": 4, "Supporting": 8}',
+                "description": (
+                    "Exact asset count per classification profile. "
+                    "Keys must use the exact profile labels shown in the matrix "
+                    "(e.g. the full combo key like 'Hero | High'). "
+                    "Values are exact integer counts."
+                ),
             },
             "constraints": {
                 "type": "array",
