@@ -67,6 +67,19 @@ JSON — no prose, no markdown fences.
 """
 
 
+async def _json_call(client, *, system: str, prompt: str, max_tokens: int, prefill: str = "{") -> str:
+    """Call the model with a JSON prefill so it cannot output prose before the JSON."""
+    msg = await client.messages.create(
+        model=_MODEL, max_tokens=max_tokens, system=system,
+        messages=[
+            {"role": "user", "content": prompt},
+            {"role": "assistant", "content": prefill},
+        ],
+    )
+    text = msg.content[0].text if msg.content else ""
+    return prefill + text
+
+
 async def run_generation(session_id: str, studio_id: str, scope: dict) -> None:
     """
     Entry point called by _scenario_generation_loop.
@@ -82,20 +95,14 @@ async def run_generation(session_id: str, studio_id: str, scope: dict) -> None:
 
     # ── Pass 1a: products ─────────────────────────────────────────────────────
     log.info("Scenario %s — pass 1a (products)", session_id)
-    p1a = await client.messages.create(
-        model=_MODEL, max_tokens=4096, system=_PASS1A_SYSTEM,
-        messages=[{"role": "user", "content": _prompt_1a(scope)}],
-    )
-    p1a_data = _parse_json(p1a.content[0].text.strip(), "pass 1a")
+    p1a_text = await _json_call(client, system=_PASS1A_SYSTEM, prompt=_prompt_1a(scope), max_tokens=4096)
+    p1a_data = _parse_json(p1a_text, "pass 1a")
     inserted_products = await _insert_products(session_id, studio_id, p1a_data.get("products", []))
 
     # ── Pass 1b: profile totals (O(profiles), not O(products×profiles)) ──────
     log.info("Scenario %s — pass 1b (profile totals)", session_id)
-    p1b = await client.messages.create(
-        model=_MODEL, max_tokens=2048, system=_PASS1B_SYSTEM,
-        messages=[{"role": "user", "content": _prompt_1b(scope, matrix_section, variable_fields)}],
-    )
-    p1b_data = _parse_json(p1b.content[0].text.strip(), "pass 1b")
+    p1b_text = await _json_call(client, system=_PASS1B_SYSTEM, prompt=_prompt_1b(scope, matrix_section, variable_fields), max_tokens=2048)
+    p1b_data = _parse_json(p1b_text, "pass 1b")
     profiles = p1b_data.get("profiles", [])
     # Normalize keys (AI may abbreviate field names like "Team (from Product)" → "Team").
     for p in profiles:
@@ -105,32 +112,7 @@ async def run_generation(session_id: str, studio_id: str, scope: dict) -> None:
 
     # ── Pass 2: work templates per profile ────────────────────────────────────
     log.info("Scenario %s — pass 2 (work templates)", session_id)
-    p2_prompt = _prompt_2(scope, matrix_section, variable_fields)
-    p2 = await client.messages.create(
-        model=_MODEL, max_tokens=4096, system=_PASS2_SYSTEM,
-        messages=[{"role": "user", "content": p2_prompt}],
-    )
-    log.info("Scenario %s — pass 2 stop_reason=%s content_blocks=%d input_tokens=%s output_tokens=%s",
-             session_id, p2.stop_reason, len(p2.content),
-             getattr(p2.usage, "input_tokens", "?"), getattr(p2.usage, "output_tokens", "?"))
-    p2_block = p2.content[0] if p2.content else None
-    p2_block_type = type(p2_block).__name__ if p2_block else "none"
-    p2_raw = getattr(p2_block, "text", None)
-    log.info("Scenario %s — pass 2 block_type=%s raw_len=%s raw_preview=%r",
-             session_id, p2_block_type, len(p2_raw) if p2_raw else 0, (p2_raw or "")[:120])
-    p2_text = (p2_raw or "").strip()
-    if not p2_text or p2.stop_reason == "max_tokens":
-        log.warning("Scenario %s — pass 2 empty/truncated (stop_reason=%s output_tokens=%s), retrying",
-                    session_id, p2.stop_reason, getattr(p2.usage, "output_tokens", "?"))
-        p2 = await client.messages.create(
-            model=_MODEL, max_tokens=4096, system=_PASS2_SYSTEM,
-            messages=[{"role": "user", "content": p2_prompt}],
-        )
-        p2_block = p2.content[0] if p2.content else None
-        p2_raw = getattr(p2_block, "text", None)
-        p2_text = (p2_raw or "").strip()
-        log.info("Scenario %s — pass 2 retry stop_reason=%s raw_len=%s raw_preview=%r",
-                 session_id, p2.stop_reason, len(p2_raw) if p2_raw else 0, (p2_raw or "")[:120])
+    p2_text = await _json_call(client, system=_PASS2_SYSTEM, prompt=_prompt_2(scope, matrix_section, variable_fields), max_tokens=4096)
     p2_data = _parse_json(p2_text, "pass 2")
     templates = p2_data.get("templates", [])
 
@@ -520,11 +502,8 @@ async def _repair_templates(client, templates: list, valid_steps: list[str]) -> 
         "Return the corrected templates JSON array. Each template has a step_names array. "
         "Replace every invalid string in step_names with the closest valid step name from the list."
     )
-    r = await client.messages.create(
-        model=_MODEL, max_tokens=4096, system=_REPAIR_SYSTEM,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return _parse_json(r.content[0].text.strip(), "repair")
+    text = await _json_call(client, system=_REPAIR_SYSTEM, prompt=prompt, max_tokens=4096, prefill="[")
+    return _parse_json(text, "repair")
 
 
 # ── DB / validation helpers ───────────────────────────────────────────────────
