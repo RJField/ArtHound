@@ -9,15 +9,16 @@ db_client = httpx.AsyncClient(
 _PAGE = 200
 
 
-async def drain_pages(url: str, params: dict, page: int = _PAGE) -> list[dict]:
+async def drain_pages(url: str, params: dict, page: int = _PAGE, headers: dict | None = None) -> list[dict]:
     """Collect all rows from a PostgREST endpoint using limit/offset pagination."""
+    h = headers if headers is not None else _headers()
     rows: list[dict] = []
     offset = 0
     while True:
         r = await db_client.get(
             url,
             params={**params, "limit": page, "offset": offset},
-            headers=_headers(),
+            headers=h,
         )
         r.raise_for_status()
         batch = r.json()

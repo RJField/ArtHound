@@ -1,12 +1,19 @@
 import { useScenario } from '../hooks/useScenario'
+import ScenarioWizard from '../components/scenario/ScenarioWizard'
 import ScenarioChat from '../components/scenario/ScenarioChat'
 import ScenarioViewer from '../components/scenario/ScenarioViewer'
 
 export default function ScenarioPlanner() {
   const scenario = useScenario()
 
-  if (scenario.error === 'matrix_missing') {
-    return <MatrixMissingGate />
+  // No active session → show wizard
+  if (!scenario.sessionId && scenario.stage === null) {
+    return (
+      <main className="flex flex-col flex-1 min-h-0">
+        <ScenarioHeader />
+        <ScenarioWizard onGenerate={scenario.beginGeneration} />
+      </main>
+    )
   }
 
   return (
@@ -20,56 +27,64 @@ export default function ScenarioPlanner() {
               {scenario.work.length} work items
             </span>
           )}
+          {scenario.scenarioCategory && (
+            <span className="text-xs text-muted bg-surface-2 border border-border rounded px-2 py-0.5">
+              {scenario.scenarioCategory === 'earliest_ship' ? '→ earliest ship' : '◎ target date'}
+            </span>
+          )}
         </div>
-        <div className="flex items-center gap-3">
-          {/* Saved Scenarios — future feature */}
-          <button
-            disabled
-            title="Saved scenarios are coming in a future update"
-            className="text-xs text-muted border border-border rounded px-3 py-1.5 opacity-40 cursor-not-allowed"
-          >
-            Saved Scenarios ▾
-          </button>
-        </div>
+        <button
+          onClick={scenario.dismiss}
+          title="Dismiss and start a new scenario"
+          className="text-xs text-muted hover:text-foreground border border-border rounded px-3 py-1.5 transition-colors"
+        >
+          ← New scenario
+        </button>
       </div>
 
-      {/* Chat */}
-      <ScenarioChat
-        messages={scenario.messages}
-        stage={scenario.stage}
-        showEscape={scenario.showEscape}
-        sending={scenario.sending}
-        isGenerating={scenario.isGenerating}
-        error={scenario.error}
-        onSend={scenario.sendMessage}
-        onForceGenerate={scenario.forceGenerate}
-        onRetry={scenario.retryGeneration}
-      />
+      {/* Discussion chat — only shown post-generation */}
+      {(scenario.stage === 'discussion' || scenario.stage === 'generation_failed') && (
+        <ScenarioChat
+          messages={scenario.messages}
+          stage={scenario.stage}
+          showEscape={false}
+          sending={scenario.sending}
+          isGenerating={false}
+          error={scenario.error}
+          onSend={scenario.sendMessage}
+          onRetry={scenario.retryGeneration}
+        />
+      )}
 
-      {/* Data viewer */}
+      {/* Data viewer — always shown when session exists */}
       <ScenarioViewer
         products={scenario.products}
         assets={scenario.assets}
         work={scenario.work}
         isGenerating={scenario.isGenerating}
         hasData={scenario.hasData}
+        generationMode={scenario.generationMode}
+        preflightWarnings={scenario.preflightWarnings}
       />
 
       {/* Action bar */}
       <div className="flex items-center justify-between px-6 py-3 border-t border-border shrink-0">
-        <button
-          onClick={scenario.dismiss}
-          disabled={scenario.starting}
-          className="text-sm text-muted hover:text-foreground border border-border rounded px-4 py-2 transition-colors disabled:opacity-40"
-        >
-          Dismiss
-        </button>
+        <span />
         <div className="flex items-center gap-2">
           <DisabledButton label="Export to CSV" />
           <DisabledButton label="Write to Source" />
         </div>
       </div>
     </main>
+  )
+}
+
+
+function ScenarioHeader() {
+  return (
+    <div className="flex items-center justify-between px-6 py-3 border-b border-border shrink-0">
+      <span className="text-foreground font-semibold text-sm">◈ Scenario Planner</span>
+    </div>
   )
 }
 
@@ -93,10 +108,7 @@ function MatrixMissingGate() {
         Scenario planning uses your estimation matrix to generate realistic work estimates.
         Set up your matrix in Estimates before using this feature.
       </p>
-      <a
-        href="/estimates"
-        className="text-sm text-accent hover:text-accent/80 transition-colors"
-      >
+      <a href="/estimates" className="text-sm text-accent hover:text-accent/80 transition-colors">
         Go to Estimates →
       </a>
     </main>
