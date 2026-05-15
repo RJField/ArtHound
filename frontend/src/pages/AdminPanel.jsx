@@ -12,6 +12,13 @@ export default function AdminPanel() {
   const [inviteRequired, setInviteRequired] = useState(false)
   const [inviteCode, setInviteCode]         = useState('')
 
+  // Maintenance actions
+  const [reconciling, setReconciling]       = useState(false)
+  const [reconcileMsg, setReconcileMsg]     = useState(null) // 'ok' | 'err'
+  const [purging, setPurging]               = useState(false)
+  const [purgeResult, setPurgeResult]       = useState(null)
+  const [purgeError, setPurgeError]         = useState(null)
+
   useEffect(() => {
     apiFetch('/api/admin/settings')
       .then(data => {
@@ -22,6 +29,35 @@ export default function AdminPanel() {
       .catch(err => setError(err.message))
       .finally(() => setLoading(false))
   }, [])
+
+  async function handleReconcile() {
+    setReconciling(true)
+    setReconcileMsg(null)
+    try {
+      await apiFetch('/api/schedule/reconcile-work', { method: 'POST' })
+      setReconcileMsg('ok')
+    } catch (err) {
+      console.warn('Reconcile error:', err)
+      setReconcileMsg('err')
+    } finally {
+      setReconciling(false)
+      setTimeout(() => setReconcileMsg(null), 4000)
+    }
+  }
+
+  async function handlePurgeAttachments() {
+    setPurging(true)
+    setPurgeResult(null)
+    setPurgeError(null)
+    try {
+      const result = await apiFetch('/api/attachments/admin/purge', { method: 'POST' })
+      setPurgeResult(result)
+    } catch (err) {
+      setPurgeError(err.message)
+    } finally {
+      setPurging(false)
+    }
+  }
 
   async function handleSave(e) {
     e.preventDefault()
@@ -59,6 +95,47 @@ export default function AdminPanel() {
 
         {loading && <p className="text-muted text-sm">Loading…</p>}
         {error   && <p className="text-error text-sm">Failed to load settings: {error}</p>}
+
+        {/* Maintenance actions — available regardless of settings load state */}
+        <section className="flex flex-col gap-4 p-5 rounded-xl border border-border bg-surface">
+          <div>
+            <h2 className="text-foreground text-sm font-semibold">Maintenance</h2>
+            <p className="text-muted text-xs mt-0.5">One-off admin operations.</p>
+          </div>
+
+          <div className="flex flex-col gap-3">
+            <div className="flex items-center gap-3">
+              <button
+                onClick={handleReconcile}
+                disabled={reconciling}
+                className="px-4 py-2 rounded-lg bg-surface-2 text-foreground text-sm hover:bg-surface-3 transition-colors cursor-pointer disabled:opacity-50"
+              >
+                {reconciling ? 'Reconciling…' : 'Reconcile work'}
+              </button>
+              {reconcileMsg === 'ok'  && <span className="text-success text-sm">Done</span>}
+              {reconcileMsg === 'err' && <span className="text-error text-sm">Failed</span>}
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={handlePurgeAttachments}
+                  disabled={purging}
+                  className="px-4 py-2 rounded-lg bg-surface-2 text-foreground text-sm hover:bg-surface-3 transition-colors cursor-pointer disabled:opacity-50"
+                >
+                  {purging ? 'Purging…' : 'Purge orphaned attachments'}
+                </button>
+              </div>
+              {purgeResult && (
+                <p className="text-xs text-muted">
+                  Deleted {purgeResult.deleted}, kept {purgeResult.kept}
+                  {purgeResult.errors > 0 && `, ${purgeResult.errors} errors`}
+                </p>
+              )}
+              {purgeError && <p className="text-xs text-error">{purgeError}</p>}
+            </div>
+          </div>
+        </section>
 
         {settings && (
           <form onSubmit={handleSave} className="flex flex-col gap-6">

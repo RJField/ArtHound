@@ -133,8 +133,6 @@ Studios and vendors are separate roles with separate home pages (`StudioHome.jsx
 
 ## Known Debt
 
-- **Partial sync writes have no rollback** (`lib/sync/runner.py`): Products, item_types, assets, and work are written in sequence. Cursor is not advanced on failure (so the next sync retries), but already-written phases remain. A failure mid-write leaves the DB in a partially updated state until the next successful sync.
-- **`POST /api/user/assign`** (`routes/user.py:77`): Dev shortcut for assigning org membership. Must be removed before production; org assignment should go through the onboarding flow only.
 - **Jira write-back edge cases** (`routes/schedule.py`): Sub-task creation (requires `parent.key`), missing `_jira_key` warning not surfaced to UI, per-item failure detail not returned to frontend.
 
 - **`sync_log` retention**: Nightly trim keeps 100 rows/owner (`SYNC_LOG_KEEP_ROWS`, default 100). `trim_sync_log()` Postgres function — migration `20260511000003`. Skips `running` rows.

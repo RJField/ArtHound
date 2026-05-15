@@ -1,5 +1,6 @@
 import logging
 import os
+from typing import Literal, Optional
 
 import anthropic
 from fastapi import APIRouter, Depends, HTTPException
@@ -19,21 +20,40 @@ _SUBMIT_SCOPE_TOOL = {
     "name": "submit_scope",
     "description": (
         "Call this when you have gathered enough information to generate the scenario. "
-        "Do not call it until you have at least horizon_months, release_cadence, "
-        "num_products, distribution, and scale."
+        "Required: scenario_category, release_cadence, num_products, distribution, scale. "
+        "For target_date category also require target_date. "
+        "horizon_months is optional — derived from target_date when not supplied."
     ),
     "input_schema": {
         "type": "object",
-        "required": ["horizon_months", "release_cadence", "num_products", "distribution", "scale"],
+        "required": ["scenario_category", "release_cadence", "num_products", "distribution", "scale"],
         "properties": {
+            "scenario_category": {
+                "type": "string",
+                "enum": ["earliest_ship", "target_date"],
+                "description": (
+                    "earliest_ship: schedule forward from today, derive the earliest completion date. "
+                    "target_date: schedule backwards from a user-given target date."
+                ),
+            },
+            "target_date": {
+                "type": "string",
+                "description": (
+                    "Required for target_date category. The desired ship date for the final product "
+                    "in YYYY-MM-DD format."
+                ),
+            },
             "horizon_months": {
                 "type": "integer",
-                "description": "Planning horizon in months",
+                "description": (
+                    "Planning horizon in months. Optional for target_date (derived from target_date). "
+                    "Omit for earliest_ship — the engine computes the horizon from the work itself."
+                ),
             },
             "release_cadence": {
                 "type": "string",
-                "enum": ["single_launch", "regular_releases", "milestone_batched", "continuous"],
-                "description": "How often finished content ships to end users",
+                "enum": ["single_launch", "regular_releases", "milestone_batched"],
+                "description": "How content ships: one launch, regular cadence, or milestone gates",
             },
             "num_products": {
                 "type": "integer",
@@ -42,15 +62,14 @@ _SUBMIT_SCOPE_TOOL = {
             "distribution": {
                 "type": "string",
                 "enum": ["even", "front_loaded", "back_loaded", "milestone_batched"],
-                "description": "How assets are spread across the planning horizon",
+                "description": "How assets are spread across products",
             },
             "scale": {
                 "type": "object",
                 "description": (
                     "Exact asset count per classification profile. "
                     "Keys must use the exact profile labels shown in the matrix "
-                    "(e.g. the full combo key like 'Hero | High'). "
-                    "Values are exact integer counts."
+                    "(e.g. 'Hero | High'). Values are exact integer counts."
                 ),
             },
             "constraints": {
@@ -58,9 +77,27 @@ _SUBMIT_SCOPE_TOOL = {
                 "items": {"type": "string"},
                 "description": "Optional hard constraints e.g. 'no character work before March'",
             },
+            "craft_caps": {
+                "type": "object",
+                "description": (
+                    "Optional per-craft concurrent-asset caps. "
+                    "Keys are craft names (e.g. '2D', '3D'); "
+                    "values are max simultaneous assets for that craft."
+                ),
+            },
         },
     },
 }
+
+
+class StartBody(BaseModel):
+    mode:              Literal["ai", "rule_based"]             = "ai"
+    scenario_category: Literal["earliest_ship", "target_date"] = "target_date"
+
+
+class GenerateBody(BaseModel):
+    mode:  Literal["ai", "rule_based"] = "rule_based"
+    scope: dict
 
 
 class MessageBody(BaseModel):
@@ -70,8 +107,10 @@ class MessageBody(BaseModel):
 # ── POST /api/scenario/start ──────────────────────────────────────────────────
 
 @router.post("/start")
-async def start_scenario(user: CurrentUser = Depends(require_studio)):
+async def start_scenario(body: StartBody = StartBody(), user: CurrentUser = Depends(require_studio)):
     studio_id = user.studio_id
+    mode     = body.mode
+    category = body.scenario_category
 
     # Gate: estimate_matrix must exist for this studio.
     matrix_r = await db_client.get(
@@ -92,26 +131,32 @@ async def start_scenario(user: CurrentUser = Depends(require_studio)):
             "studio_id": f"eq.{studio_id}",
             "user_id":   f"eq.{user.id}",
             "status":    "eq.active",
-            "select":    "id,ai_stage,message_count,scope_json",
+            "select":    "id,ai_stage,message_count,scope_json,generation_mode",
             "limit":     "1",
         },
         headers=_headers(),
     )
     if existing_r.is_success and existing_r.json():
         row = existing_r.json()[0]
+        existing_scope = row.get("scope_json") or {}
         return {
-            "session_id":    row["id"],
-            "ai_stage":      row["ai_stage"],
-            "message_count": row["message_count"],
-            "resumed":       True,
+            "session_id":        row["id"],
+            "ai_stage":          row["ai_stage"],
+            "message_count":     row["message_count"],
+            "generation_mode":   row.get("generation_mode", "ai"),
+            "scenario_category": existing_scope.get("scenario_category", "target_date"),
+            "resumed":           True,
         }
 
-    # Create new session.
+    # Create new session — pre-seed scope_json with the chosen category so the
+    # scoping agent prompt can be tailored to it from the first turn.
     create_r = await db_client.post(
         _url("/rest/v1/scenario_sessions"),
         json={
-            "studio_id": studio_id,
-            "user_id":   user.id,
+            "studio_id":       studio_id,
+            "user_id":         user.id,
+            "generation_mode": mode,
+            "scope_json":      {"scenario_category": category},
         },
         headers=_headers({"Prefer": "return=representation"}),
     )
@@ -120,10 +165,120 @@ async def start_scenario(user: CurrentUser = Depends(require_studio)):
 
     session = create_r.json()[0]
     return {
-        "session_id":    session["id"],
-        "ai_stage":      session["ai_stage"],
-        "message_count": session["message_count"],
-        "resumed":       False,
+        "session_id":        session["id"],
+        "ai_stage":          session["ai_stage"],
+        "message_count":     session["message_count"],
+        "generation_mode":   session.get("generation_mode", "ai"),
+        "scenario_category": category,
+        "resumed":           False,
+    }
+
+
+# ── GET /api/scenario/wizard-data ────────────────────────────────────────────
+
+@router.get("/wizard-data")
+async def get_wizard_data(user: CurrentUser = Depends(require_studio)):
+    """
+    Returns the studio's classification profiles and crafts for the wizard form.
+    profiles: display labels in matrix order, e.g. ["Hero | High", "Support | Low"]
+    crafts:   distinct craft names from workflow_steps
+    """
+    import asyncio
+    cfg_r, matrix_r, steps_r = await asyncio.gather(
+        db_client.get(
+            _url("/rest/v1/estimate_config"),
+            params={"studio_id": f"eq.{user.studio_id}", "select": "variable_fields"},
+            headers=_headers(),
+        ),
+        db_client.get(
+            _url("/rest/v1/estimate_matrix"),
+            params={
+                "studio_id": f"eq.{user.studio_id}",
+                "select":    "variable_values,estimate_days",
+                "limit":     "10000",
+            },
+            headers=_headers(),
+        ),
+        db_client.get(
+            _url("/rest/v1/workflow_steps"),
+            params={"studio_id": f"eq.{user.studio_id}", "select": "craft"},
+            headers=_headers(),
+        ),
+    )
+
+    cfg_rows       = cfg_r.json()    if cfg_r.is_success    else []
+    matrix_rows    = matrix_r.json() if matrix_r.is_success else []
+    step_rows      = steps_r.json()  if steps_r.is_success  else []
+
+    variable_fields: list[str] = cfg_rows[0]["variable_fields"] if cfg_rows else []
+
+    # Build ordered, unique profile labels (only profiles with at least one estimate > 0).
+    from lib.scenario.context import _combo_key
+    seen: dict[str, str] = {}  # combo_key → display_label, insertion order
+    for row in matrix_rows:
+        if (row.get("estimate_days") or 0) <= 0:
+            continue
+        vv  = row["variable_values"] or {}
+        ck  = _combo_key(vv, variable_fields)
+        if ck not in seen:
+            label = ck.replace("|", " | ") if ck != "__default__" else "Default"
+            seen[ck] = label
+
+    crafts = sorted({r["craft"] for r in step_rows if r.get("craft")})
+
+    return {"profiles": list(seen.values()), "crafts": crafts}
+
+
+# ── POST /api/scenario/generate ───────────────────────────────────────────────
+
+@router.post("/generate")
+async def generate_scenario(body: GenerateBody, user: CurrentUser = Depends(require_studio)):
+    """
+    Wizard submit endpoint. Accepts a fully-formed scope and immediately queues
+    generation — no scoping chat. The generation loop picks it up within 30s.
+    Any existing active session for this user is dismissed first.
+    """
+    studio_id = user.studio_id
+
+    # Gate: estimate_matrix must exist.
+    matrix_r = await db_client.get(
+        _url("/rest/v1/estimate_matrix"),
+        params={"studio_id": f"eq.{studio_id}", "select": "id", "limit": "1"},
+        headers=_headers(),
+    )
+    if not matrix_r.is_success or not matrix_r.json():
+        raise HTTPException(
+            status_code=422,
+            detail="Scenario planning requires an estimation matrix. Set one up in Estimates first.",
+        )
+
+    # Dismiss any existing active session for this user.
+    await db_client.patch(
+        _url("/rest/v1/scenario_sessions"),
+        params={"studio_id": f"eq.{studio_id}", "user_id": f"eq.{user.id}", "status": "eq.active"},
+        json={"status": "dismissed"},
+        headers=_headers({"Prefer": "return=minimal"}),
+    )
+
+    # Create session already in pending_generation — the generation loop picks it up.
+    create_r = await db_client.post(
+        _url("/rest/v1/scenario_sessions"),
+        json={
+            "studio_id":       studio_id,
+            "user_id":         user.id,
+            "generation_mode": body.mode,
+            "scope_json":      body.scope,
+            "ai_stage":        "pending_generation",
+        },
+        headers=_headers({"Prefer": "return=representation"}),
+    )
+    if not create_r.is_success:
+        raise HTTPException(status_code=500, detail=f"Failed to create session: {create_r.text}")
+
+    session = create_r.json()[0]
+    return {
+        "session_id": session["id"],
+        "ai_stage":   session["ai_stage"],
     }
 
 
@@ -154,7 +309,7 @@ async def send_message(
     history = await _load_messages(session_id)
 
     if stage == "scoping":
-        return await _handle_scoping(session_id, user.studio_id, history, message_count)
+        return await _handle_scoping(session_id, user.studio_id, history, message_count, session)
 
     if stage == "discussion":
         return await _handle_discussion(session_id, user.studio_id, history)
@@ -162,8 +317,9 @@ async def send_message(
     raise HTTPException(status_code=409, detail={"message": "Unexpected stage", "ai_stage": stage})
 
 
-async def _handle_scoping(session_id: str, studio_id: str, history: list, message_count: int) -> dict:
-    system_prompt = await build_scoping_prompt(studio_id)
+async def _handle_scoping(session_id: str, studio_id: str, history: list, message_count: int, session: dict) -> dict:
+    category = (session.get("scope_json") or {}).get("scenario_category", "target_date")
+    system_prompt = await build_scoping_prompt(studio_id, category)
     client = anthropic.AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
 
     # Force submit_scope at turn limit.
@@ -188,7 +344,9 @@ async def _handle_scoping(session_id: str, studio_id: str, history: list, messag
     assistant_text = text_block.text if text_block else "I have enough information to generate your scenario now."
 
     if tool_use_block:
-        scope = tool_use_block.input
+        scope = dict(tool_use_block.input)
+        # Guarantee scenario_category is always in scope even if AI omitted it.
+        scope.setdefault("scenario_category", category)
         await _update_session(session_id, {
             "ai_stage":  "pending_generation",
             "scope_json": scope,
@@ -286,7 +444,8 @@ async def get_data(
     session = await _get_session(session_id, user.studio_id)
 
     import asyncio
-    products_r, assets_r, work_r = await asyncio.gather(
+    from lib.db import drain_pages
+    products_r, assets_r = await asyncio.gather(
         db_client.get(
             _url("/rest/v1/scenario_products"),
             params={"session_id": f"eq.{session_id}", "select": "*", "order": "created_at.asc"},
@@ -294,24 +453,29 @@ async def get_data(
         ),
         db_client.get(
             _url("/rest/v1/scenario_assets"),
-            params={"session_id": f"eq.{session_id}", "select": "*", "order": "created_at.asc", "limit": "10000"},
-            headers=_headers(),
-        ),
-        db_client.get(
-            _url("/rest/v1/scenario_work"),
-            params={"session_id": f"eq.{session_id}", "select": "*", "order": "start_date.asc,created_at.asc", "limit": "50000"},
+            params={"session_id": f"eq.{session_id}", "select": "*", "order": "created_at.asc"},
             headers=_headers(),
         ),
     )
+    work_rows = await drain_pages(
+        _url("/rest/v1/scenario_work"),
+        params={"session_id": f"eq.{session_id}", "select": "*", "order": "start_date.asc,created_at.asc"},
+        headers=_headers(),
+        page=1000,
+    )
 
+    scope = session.get("scope_json") or {}
     return {
-        "ai_stage":      session["ai_stage"],
-        "message_count": session["message_count"],
-        "scope":         session.get("scope_json"),
-        "show_escape":   session["message_count"] >= _ESCAPE_TURN and session["ai_stage"] == "scoping",
-        "products":      products_r.json() if products_r.is_success else [],
-        "assets":        assets_r.json()   if assets_r.is_success   else [],
-        "work":          work_r.json()     if work_r.is_success      else [],
+        "ai_stage":           session["ai_stage"],
+        "message_count":      session["message_count"],
+        "generation_mode":    session.get("generation_mode", "ai"),
+        "scenario_category":  scope.get("scenario_category", "target_date"),
+        "preflight_warnings": session.get("preflight_warnings") or [],
+        "scope":              scope,
+        "show_escape":        session["message_count"] >= _ESCAPE_TURN and session["ai_stage"] == "scoping",
+        "products":           products_r.json() if products_r.is_success else [],
+        "assets":             assets_r.json()   if assets_r.is_success   else [],
+        "work":               work_rows,
     }
 
 
@@ -371,7 +535,7 @@ async def _get_session(session_id: str, studio_id: str) -> dict:
         params={
             "id":       f"eq.{session_id}",
             "studio_id": f"eq.{studio_id}",
-            "select":   "id,studio_id,ai_stage,scope_json,message_count,status",
+            "select":   "id,studio_id,ai_stage,scope_json,message_count,status,generation_mode,preflight_warnings",
             "limit":    "1",
         },
         headers=_headers(),
