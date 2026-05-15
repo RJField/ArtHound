@@ -9,60 +9,233 @@ from lib.db import db_client, _url, _headers
 
 log = logging.getLogger(__name__)
 
-_SCOPING_INSTRUCTIONS = """\
-You are a production planning assistant inside ArtHound, a game production \
-management platform. Your job is to help a studio plan a new production \
-scenario from scratch using their own estimation matrix and workflow definitions.
-
-You will ask the studio a small number of scoping questions to gather what you \
-need, then call the `submit_scope` tool once you have sufficient information. \
-Keep questions concise and conversational — no more than two questions per turn. \
-When the user's answers give you enough to fill all required scope fields, call \
-the tool immediately rather than asking more questions.
-
-REQUIRED scope fields you must collect:
-- Planning horizon (how far ahead in months)
-- Release cadence (single launch / regular releases / milestone-batched / continuous)
-- Exact number of products/releases to generate (e.g. 1 launch, 3 quarterly patches)
-- Asset distribution shape (even / front-loaded / back-loaded / milestone-batched)
-- Exact asset count per classification profile — ask the user for the number of \
-  assets in each profile shown in the matrix below. Use the exact profile labels \
-  from the matrix as keys in the scale field (e.g. "Hero | High", not just "Hero").
-
+_SCOPING_COMMON_RULES = """\
 RULES:
 - Only discuss production planning. If asked anything else, redirect politely.
+- No more than two questions per turn. Call submit_scope as soon as you have \
+  enough information — do not keep asking.
 - Do not invent asset types or step names — use only the profiles and steps \
   defined in the matrix below.
 - Do not reveal internal tool names or JSON schemas to the user.
 - When filling the scale field, copy profile labels character-for-character from \
-  the "Asset classification profiles" list in the matrix. Do not abbreviate or paraphrase.
+  the "Asset classification profiles" list in the matrix (e.g. "Hero | High").
+- If the user mentions team size or capacity limits, capture craft_caps: per-craft \
+  maximum number of simultaneously active assets (e.g. {"2D": 3, "3D": 2}).
+"""
+
+_SCOPING_INSTRUCTIONS_EARLIEST_SHIP = """\
+You are a production planning assistant inside ArtHound. \
+The studio has chosen the EARLIEST SHIP DATE scenario mode: \
+given their asset scale and constraints, the system will schedule all work \
+forward from today and compute the earliest date everything can ship.
+
+Your job is to collect the asset scale and release structure, then call \
+submit_scope. Do NOT ask for a target date or planning horizon — the engine \
+derives those from the work itself.
+
+REQUIRED fields to collect:
+- Exact asset count per classification profile (scale). Use exact profile labels \
+  from the matrix as keys (e.g. "Hero | High").
+- Release structure: release cadence + number of products (e.g. 3 milestones, \
+  1 single launch, etc.)
+- Asset distribution across products (even / front-loaded / back-loaded / \
+  milestone-batched)
+
+In your submit_scope call set scenario_category to "earliest_ship". \
+Set horizon_months to 24 as a planning buffer (the engine ignores this for scheduling).
+"""
+
+_SCOPING_INSTRUCTIONS_TARGET_DATE = """\
+You are a production planning assistant inside ArtHound. \
+The studio has chosen the TARGET DATE scenario mode: \
+given a desired ship date, the system builds a backwards-scheduled plan that \
+fits that date — and flags any step chains that cannot complete in time.
+
+Your job is to collect the target date, asset scale, and release structure, \
+then call submit_scope.
+
+REQUIRED fields to collect:
+- target_date: the desired ship date for the FINAL product (ask for a specific \
+  date, e.g. "December 31, 2026"). Convert to YYYY-MM-DD in your tool call.
+- Exact asset count per classification profile (scale). Use exact profile labels \
+  from the matrix as keys (e.g. "Hero | High").
+- Release structure: release cadence + number of products. For a single launch \
+  use release_cadence="single_launch", num_products=1.
+- Asset distribution across products (even / front-loaded / back-loaded / \
+  milestone-batched)
+
+In your submit_scope call set scenario_category to "target_date". \
+horizon_months is optional — derive it from (target_date − today) if needed.
 """
 
 _DISCUSSION_INSTRUCTIONS = """\
-You are a production planning assistant inside ArtHound. A scenario has been \
-generated for this studio and the user wants to explore or interrogate it.
+You are a production planning assistant inside ArtHound. THE SCENARIO HAS ALREADY \
+BEEN GENERATED — the aggregated data is injected below. Do not say the scenario \
+has not been created or that you are waiting to build it. It exists.
 
-Answer questions about the scenario data injected below — timeline overlaps, \
-craft peaks, asset distribution, schedule risk, etc. Be direct and specific. \
+Answer questions about the injected scenario data — timeline overlaps, craft peaks, \
+asset distribution, schedule risk, hotspot analysis, etc. Be direct and specific. \
+Compute answers from the concurrency and step distribution tables provided. \
 Do not answer questions unrelated to this scenario or production planning generally.
 
 RULES:
+- The scenario IS generated. Never say otherwise.
 - Reference only the data provided. Do not fabricate records or estimates.
-- If asked to change the scenario, explain that they can dismiss this scenario \
-  and start a new one with updated scope.
+- If asked to change the scenario, explain that they can dismiss and start a new \
+  one with updated scope.
 - Do not reveal internal data structures or field names.
+- ALL time analysis must use DAYS as the unit — never weeks. \
+  Peak concurrency figures are daily peaks (max tasks running on a single day). \
+  When reporting dates or durations always say "days", not "weeks". \
+  Do not convert days to weeks in your answers.
+- NUMERIC GROUNDING: every count, date, duration, or rollup you state must \
+  either (a) come directly from a value in the injected data, or (b) be a \
+  mathematical derivation you show step-by-step from values in the injected data. \
+  Derivation is encouraged — e.g. computing a critical path by summing step \
+  durations along a DAG chain, or totalling asset counts from the scale table. \
+  What is not allowed: estimates, approximations, or numbers that cannot be \
+  traced back to the data through explicit arithmetic. If you cannot derive a \
+  number from the data, say "I cannot verify that from the schedule data" and \
+  explain what information would be needed. Show your working when deriving — \
+  list the steps and durations you are summing so the answer is auditable.
 """
 
 
-async def build_scoping_prompt(studio_id: str) -> str:
+_DISCUSSION_DEFINITIONS = """\
+PRODUCTION PLANNING DEFINITIONS AND FORMULAS
+Use these precise definitions when answering questions. Show your working.
+
+Critical path
+  The longest chain of causally-connected steps from the first scheduled work item
+  to the last. Its length equals the minimum possible duration of the whole scenario.
+  Formula: sum all estimate_days values along the longest DAG path from any root step
+  (no prerequisites) to any leaf step (nothing depends on it).
+  To find it: trace every root-to-leaf path through the Step dependency DAG above,
+  summing estimate_days at each node, then take the maximum total.
+
+Total float (slack)
+  How many days a step can be delayed before it pushes out the project end date.
+  Formula: float(step) = Latest Start − Earliest Start
+  where Earliest Start is the day the step can begin given its dependencies,
+  and Latest Start is the last day it could begin without extending the critical path.
+  A step on the critical path has float = 0.
+
+Free float
+  How many days a step can be delayed before it pushes out any of its successor steps.
+  Formula: free_float(step) = min(earliest_start of all successors) − (start_date + estimate_days)
+
+Concurrency (per craft)
+  The number of tasks of that craft running simultaneously on a given calendar day.
+  Derived from the injected "Craft concurrency" table: peak N tasks/day on DATE.
+  Day-level concurrency = count of work items where start_date ≤ day ≤ end_date.
+
+Craft utilisation
+  How heavily a craft is loaded relative to its cap.
+  Formula: utilisation = (peak concurrent tasks) / (craft cap)
+  If no craft cap was set, utilisation is unconstrained (report the raw peak instead).
+  Example: peak 3 tasks, cap 4 → 75% utilisation.
+
+Product span
+  Calendar duration from the earliest start_date to the latest end_date across all
+  work items assigned to a product.
+  Formula: span_days = (latest end_date) − (earliest start_date) + 1
+
+Schedule density
+  Work items per product: total work items for that product divided by asset count.
+  Higher density → more steps per asset (more complex profiles in that product).
+
+Asset throughput
+  Average number of assets that complete per day across the scenario.
+  Formula: throughput = total_assets / total_span_days
+  where total_span_days = (latest end_date across all products) − (earliest start_date) + 1
+
+Bottleneck step
+  The step that appears most often on the critical path, or that has the highest
+  peak concurrency relative to its craft cap. To identify: find which step has the
+  highest (peak concurrency / craft cap) ratio.
+
+All date arithmetic uses calendar days (not working days unless stated).
+When showing derivations, list each step name and its estimate_days contribution.
+"""
+
+
+async def build_scoping_prompt(studio_id: str, category: str = "target_date") -> str:
     matrix_section = await _build_matrix_section(studio_id)
-    return f"{_SCOPING_INSTRUCTIONS}\n\n{matrix_section}"
+    instructions = (
+        _SCOPING_INSTRUCTIONS_EARLIEST_SHIP
+        if category == "earliest_ship"
+        else _SCOPING_INSTRUCTIONS_TARGET_DATE
+    )
+    return f"{instructions}\n{_SCOPING_COMMON_RULES}\n{matrix_section}"
 
 
 async def build_discussion_prompt(studio_id: str, session_id: str) -> str:
+    session_r = await db_client.get(
+        _url("/rest/v1/scenario_sessions"),
+        params={"id": f"eq.{session_id}", "select": "scope_json", "limit": "1"},
+        headers=_headers(),
+    )
+    scope: dict = {}
+    if session_r.is_success and session_r.json():
+        scope = session_r.json()[0].get("scope_json") or {}
+
     matrix_section = await _build_matrix_section(studio_id)
-    data_section = await _build_scenario_data_section(session_id)
-    return f"{_DISCUSSION_INSTRUCTIONS}\n\n{matrix_section}\n\n{data_section}"
+    scope_section   = _build_scope_section(scope)
+    data_section    = await _build_scenario_data_section(session_id)
+    return (
+        f"{_DISCUSSION_INSTRUCTIONS}\n\n"
+        f"{_DISCUSSION_DEFINITIONS}\n\n"
+        f"{scope_section}\n\n"
+        f"{matrix_section}\n\n"
+        f"{data_section}"
+    )
+
+
+def _build_scope_section(scope: dict) -> str:
+    """Render the generation scope so Haiku knows the constraints used."""
+    if not scope:
+        return "GENERATION CONSTRAINTS\n  (not available)"
+
+    lines = ["GENERATION CONSTRAINTS (inputs used to build this scenario)"]
+
+    category = scope.get("scenario_category", "target_date")
+    lines.append(f"  Mode: {category}")
+    if category == "target_date" and scope.get("target_date"):
+        lines.append(f"  Target date: {scope['target_date']}")
+
+    cadence = scope.get("release_cadence")
+    n       = scope.get("num_products")
+    interval = scope.get("release_interval_days")
+    if cadence:
+        lines.append(f"  Release cadence: {cadence}" + (f"  ({n} products)" if n else ""))
+    if interval:
+        lines.append(f"  Release interval: {interval} days between products")
+
+    scale = scope.get("scale") or {}
+    if scale:
+        lines.append("  Requested asset scale (total across all products):")
+        for profile, count in scale.items():
+            lines.append(f"    {profile}: {count}")
+
+    craft_caps = scope.get("craft_caps") or {}
+    if craft_caps:
+        lines.append("  Craft caps (max concurrent tasks per craft):")
+        for craft, cap in craft_caps.items():
+            lines.append(f"    {craft}: {cap}")
+    else:
+        lines.append("  Craft caps: none (unconstrained)")
+
+    dist = scope.get("distribution")
+    if dist:
+        lines.append(f"  Asset distribution across products: {dist}")
+
+    constraints = scope.get("constraints") or []
+    if constraints:
+        lines.append("  Additional constraints:")
+        for c in constraints:
+            lines.append(f"    - {c}")
+
+    return "\n".join(lines)
 
 
 async def _build_matrix_section(studio_id: str) -> str:
@@ -124,6 +297,13 @@ async def _build_matrix_section(studio_id: str) -> str:
     if not combo_keys and "__default__" in all_combo_keys:
         combo_keys = ["__default__"]
 
+    # Build name-keyed dependency map for readable output.
+    dep_by_name: dict[str, list[str]] = {}
+    for s in steps:
+        dep_ids = dep_graph.get(s["id"], [])
+        dep_names = [step_by_id[did]["name"] for did in dep_ids if did in step_by_id]
+        dep_by_name[s["name"]] = dep_names
+
     lines = ["STUDIO ESTIMATION MATRIX"]
     if variable_fields:
         lines.append(f"Variable fields: {', '.join(variable_fields)}")
@@ -137,67 +317,154 @@ async def _build_matrix_section(studio_id: str) -> str:
         lines.append(f"  {dc}")
 
     lines.append("")
-    lines.append("Workflow steps (in execution order):")
+    lines.append("Workflow steps with estimates (days) and craft assignments:")
+    lines.append("(Steps with N/A do not apply to that profile and are not scheduled.)")
     for i, step_id in enumerate(sorted_step_ids, 1):
         s = step_by_id.get(step_id)
         if not s:
             continue
-        craft_label = f" [craft: {s['craft']}]" if s.get("craft") else ""
+        craft_label = f" [craft: {s['craft']}]" if s.get("craft") else " [craft: unassigned]"
         estimates_parts = []
         for ck in combo_keys:
             days = step_estimates.get(step_id, {}).get(ck)
             label = ck.replace("|", " | ") if ck != "__default__" else "default"
-            estimates_parts.append(f"{label}: {days if days is not None else '—'}d")
+            estimates_parts.append(f"{label}: {int(days)}d" if days else f"{label}: N/A")
         est_str = "  ".join(estimates_parts) if estimates_parts else "no estimates"
         lines.append(f"  {i}. {s['name']}{craft_label}  —  {est_str}")
+
+    lines.append("")
+    lines.append("Step dependency DAG (what must finish before each step can start):")
+    lines.append("(Steps not listed here have no prerequisites and can start immediately.)")
+    lines.append("(Steps that share the same prerequisite run in PARALLEL with each other.)")
+    has_deps = False
+    for step_id in sorted_step_ids:
+        s = step_by_id.get(step_id)
+        if not s:
+            continue
+        dep_names = dep_by_name.get(s["name"], [])
+        if dep_names:
+            has_deps = True
+            lines.append(f"  {s['name']}  requires: {', '.join(dep_names)}")
+    if not has_deps:
+        lines.append("  (no dependencies defined — all steps are independent)")
 
     return "\n".join(lines)
 
 
 async def _build_scenario_data_section(session_id: str) -> str:
-    products_r, assets_r, work_r = await asyncio.gather(
+    """
+    Build a PAW-structured view of the scenario for Haiku.
+    Product → Asset → Work items so Haiku can answer per-asset questions.
+    Also includes per-craft concurrency peaks and step distribution totals.
+    """
+    from lib.db import drain_pages
+    from collections import defaultdict, Counter
+    from datetime import date as _date, timedelta as _td
+
+    products_r, assets_r = await asyncio.gather(
         db_client.get(
             _url("/rest/v1/scenario_products"),
-            params={"session_id": f"eq.{session_id}", "select": "id,name,target_release_date", "order": "created_at.asc"},
+            params={"session_id": f"eq.{session_id}", "select": "id,name,target_release_date",
+                    "order": "created_at.asc"},
             headers=_headers(),
         ),
         db_client.get(
             _url("/rest/v1/scenario_assets"),
-            params={"session_id": f"eq.{session_id}", "select": "id,product_id,name,variable_values,priority", "order": "created_at.asc"},
-            headers=_headers(),
-        ),
-        db_client.get(
-            _url("/rest/v1/scenario_work"),
-            params={"session_id": f"eq.{session_id}", "select": "asset_id,step_name,craft,estimate_days,start_date,end_date", "order": "start_date.asc"},
+            params={"session_id": f"eq.{session_id}",
+                    "select": "id,product_id,name,variable_values,priority",
+                    "order": "created_at.asc"},
             headers=_headers(),
         ),
     )
+    work = await drain_pages(
+        _url("/rest/v1/scenario_work"),
+        params={"session_id": f"eq.{session_id}",
+                "select": "asset_id,step_name,craft,estimate_days,start_date,end_date",
+                "order": "start_date.asc,created_at.asc"},
+        headers=_headers(),
+        page=1000,
+    )
 
     products = products_r.json() if products_r.is_success else []
-    assets = assets_r.json() if assets_r.is_success else []
-    work = work_r.json() if work_r.is_success else []
+    assets   = assets_r.json()   if assets_r.is_success   else []
 
-    product_by_id = {p["id"]: p for p in products}
-    asset_by_id = {a["id"]: a for a in assets}
+    asset_by_id: dict[str, dict] = {a["id"]: a for a in assets}
 
-    lines = ["GENERATED SCENARIO DATA"]
-    lines.append(f"Products: {len(products)}  Assets: {len(assets)}  Work items: {len(work)}")
-    lines.append("")
+    # Group work items by asset_id.
+    work_by_asset: dict[str, list] = defaultdict(list)
+    for w in work:
+        work_by_asset[w["asset_id"]].append(w)
+
+    # Group assets by product_id.
+    assets_by_product: dict[str, list] = defaultdict(list)
+    for a in assets:
+        assets_by_product[a["product_id"]].append(a)
+
+    lines = [
+        "GENERATED SCENARIO DATA",
+        f"Total: {len(products)} products  {len(assets)} assets  {len(work)} work items",
+        "",
+        "PAW SCHEDULE — Product → Asset → Work",
+        "(Each work item: step name | craft | start → end | estimate_days)",
+        "",
+    ]
 
     for p in products:
-        lines.append(f"Product: {p['name']}  (release: {p.get('target_release_date') or '—'})")
-        p_assets = [a for a in assets if a["product_id"] == p["id"]]
+        p_assets = assets_by_product.get(p["id"], [])
+        p_work_all = [w for a in p_assets for w in work_by_asset.get(a["id"], [])]
+        p_start = min((w["start_date"] for w in p_work_all if w["start_date"]), default="—")
+        p_end   = max((w["end_date"]   for w in p_work_all if w["end_date"]),   default="—")
+        release = p.get("target_release_date") or "—"
+        lines.append(
+            f"PRODUCT: {p['name']}  release:{release}"
+            f"  span:{p_start}→{p_end}"
+            f"  ({len(p_assets)} assets, {len(p_work_all)} work items)"
+        )
         for a in p_assets:
+            a_work = work_by_asset.get(a["id"], [])
             vv = a.get("variable_values") or {}
-            profile = " | ".join(f"{k}: {v}" for k, v in vv.items()) or "default"
-            lines.append(f"  Asset: {a['name']}  [{profile}]  priority: {a.get('priority') or '—'}")
-            a_work = [w for w in work if w["asset_id"] == a["id"]]
-            for w in a_work:
+            profile = " | ".join(str(v) for v in vv.values()) if vv else "default"
+            lines.append(f"  ASSET: {a['name']}  [{profile}]")
+            for w in sorted(a_work, key=lambda x: x.get("start_date") or ""):
+                craft = w.get("craft") or "—"
+                sd = w.get("start_date") or "—"
+                ed = w.get("end_date") or "—"
+                est = int(w["estimate_days"]) if w.get("estimate_days") else "?"
                 lines.append(
-                    f"    {w['step_name']} ({w.get('craft') or '—'})  "
-                    f"{w.get('estimate_days') or '—'}d  "
-                    f"{w.get('start_date') or '—'} → {w.get('end_date') or '—'}"
+                    f"    {w['step_name']} | {craft} | {sd}→{ed} | {est}d"
                 )
+        lines.append("")
+
+    # ── Per-craft concurrency summary (daily sweep-line) ──────────────────────
+    craft_events: dict[str, list] = defaultdict(list)
+    for w in work:
+        craft = w.get("craft") or "Uncrafted"
+        try:
+            sd = _date.fromisoformat(w["start_date"])
+            ed = _date.fromisoformat(w["end_date"])
+        except (TypeError, ValueError):
+            continue
+        craft_events[craft].append((sd, +1))
+        craft_events[craft].append((ed + _td(days=1), -1))
+
+    lines.append("Craft concurrency (peak concurrent tasks on a single day):")
+    for craft in sorted(craft_events):
+        events = sorted(craft_events[craft])
+        running = peak = 0
+        peak_date = None
+        for ev_date, delta in events:
+            running += delta
+            if running > peak:
+                peak = running
+                peak_date = ev_date
+        lines.append(f"  {craft}: peak {peak} tasks/day  (on {peak_date})")
+    lines.append("")
+
+    # ── Step distribution ──────────────────────────────────────────────────────
+    step_counts = Counter(w["step_name"] for w in work)
+    lines.append("Work items by step (total across all products):")
+    for step, count in step_counts.most_common():
+        lines.append(f"  {step}: {count}")
 
     return "\n".join(lines)
 

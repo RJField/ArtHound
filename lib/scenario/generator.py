@@ -11,14 +11,27 @@ This approach scales to any reasonable scenario size without hitting token limit
 """
 import json
 import logging
-import math
 import os
-from datetime import date, timedelta
+from datetime import date
 
 import anthropic
 
-from lib.db import db_client, _url, _headers
-from lib.scenario.context import _build_matrix_section, _combo_key, _topo_sort
+from lib.scenario.context import _build_matrix_section, _combo_key
+from lib.scenario.shared import (
+    fetch_validation_data,
+    insert_products,
+    expand_and_insert_assets,
+    expand_and_insert_work,
+    rollback,
+    normalize_vv_keys,
+    normalize_profile_counts,
+    validate_profiles,
+    sort_step_names,
+    distribute_counts,
+    schedule_steps,
+    _find_matching_template,
+    _chunk,
+)
 
 log = logging.getLogger(__name__)
 
@@ -82,31 +95,30 @@ async def run_generation(session_id: str, studio_id: str, scope: dict) -> None:
     Entry point called by _scenario_generation_loop.
     Raises on failure — caller is responsible for setting generation_failed.
     """
-    # Clear any data from previous (failed) attempts before generating fresh.
-    await _rollback(session_id)
+    await rollback(session_id)
 
     client = anthropic.AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
 
     matrix_section = await _build_matrix_section(studio_id)
-    valid_steps, variable_fields, known_combo_keys, step_order, matrix_by_step_name, craft_by_step_name = await _fetch_validation_data(studio_id)
+    valid_steps, variable_fields, known_combo_keys, step_order, matrix_by_step_name, craft_by_step_name, dep_by_step_name = \
+        await fetch_validation_data(studio_id)
 
     # ── Pass 1a: products ─────────────────────────────────────────────────────
     log.info("Scenario %s — pass 1a (products)", session_id)
     p1a_text = await _json_call(client, system=_PASS1A_SYSTEM, prompt=_prompt_1a(scope), max_tokens=4096)
     p1a_data = _parse_json(p1a_text, "pass 1a")
-    inserted_products = await _insert_products(session_id, studio_id, p1a_data.get("products", []))
+    inserted_products = await insert_products(session_id, studio_id, p1a_data.get("products", []))
 
     # ── Pass 1b: profile totals (O(profiles), not O(products×profiles)) ──────
     log.info("Scenario %s — pass 1b (profile totals)", session_id)
     p1b_text = await _json_call(client, system=_PASS1B_SYSTEM, prompt=_prompt_1b(scope, matrix_section, variable_fields), max_tokens=2048)
     p1b_data = _parse_json(p1b_text, "pass 1b")
     profiles = p1b_data.get("profiles", [])
-    # Normalize keys (AI may abbreviate field names like "Team (from Product)" → "Team").
     for p in profiles:
-        p["variable_values"] = _normalize_vv_keys(p.get("variable_values") or {}, variable_fields)
-    _validate_profiles(profiles, variable_fields, known_combo_keys)
-    profiles = _normalize_profile_counts(profiles, scope, session_id)
-    asset_rows = await _expand_and_insert_assets(session_id, studio_id, profiles, inserted_products, variable_fields, scope)
+        p["variable_values"] = normalize_vv_keys(p.get("variable_values") or {}, variable_fields)
+    validate_profiles(profiles, variable_fields, known_combo_keys)
+    profiles = normalize_profile_counts(profiles, scope, session_id)
+    asset_rows = await expand_and_insert_assets(session_id, studio_id, profiles, inserted_products, variable_fields, scope)
 
     # ── Pass 2: work templates per profile ────────────────────────────────────
     log.info("Scenario %s — pass 2 (work templates)", session_id)
@@ -114,7 +126,6 @@ async def run_generation(session_id: str, studio_id: str, scope: dict) -> None:
     p2_data = _parse_json(p2_text, "pass 2")
     templates = p2_data.get("templates", [])
 
-    # Validate and repair step names (step_names is now a flat list of strings).
     all_step_names = [n for t in templates for n in t.get("step_names", [])]
     bad_names = [n for n in all_step_names if n not in valid_steps]
     if bad_names:
@@ -122,19 +133,31 @@ async def run_generation(session_id: str, studio_id: str, scope: dict) -> None:
         templates = await _repair_templates(client, templates, sorted(valid_steps))
         still_bad = [n for t in templates for n in t.get("step_names", []) if n not in valid_steps]
         if still_bad:
-            await _rollback(session_id)
+            await rollback(session_id)
             raise ValueError(f"Step name repair failed: {still_bad[:5]}")
 
-    await _expand_and_insert_work(
+    craft_caps = scope.get("craft_caps") or {}
+    category   = scope.get("scenario_category", "target_date")
+    max_end_by_product_id = await expand_and_insert_work(
         session_id, studio_id, asset_rows, templates, inserted_products,
         scope, step_order, variable_fields, matrix_by_step_name, craft_by_step_name,
+        craft_caps=craft_caps or None,
+        scenario_category=category,
+        dep_by_step_name=dep_by_step_name,
     )
+
+    if category == "earliest_ship":
+        from lib.scenario.deterministic import _update_product_dates_from_work
+        log.info("Scenario %s (AI, earliest_ship) — computing derived product release dates", session_id)
+        await _update_product_dates_from_work(session_id, inserted_products, max_end_by_product_id)
+
     log.info("Scenario %s — generation complete", session_id)
 
 
 # ── Prompt builders ───────────────────────────────────────────────────────────
 
 def _prompt_1a(scope: dict) -> str:
+    category     = scope.get("scenario_category", "target_date")
     horizon      = scope.get("horizon_months", 6)
     cadence      = scope.get("release_cadence", "regular_releases")
     num_products = scope.get("num_products")
@@ -146,6 +169,24 @@ def _prompt_1a(scope: dict) -> str:
         if num_products else
         "- Infer the number of products from the cadence and horizon."
     )
+
+    if category == "earliest_ship":
+        return f"""Today: {today}
+Release cadence: {cadence}
+Number of products: {num_products if num_products else "infer from cadence"}{c_str}
+
+SCENARIO MODE: earliest_ship — release dates will be computed by the scheduler after work is placed.
+Set target_release_date to null for every product.
+
+Generate the product/release list as JSON:
+{{"products": [{{"name": "...", "target_release_date": null}}]}}
+
+RULES:
+{count_rule}
+- Product names must be ≤20 characters (e.g. "Alpha", "Beta", "Gold").
+- target_release_date MUST be null — do not invent a date.
+- Return ONLY the JSON object — no prose, no markdown."""
+
     return f"""Today: {today}
 Planning horizon: {horizon} months
 Release cadence: {cadence}
@@ -215,326 +256,6 @@ CRITICAL RULES:
 - Order step_names by production dependency (earlier steps first)."""
 
 
-# ── Key normalization ─────────────────────────────────────────────────────────
-
-def _normalize_vv_keys(vv: dict, variable_fields: list[str]) -> dict:
-    """
-    Remap AI-abbreviated variable_values keys to the exact variable_fields names.
-    Tries: exact → case-insensitive → field-starts-with-key → key-in-field.
-    Returns a new dict with corrected keys; unmatched keys are passed through.
-    """
-    if not variable_fields or not vv:
-        return vv
-    if set(vv.keys()) == set(variable_fields):
-        return vv
-
-    result = {}
-    used = set()
-    for ai_key, val in vv.items():
-        matched = None
-        lower = ai_key.lower()
-        for f in variable_fields:
-            if f not in used and f == ai_key:
-                matched = f; break
-        if not matched:
-            for f in variable_fields:
-                if f not in used and f.lower() == lower:
-                    matched = f; break
-        if not matched:
-            for f in variable_fields:
-                if f not in used and f.lower().startswith(lower):
-                    matched = f; break
-        if not matched:
-            for f in variable_fields:
-                if f not in used and lower in f.lower():
-                    matched = f; break
-        key = matched or ai_key
-        result[key] = val
-        if matched:
-            used.add(matched)
-    return result
-
-
-# ── Validation ────────────────────────────────────────────────────────────────
-
-def _normalize_profile_counts(profiles: list, scope: dict, session_id: str) -> list:
-    """
-    Adjust per-profile total_counts so they sum to the total requested in scope.
-    Logs a warning and corrects in-place if the AI-generated total is off.
-    """
-    scale = scope.get("scale") or {}
-    if not scale:
-        return profiles
-
-    expected_total = sum(int(v) for v in scale.values() if isinstance(v, (int, float)))
-    if expected_total <= 0:
-        return profiles
-
-    actual_total = sum(max(int(p.get("total_count") or 1), 1) for p in profiles)
-    if actual_total == expected_total:
-        return profiles
-
-    log.warning(
-        "Scenario %s — profile count mismatch: AI generated %d assets, scope requested %d; correcting",
-        session_id, actual_total, expected_total,
-    )
-
-    # Proportional scaling; rounding error absorbed by the largest profile.
-    scaled = [max(1, round(max(int(p.get("total_count") or 1), 1) * expected_total / actual_total))
-              for p in profiles]
-    diff = expected_total - sum(scaled)
-    if diff != 0:
-        largest = max(range(len(profiles)), key=lambda i: profiles[i].get("total_count") or 1)
-        scaled[largest] = max(1, scaled[largest] + diff)
-
-    for p, count in zip(profiles, scaled):
-        p["total_count"] = count
-
-    return profiles
-
-
-def _validate_profiles(profiles: list, variable_fields: list, known_combo_keys: set) -> None:
-    for p in profiles:
-        vv = p.get("variable_values") or {}
-        if variable_fields and set(vv.keys()) != set(variable_fields):
-            raise ValueError(f"Profile variable_values keys {list(vv.keys())} don't match {variable_fields}")
-        key = _combo_key(vv, variable_fields)
-        if key not in known_combo_keys:
-            raise ValueError(f"Profile '{key}' not in estimate matrix")
-
-
-# ── Insert helpers ────────────────────────────────────────────────────────────
-
-async def _insert_products(session_id: str, studio_id: str, products: list) -> list:
-    if not products:
-        raise ValueError("Generation produced no products")
-    r = await db_client.post(
-        _url("/rest/v1/scenario_products"),
-        json=[{"session_id": session_id, "studio_id": studio_id,
-               "name": p["name"], "target_release_date": p.get("target_release_date")}
-              for p in products],
-        headers=_headers({"Prefer": "return=representation"}),
-    )
-    if not r.is_success:
-        raise RuntimeError(f"Failed to insert scenario_products: {r.text}")
-    return r.json()
-
-
-async def _expand_and_insert_assets(
-    session_id: str, studio_id: str, profiles: list, inserted_products: list,
-    variable_fields: list, scope: dict,
-) -> list:
-    """
-    Distribute profile totals across products server-side, then insert.
-    profiles: [{variable_values, total_count, priority}]
-    """
-    distribution_shape = scope.get("distribution", "even")
-    n_products = len(inserted_products)
-    if n_products == 0:
-        raise ValueError("No products to distribute assets across")
-
-    payload = []
-    for prof in profiles:
-        vv       = prof.get("variable_values") or {}
-        total    = max(int(prof.get("total_count") or 1), 1)
-        priority = prof.get("priority")
-        profile_label = " ".join(str(v) for v in vv.values()) if vv else "Asset"
-
-        counts = _distribute_counts(total, n_products, distribution_shape)
-        asset_num = 1
-        for prod, count in zip(inserted_products, counts):
-            for _ in range(count):
-                payload.append({
-                    "session_id":      session_id,
-                    "studio_id":       studio_id,
-                    "product_id":      prod["id"],
-                    "name":            f"{profile_label} {asset_num:03d}",
-                    "variable_values": vv,
-                    "priority":        priority,
-                })
-                asset_num += 1
-
-    if not payload:
-        raise ValueError("Profile spec produced no assets")
-
-    inserted = []
-    for chunk in _chunk(payload, 500):
-        r = await db_client.post(
-            _url("/rest/v1/scenario_assets"),
-            json=chunk,
-            headers=_headers({"Prefer": "return=representation"}),
-        )
-        if not r.is_success:
-            raise RuntimeError(f"Failed to insert scenario_assets: {r.text}")
-        inserted.extend(r.json())
-
-    return [
-        {"id": a["id"], "name": a["name"],
-         "variable_values": a["variable_values"], "product_id": a["product_id"]}
-        for a in inserted
-    ]
-
-
-async def _expand_and_insert_work(
-    session_id: str,
-    studio_id: str,
-    asset_rows: list,
-    templates: list,
-    inserted_products: list,
-    scope: dict,
-    step_order: list[str],
-    variable_fields: list,
-    matrix_by_step_name: dict,
-    craft_by_step_name: dict,
-) -> None:
-    # Build product release date lookup.
-    product_release: dict[str, date] = {}
-    for p in inserted_products:
-        rd = p.get("target_release_date")
-        if rd:
-            try:
-                product_release[p["id"]] = date.fromisoformat(rd)
-            except ValueError:
-                product_release[p["id"]] = date.today() + timedelta(days=30)
-
-    horizon_start = date.today()
-
-    # Group assets by product for scheduling.
-    assets_by_product: dict[str, list] = {}
-    for a in asset_rows:
-        assets_by_product.setdefault(a["product_id"], []).append(a)
-
-    payload = []
-    for pid, p_assets in assets_by_product.items():
-        release = product_release.get(pid, date.today() + timedelta(days=30))
-
-        for asset in p_assets:
-            vv = asset.get("variable_values") or {}
-            combo_key = _combo_key(vv, variable_fields)
-            template = _find_matching_template(vv, templates)
-            if not template:
-                continue
-
-            # Resolve step names to ordered dicts with estimates from the matrix.
-            step_name_list = template.get("step_names", [])
-            ordered_names = _sort_step_names(step_name_list, step_order)
-            steps = []
-            for name in ordered_names:
-                days = (matrix_by_step_name.get(name) or {}).get(combo_key) or 1
-                steps.append({
-                    "step_name":    name,
-                    "craft":        craft_by_step_name.get(name),
-                    "estimate_days": days,
-                })
-
-            work_items = _schedule_steps(steps, release, horizon_start)
-            for w in work_items:
-                payload.append({
-                    "session_id":   session_id,
-                    "studio_id":    studio_id,
-                    "asset_id":     asset["id"],
-                    "step_name":    w["step_name"],
-                    "craft":        w.get("craft"),
-                    "estimate_days": w.get("estimate_days"),
-                    "start_date":   w["start_date"],
-                    "end_date":     w["end_date"],
-                })
-
-    if not payload:
-        raise ValueError("Work expansion produced no work items")
-
-    for chunk in _chunk(payload, 500):
-        r = await db_client.post(
-            _url("/rest/v1/scenario_work"),
-            json=chunk,
-            headers=_headers({"Prefer": "return=minimal"}),
-        )
-        if not r.is_success:
-            raise RuntimeError(f"Failed to insert scenario_work: {r.text}")
-
-
-# ── Distribution ─────────────────────────────────────────────────────────────
-
-def _distribute_counts(total: int, n: int, shape: str) -> list[int]:
-    """Distribute `total` assets across `n` products according to `shape`."""
-    if n == 1:
-        return [total]
-
-    if shape == "even":
-        base, rem = divmod(total, n)
-        return [base + (1 if i < rem else 0) for i in range(n)]
-
-    if shape == "front_loaded":
-        # Linear weights: product 0 gets n shares, product n-1 gets 1 share.
-        weights = list(range(n, 0, -1))
-
-    elif shape == "back_loaded":
-        weights = list(range(1, n + 1))
-
-    elif shape == "milestone_batched":
-        # Spike every ~quarter of the timeline; rest get minimal.
-        milestones = {int(n * f) for f in (0.25, 0.5, 0.75, 1.0)}
-        milestones = {min(m, n - 1) for m in milestones}
-        weights = [10 if i in milestones else 1 for i in range(n)]
-
-    else:
-        base, rem = divmod(total, n)
-        return [base + (1 if i < rem else 0) for i in range(n)]
-
-    total_weight = sum(weights)
-    counts = [int(total * w / total_weight) for w in weights]
-    # Distribute rounding remainder to the largest-weighted buckets.
-    diff = total - sum(counts)
-    order = sorted(range(n), key=lambda i: weights[i], reverse=True)
-    for i in range(diff):
-        counts[order[i % n]] += 1
-    return counts
-
-
-# ── Scheduling ────────────────────────────────────────────────────────────────
-
-def _sort_step_names(step_names: list[str], step_order: list[str]) -> list[str]:
-    """Sort a flat list of step name strings by the studio's workflow step order."""
-    order_index = {name: i for i, name in enumerate(step_order)}
-    return sorted(step_names, key=lambda n: order_index.get(n, 999))
-
-
-def _find_matching_template(vv: dict, templates: list) -> dict | None:
-    """Return the first template whose match_when is a subset of the asset's variable_values."""
-    for t in templates:
-        match_when = t.get("match_when") or {}
-        if all(vv.get(k) == v for k, v in match_when.items()):
-            return t
-    return templates[0] if templates else None
-
-
-def _schedule_steps(steps: list, release: date, horizon_start: date) -> list:
-    """
-    Schedule steps so the last one ends on or before release.
-    Simple linear chain: each step follows the previous one.
-    """
-    total_days = sum(max(int(s.get("estimate_days") or 0), 1) for s in steps)
-    chain_start = release - timedelta(days=total_days)
-    # Don't schedule before the horizon starts.
-    chain_start = max(chain_start, horizon_start)
-
-    result = []
-    cursor = chain_start
-    for s in steps:
-        days = max(int(s.get("estimate_days") or 1), 1)
-        end = cursor + timedelta(days=days - 1)
-        result.append({
-            "step_name":    s["step_name"],
-            "craft":        s.get("craft"),
-            "estimate_days": days,
-            "start_date":   cursor.isoformat(),
-            "end_date":     end.isoformat(),
-        })
-        cursor = end + timedelta(days=1)
-    return result
-
-
-
 # ── Repair ────────────────────────────────────────────────────────────────────
 
 async def _repair_templates(client, templates: list, valid_steps: list[str]) -> list:
@@ -548,78 +269,17 @@ async def _repair_templates(client, templates: list, valid_steps: list[str]) -> 
     return _parse_json(text, "repair")
 
 
-# ── DB / validation helpers ───────────────────────────────────────────────────
-
-async def _fetch_validation_data(studio_id: str):
-    import asyncio
-    steps_r, cfg_r, matrix_r, deps_r = await asyncio.gather(
-        db_client.get(_url("/rest/v1/workflow_steps"),
-                      params={"studio_id": f"eq.{studio_id}", "select": "id,name,craft", "order": "created_at.asc"},
-                      headers=_headers()),
-        db_client.get(_url("/rest/v1/estimate_config"),
-                      params={"studio_id": f"eq.{studio_id}", "select": "variable_fields"},
-                      headers=_headers()),
-        db_client.get(_url("/rest/v1/estimate_matrix"),
-                      params={"studio_id": f"eq.{studio_id}",
-                               "select": "workflow_step_id,variable_values,estimate_days",
-                               "limit": "10000"},
-                      headers=_headers()),
-        db_client.get(_url("/rest/v1/workflow_step_dependencies"),
-                      params={"select": "step_id,depends_on_step_id"},
-                      headers=_headers()),
-    )
-    steps = steps_r.json() if steps_r.is_success else []
-    step_by_id = {s["id"]: s for s in steps}
-    valid_steps = {s["name"] for s in steps}
-    craft_by_step_name = {s["name"]: s.get("craft") for s in steps}
-
-    cfg_rows = cfg_r.json() if cfg_r.is_success else []
-    variable_fields = cfg_rows[0]["variable_fields"] if cfg_rows else []
-
-    matrix_rows = matrix_r.json() if matrix_r.is_success else []
-    known_combo_keys = {_combo_key(r.get("variable_values") or {}, variable_fields) for r in matrix_rows}
-
-    # Build step_name → combo_key → estimate_days lookup for server-side expansion.
-    matrix_by_step_name: dict[str, dict[str, float]] = {}
-    for row in matrix_rows:
-        s = step_by_id.get(row["workflow_step_id"])
-        if not s:
-            continue
-        name = s["name"]
-        key = _combo_key(row.get("variable_values") or {}, variable_fields)
-        matrix_by_step_name.setdefault(name, {})[key] = row["estimate_days"] or 0
-
-    dep_graph: dict[str, list[str]] = {s["id"]: [] for s in steps}
-    if deps_r.is_success:
-        for d in deps_r.json():
-            if d["step_id"] in dep_graph:
-                dep_graph[d["step_id"]].append(d["depends_on_step_id"])
-    sorted_ids = _topo_sort(dep_graph)
-    step_order = [step_by_id[sid]["name"] for sid in sorted_ids if sid in step_by_id]
-
-    return valid_steps, variable_fields, known_combo_keys, step_order, matrix_by_step_name, craft_by_step_name
-
-
-async def _rollback(session_id: str) -> None:
-    log.warning("Scenario %s — rolling back", session_id)
-    await db_client.delete(
-        _url("/rest/v1/scenario_products"),
-        params={"session_id": f"eq.{session_id}"},
-        headers=_headers(),
-    )
-
+# ── JSON parsing ──────────────────────────────────────────────────────────────
 
 def _parse_json(text: str, label: str):
     if not text:
         raise ValueError(f"Scenario {label} returned an empty response")
 
-    # Try direct parse first.
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
 
-    # Extract from a fenced code block anywhere in the response.
     import re
     fence_match = re.search(r"```(?:json)?\s*\n([\s\S]*?)\n```", text)
     if fence_match:
@@ -628,7 +288,6 @@ def _parse_json(text: str, label: str):
         except json.JSONDecodeError:
             pass
 
-    # Find the first { or [ and use raw_decode so trailing prose is ignored.
     decoder = json.JSONDecoder()
     for ch in ('{', '['):
         idx = text.find(ch)
@@ -643,6 +302,15 @@ def _parse_json(text: str, label: str):
     raise ValueError(f"Scenario {label} returned no parseable JSON")
 
 
-def _chunk(lst: list, size: int):
-    for i in range(0, len(lst), size):
-        yield lst[i:i + size]
+# Private aliases for any code that still imports these by underscore name.
+_normalize_vv_keys        = normalize_vv_keys
+_normalize_profile_counts = normalize_profile_counts
+_validate_profiles        = validate_profiles
+_fetch_validation_data    = fetch_validation_data
+_insert_products          = insert_products
+_expand_and_insert_assets = expand_and_insert_assets
+_expand_and_insert_work   = expand_and_insert_work
+_rollback                 = rollback
+_sort_step_names          = sort_step_names
+_distribute_counts        = distribute_counts
+_schedule_steps           = schedule_steps

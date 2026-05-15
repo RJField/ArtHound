@@ -1,0 +1,684 @@
+"""
+Shared helpers used by both the AI generator (generator.py) and the
+deterministic engine (deterministic.py).
+
+Everything here is pure logic or DB I/O — no AI calls.
+"""
+import logging
+import math
+from datetime import date, timedelta
+
+from lib.db import db_client, _url, _headers
+from lib.scenario.context import _combo_key, _topo_sort
+
+log = logging.getLogger(__name__)
+
+
+# ── Key normalisation ─────────────────────────────────────────────────────────
+
+def normalize_scale_key(k: str) -> str:
+    """
+    Convert a display-format scope.scale key ("Hero | High") to the bare-pipe
+    combo key used internally ("Hero|High").  The matrix section renders profiles
+    with " | " separators so the scoping agent returns that format; internal combo
+    keys use "|" with no surrounding spaces.
+    """
+    return k.replace(" | ", "|")
+
+
+def normalize_vv_keys(vv: dict, variable_fields: list[str]) -> dict:
+    """
+    Remap AI-abbreviated variable_values keys to the exact variable_fields names.
+    Tries: exact → case-insensitive → field-starts-with-key → key-in-field.
+    Returns a new dict with corrected keys; unmatched keys are passed through.
+    """
+    if not variable_fields or not vv:
+        return vv
+    if set(vv.keys()) == set(variable_fields):
+        return vv
+
+    result = {}
+    used: set[str] = set()
+    for ai_key, val in vv.items():
+        matched = None
+        lower = ai_key.lower()
+        for f in variable_fields:
+            if f not in used and f == ai_key:
+                matched = f; break
+        if not matched:
+            for f in variable_fields:
+                if f not in used and f.lower() == lower:
+                    matched = f; break
+        if not matched:
+            for f in variable_fields:
+                if f not in used and f.lower().startswith(lower):
+                    matched = f; break
+        if not matched:
+            for f in variable_fields:
+                if f not in used and lower in f.lower():
+                    matched = f; break
+        key = matched or ai_key
+        result[key] = val
+        if matched:
+            used.add(matched)
+    return result
+
+
+# ── Validation helpers ────────────────────────────────────────────────────────
+
+def normalize_profile_counts(profiles: list, scope: dict, session_id: str) -> list:
+    """
+    Adjust per-profile total_counts so they sum to the total requested in scope.
+    Logs a warning and corrects in-place if the total is off.
+    """
+    scale = scope.get("scale") or {}
+    if not scale:
+        return profiles
+
+    expected_total = sum(int(v) for v in scale.values() if isinstance(v, (int, float)))
+    if expected_total <= 0:
+        return profiles
+
+    actual_total = sum(max(int(p.get("total_count") or 1), 1) for p in profiles)
+    if actual_total == expected_total:
+        return profiles
+
+    log.warning(
+        "Scenario %s — profile count mismatch: generated %d assets, scope requested %d; correcting",
+        session_id, actual_total, expected_total,
+    )
+
+    scaled = [max(1, round(max(int(p.get("total_count") or 1), 1) * expected_total / actual_total))
+              for p in profiles]
+    diff = expected_total - sum(scaled)
+    if diff != 0:
+        largest = max(range(len(profiles)), key=lambda i: profiles[i].get("total_count") or 1)
+        scaled[largest] = max(1, scaled[largest] + diff)
+
+    for p, count in zip(profiles, scaled):
+        p["total_count"] = count
+
+    return profiles
+
+
+def validate_profiles(profiles: list, variable_fields: list, known_combo_keys: set) -> None:
+    for p in profiles:
+        vv = p.get("variable_values") or {}
+        if variable_fields and set(vv.keys()) != set(variable_fields):
+            raise ValueError(f"Profile variable_values keys {list(vv.keys())} don't match {variable_fields}")
+        key = _combo_key(vv, variable_fields)
+        if key not in known_combo_keys:
+            raise ValueError(f"Profile '{key}' not in estimate matrix")
+
+
+# ── DB helpers ────────────────────────────────────────────────────────────────
+
+async def fetch_validation_data(studio_id: str):
+    """
+    Returns (valid_steps, variable_fields, known_combo_keys, step_order,
+             matrix_by_step_name, craft_by_step_name).
+    """
+    import asyncio
+    steps_r, cfg_r, matrix_r, deps_r = await asyncio.gather(
+        db_client.get(_url("/rest/v1/workflow_steps"),
+                      params={"studio_id": f"eq.{studio_id}", "select": "id,name,craft", "order": "created_at.asc"},
+                      headers=_headers()),
+        db_client.get(_url("/rest/v1/estimate_config"),
+                      params={"studio_id": f"eq.{studio_id}", "select": "variable_fields"},
+                      headers=_headers()),
+        db_client.get(_url("/rest/v1/estimate_matrix"),
+                      params={"studio_id": f"eq.{studio_id}",
+                               "select": "workflow_step_id,variable_values,estimate_days",
+                               "limit": "10000"},
+                      headers=_headers()),
+        db_client.get(_url("/rest/v1/workflow_step_dependencies"),
+                      params={"select": "step_id,depends_on_step_id"},
+                      headers=_headers()),
+    )
+    steps = steps_r.json() if steps_r.is_success else []
+    step_by_id = {s["id"]: s for s in steps}
+    valid_steps = {s["name"] for s in steps}
+    craft_by_step_name = {s["name"]: s.get("craft") for s in steps}
+
+    cfg_rows = cfg_r.json() if cfg_r.is_success else []
+    variable_fields = cfg_rows[0]["variable_fields"] if cfg_rows else []
+
+    matrix_rows = matrix_r.json() if matrix_r.is_success else []
+    known_combo_keys = {_combo_key(r.get("variable_values") or {}, variable_fields) for r in matrix_rows}
+
+    matrix_by_step_name: dict[str, dict[str, float]] = {}
+    for row in matrix_rows:
+        s = step_by_id.get(row["workflow_step_id"])
+        if not s:
+            continue
+        name = s["name"]
+        key = _combo_key(row.get("variable_values") or {}, variable_fields)
+        matrix_by_step_name.setdefault(name, {})[key] = row["estimate_days"] or 0
+
+    dep_graph: dict[str, list[str]] = {s["id"]: [] for s in steps}
+    if deps_r.is_success:
+        for d in deps_r.json():
+            if d["step_id"] in dep_graph:
+                dep_graph[d["step_id"]].append(d["depends_on_step_id"])
+    sorted_ids = _topo_sort(dep_graph)
+    step_order = [step_by_id[sid]["name"] for sid in sorted_ids if sid in step_by_id]
+
+    # Build name-keyed dependency graph for the schedulers.
+    # dep_by_step_name[name] = [names of steps this step depends on]
+    dep_by_step_name: dict[str, list[str]] = {}
+    for s in steps:
+        dep_ids  = dep_graph.get(s["id"], [])
+        dep_names = [step_by_id[did]["name"] for did in dep_ids if did in step_by_id]
+        dep_by_step_name[s["name"]] = dep_names
+
+    return valid_steps, variable_fields, known_combo_keys, step_order, matrix_by_step_name, craft_by_step_name, dep_by_step_name
+
+
+async def insert_products(session_id: str, studio_id: str, products: list) -> list:
+    if not products:
+        raise ValueError("Generation produced no products")
+    r = await db_client.post(
+        _url("/rest/v1/scenario_products"),
+        json=[{"session_id": session_id, "studio_id": studio_id,
+               "name": p["name"], "target_release_date": p.get("target_release_date")}
+              for p in products],
+        headers=_headers({"Prefer": "return=representation"}),
+    )
+    if not r.is_success:
+        raise RuntimeError(f"Failed to insert scenario_products: {r.text}")
+    return r.json()
+
+
+async def expand_and_insert_assets(
+    session_id: str, studio_id: str, profiles: list, inserted_products: list,
+    variable_fields: list, scope: dict,
+) -> list:
+    """
+    Distribute profile totals across products server-side, then insert.
+    profiles: [{variable_values, total_count, priority}]
+    """
+    distribution_shape = scope.get("distribution", "even")
+    n_products = len(inserted_products)
+    if n_products == 0:
+        raise ValueError("No products to distribute assets across")
+
+    payload = []
+    for prof in profiles:
+        vv       = prof.get("variable_values") or {}
+        total    = max(int(prof.get("total_count") or 1), 1)
+        priority = prof.get("priority")
+        profile_label = " ".join(str(v) for v in vv.values()) if vv else "Asset"
+
+        counts = distribute_counts(total, n_products, distribution_shape)
+        asset_num = 1
+        for prod, count in zip(inserted_products, counts):
+            for _ in range(count):
+                payload.append({
+                    "session_id":      session_id,
+                    "studio_id":       studio_id,
+                    "product_id":      prod["id"],
+                    "name":            f"{profile_label} {asset_num:03d}",
+                    "variable_values": vv,
+                    "priority":        priority,
+                })
+                asset_num += 1
+
+    if not payload:
+        raise ValueError("Profile spec produced no assets")
+
+    inserted = []
+    for chunk in _chunk(payload, 500):
+        r = await db_client.post(
+            _url("/rest/v1/scenario_assets"),
+            json=chunk,
+            headers=_headers({"Prefer": "return=representation"}),
+        )
+        if not r.is_success:
+            raise RuntimeError(f"Failed to insert scenario_assets: {r.text}")
+        inserted.extend(r.json())
+
+    return [
+        {"id": a["id"], "name": a["name"],
+         "variable_values": a["variable_values"], "product_id": a["product_id"]}
+        for a in inserted
+    ]
+
+
+async def expand_and_insert_work(
+    session_id: str,
+    studio_id: str,
+    asset_rows: list,
+    templates: list,
+    inserted_products: list,
+    scope: dict,
+    step_order: list[str],
+    variable_fields: list,
+    matrix_by_step_name: dict,
+    craft_by_step_name: dict,
+    craft_caps: dict | None = None,
+    scenario_category: str = "target_date",
+    dep_by_step_name: dict | None = None,
+) -> dict[str, str]:
+    """
+    Expand templates into per-asset work rows and insert.
+
+    scenario_category:
+      "target_date"   — schedule backwards from each product's release date (default).
+      "earliest_ship" — schedule forward from today; product release dates are
+                        derived and must be updated by the caller post-insert.
+
+    craft_caps: optional {craft_name: max_concurrent_assets}.
+    High-priority assets get earliest slots; lower-priority assets are pushed
+    forward until concurrent-asset count is within cap.
+    """
+    product_release: dict[str, date] = {}
+    for p in inserted_products:
+        rd = p.get("target_release_date")
+        if rd:
+            try:
+                product_release[p["id"]] = date.fromisoformat(rd)
+            except ValueError:
+                pass
+
+    today         = date.today()
+    horizon_start = today
+    caps          = craft_caps or {}
+    forward       = (scenario_category == "earliest_ship")
+    deps          = dep_by_step_name or {}
+
+    assets_by_product: dict[str, list] = {}
+    for a in asset_rows:
+        assets_by_product.setdefault(a["product_id"], []).append(a)
+
+    _PRIORITY_ORDER = {"high": 0, "medium": 1, "normal": 1, "low": 2}
+
+    payload = []
+    max_end_by_product: dict[str, str] = {}  # returned to caller for earliest_ship
+
+    # For earliest_ship, each product starts after the previous product ends.
+    product_cursor = today  # advances per product in forward mode
+
+    for pid, p_assets in assets_by_product.items():
+        release = product_release.get(pid, today + timedelta(days=365))
+
+        if caps:
+            p_assets = sorted(
+                p_assets,
+                key=lambda a: _PRIORITY_ORDER.get((a.get("priority") or "").lower(), 1),
+            )
+
+        craft_windows: dict[str, list[tuple[date, date]]] = {}
+        product_end: date = product_cursor  # track latest end date for forward mode
+
+        for asset in p_assets:
+            vv = asset.get("variable_values") or {}
+            combo_key = _combo_key(vv, variable_fields)
+            template = _find_matching_template(vv, templates)
+            if not template:
+                continue
+
+            step_name_list = template.get("step_names", [])
+            ordered_names = sort_step_names(step_name_list, step_order)
+            steps = []
+            for name in ordered_names:
+                days = (matrix_by_step_name.get(name) or {}).get(combo_key) or 1
+                steps.append({
+                    "step_name":    name,
+                    "craft":        craft_by_step_name.get(name),
+                    "estimate_days": days,
+                })
+
+            if forward:
+                if caps:
+                    work_items = _schedule_steps_forward_capped(
+                        steps, deps, product_cursor, craft_windows, caps
+                    )
+                else:
+                    work_items = schedule_steps_forward(steps, deps, product_cursor)
+            else:
+                if caps:
+                    work_items = _schedule_steps_capped(
+                        steps, deps, release, horizon_start, craft_windows, caps
+                    )
+                else:
+                    work_items = schedule_steps(steps, deps, release, horizon_start)
+
+            for w in work_items:
+                payload.append({
+                    "session_id":    session_id,
+                    "studio_id":     studio_id,
+                    "asset_id":      asset["id"],
+                    "step_name":     w["step_name"],
+                    "craft":         w.get("craft"),
+                    "estimate_days": w.get("estimate_days"),
+                    "start_date":    w["start_date"],
+                    "end_date":      w["end_date"],
+                })
+                if forward:
+                    try:
+                        product_end = max(product_end, date.fromisoformat(w["end_date"]))
+                    except ValueError:
+                        pass
+
+        # Advance cursor so the next product starts after this one finishes.
+        if forward:
+            max_end_by_product[pid] = product_end.isoformat()
+            product_cursor = product_end + timedelta(days=1)
+
+    if not payload:
+        raise ValueError("Work expansion produced no work items")
+
+    for chunk in _chunk(payload, 500):
+        r = await db_client.post(
+            _url("/rest/v1/scenario_work"),
+            json=chunk,
+            headers=_headers({"Prefer": "return=minimal"}),
+        )
+        if not r.is_success:
+            raise RuntimeError(f"Failed to insert scenario_work: {r.text}")
+
+    return max_end_by_product
+
+
+async def rollback(session_id: str) -> None:
+    log.warning("Scenario %s — rolling back", session_id)
+    await db_client.delete(
+        _url("/rest/v1/scenario_products"),
+        params={"session_id": f"eq.{session_id}"},
+        headers=_headers(),
+    )
+
+
+# ── Distribution ──────────────────────────────────────────────────────────────
+
+def distribute_counts(total: int, n: int, shape: str) -> list[int]:
+    """Distribute `total` assets across `n` products according to `shape`."""
+    if n == 1:
+        return [total]
+
+    if shape == "even":
+        base, rem = divmod(total, n)
+        return [base + (1 if i < rem else 0) for i in range(n)]
+
+    if shape == "front_loaded":
+        weights = list(range(n, 0, -1))
+    elif shape == "back_loaded":
+        weights = list(range(1, n + 1))
+    elif shape == "milestone_batched":
+        milestones = {int(n * f) for f in (0.25, 0.5, 0.75, 1.0)}
+        milestones = {min(m, n - 1) for m in milestones}
+        weights = [10 if i in milestones else 1 for i in range(n)]
+    else:
+        base, rem = divmod(total, n)
+        return [base + (1 if i < rem else 0) for i in range(n)]
+
+    total_weight = sum(weights)
+    counts = [int(total * w / total_weight) for w in weights]
+    diff = total - sum(counts)
+    order = sorted(range(n), key=lambda i: weights[i], reverse=True)
+    for i in range(diff):
+        counts[order[i % n]] += 1
+    return counts
+
+
+# ── Scheduling ────────────────────────────────────────────────────────────────
+
+def sort_step_names(step_names: list[str], step_order: list[str]) -> list[str]:
+    """Sort a flat list of step names by the studio's workflow step order."""
+    order_index = {name: i for i, name in enumerate(step_order)}
+    return sorted(step_names, key=lambda n: order_index.get(n, 999))
+
+
+# ── DAG helpers ───────────────────────────────────────────────────────────────
+
+def _topo_sort_subset(dep_by_name: dict, names: set) -> list[str]:
+    """
+    Topological sort of `names` using dep_by_name (name → [dep_names]).
+    Dependencies not present in `names` are ignored.
+    """
+    visited: set = set()
+    result: list = []
+
+    def visit(n: str) -> None:
+        if n in visited:
+            return
+        visited.add(n)
+        for d in dep_by_name.get(n, []):
+            if d in names:
+                visit(d)
+        result.append(n)
+
+    for n in names:
+        visit(n)
+    return result
+
+
+def _critical_path_days(sorted_names: list, local_deps: dict, name_to_step: dict) -> int:
+    """
+    Length in days of the longest (critical) path through the DAG.
+    sorted_names must be in topological order (deps before dependents).
+    """
+    path_len: dict = {}
+    for name in sorted_names:
+        days = max(int(name_to_step[name].get("estimate_days") or 1), 1)
+        dep_lens = [path_len[d] for d in local_deps.get(name, []) if d in path_len]
+        path_len[name] = days + (max(dep_lens) if dep_lens else 0)
+    return max(path_len.values(), default=1)
+
+
+# ── Core schedulers (DAG-aware) ───────────────────────────────────────────────
+
+def schedule_steps(steps: list, dep_by_name: dict, release: date, horizon_start: date) -> list:
+    """
+    Backward-schedule steps respecting the dependency DAG.
+
+    Terminal steps (no successors within this asset's template) end on `release`.
+    Each step's end date is constrained to be before all of its successors' start dates.
+    Independent branches execute in parallel — their dates overlap.
+    """
+    if not steps:
+        return []
+
+    name_to_step = {s["step_name"]: s for s in steps}
+    names = set(name_to_step)
+    local_deps = {n: [d for d in dep_by_name.get(n, []) if d in names] for n in names}
+    sorted_names = _topo_sort_subset(local_deps, names)
+
+    # Build successor map (reverse of dependency map).
+    rdeps: dict = {n: [] for n in names}
+    for n, ds in local_deps.items():
+        for d in ds:
+            rdeps[d].append(n)
+
+    # Backward pass: assign latest-possible start/end to each step.
+    end_date: dict = {}
+    start_date: dict = {}
+    for name in reversed(sorted_names):
+        s    = name_to_step[name]
+        days = max(int(s.get("estimate_days") or 1), 1)
+        successors = rdeps[name]
+        if successors:
+            latest_end = min(start_date.get(succ, release) - timedelta(days=1) for succ in successors)
+        else:
+            latest_end = release
+        latest_start = max(latest_end - timedelta(days=days - 1), horizon_start)
+        start_date[name] = latest_start
+        end_date[name]   = latest_start + timedelta(days=days - 1)
+
+    return [
+        {
+            "step_name":     name,
+            "craft":         name_to_step[name].get("craft"),
+            "estimate_days": max(int(name_to_step[name].get("estimate_days") or 1), 1),
+            "start_date":    start_date[name].isoformat(),
+            "end_date":      end_date[name].isoformat(),
+        }
+        for name in sorted_names
+    ]
+
+
+def schedule_steps_forward(steps: list, dep_by_name: dict, start: date) -> list:
+    """
+    Forward-schedule steps respecting the dependency DAG.
+
+    Each step starts as soon as all its dependencies have finished.
+    Independent branches execute in parallel — their dates overlap.
+    """
+    if not steps:
+        return []
+
+    name_to_step = {s["step_name"]: s for s in steps}
+    names = set(name_to_step)
+    local_deps = {n: [d for d in dep_by_name.get(n, []) if d in names] for n in names}
+    sorted_names = _topo_sort_subset(local_deps, names)
+
+    finish: dict = {}
+    result = []
+    for name in sorted_names:
+        s    = name_to_step[name]
+        days = max(int(s.get("estimate_days") or 1), 1)
+        dep_names = local_deps[name]
+        # finish.get(d, start) guards against cyclic deps: a dep not yet scheduled
+        # (because of a cycle in workflow_step_dependencies) falls back to `start`
+        # so we degrade to sequential order rather than raising a KeyError.
+        earliest  = max((finish.get(d, start) + timedelta(days=1) for d in dep_names), default=start)
+        end       = earliest + timedelta(days=days - 1)
+        finish[name] = end
+        result.append({
+            "step_name":     name,
+            "craft":         s.get("craft"),
+            "estimate_days": days,
+            "start_date":    earliest.isoformat(),
+            "end_date":      end.isoformat(),
+        })
+    return result
+
+
+def _schedule_steps_forward_capped(
+    steps: list,
+    dep_by_name: dict,
+    start: date,
+    craft_windows: dict[str, list[tuple[date, date]]],
+    caps: dict[str, int],
+) -> list:
+    """Forward DAG scheduling with per-craft concurrent-asset caps."""
+    if not steps:
+        return []
+
+    name_to_step = {s["step_name"]: s for s in steps}
+    names = set(name_to_step)
+    local_deps = {n: [d for d in dep_by_name.get(n, []) if d in names] for n in names}
+    sorted_names = _topo_sort_subset(local_deps, names)
+
+    finish: dict = {}
+    result = []
+    for name in sorted_names:
+        s     = name_to_step[name]
+        days  = max(int(s.get("estimate_days") or 1), 1)
+        craft = s.get("craft")
+        dep_names = local_deps[name]
+        earliest  = max((finish.get(d, start) + timedelta(days=1) for d in dep_names), default=start)
+        cap = caps.get(craft) if craft else None
+        if cap:
+            earliest = _find_earliest_uncapped_start(earliest, days, craft, craft_windows, cap)
+        end = earliest + timedelta(days=days - 1)
+        finish[name] = end
+        # Register immediately so parallel steps within this asset count against the cap.
+        if craft and cap:
+            craft_windows.setdefault(craft, []).append((earliest, end))
+        result.append({
+            "step_name":     name,
+            "craft":         craft,
+            "estimate_days": days,
+            "start_date":    earliest.isoformat(),
+            "end_date":      end.isoformat(),
+        })
+    return result
+
+
+def _find_earliest_uncapped_start(
+    proposed_start: date,
+    duration_days: int,
+    craft: str,
+    craft_windows: dict[str, list[tuple[date, date]]],
+    cap: int,
+) -> date:
+    """
+    Push proposed_start forward until fewer than `cap` already-scheduled assets
+    of the same craft overlap [proposed_start, proposed_start + duration - 1].
+    """
+    windows = craft_windows.get(craft, [])
+    start = proposed_start
+    while True:
+        end     = start + timedelta(days=duration_days - 1)
+        overlap = sum(1 for (ws, we) in windows if ws <= end and we >= start)
+        if overlap < cap:
+            return start
+        start += timedelta(days=1)
+
+
+def _schedule_steps_capped(
+    steps: list,
+    dep_by_name: dict,
+    release: date,
+    horizon_start: date,
+    craft_windows: dict[str, list[tuple[date, date]]],
+    caps: dict[str, int],
+) -> list:
+    """
+    Backward DAG scheduling with per-craft concurrent-asset caps.
+
+    Finds the critical path to determine how early to start, then forward-schedules
+    through the DAG from that anchor, applying cap constraints per step.
+    """
+    if not steps:
+        return []
+
+    name_to_step = {s["step_name"]: s for s in steps}
+    names = set(name_to_step)
+    local_deps = {n: [d for d in dep_by_name.get(n, []) if d in names] for n in names}
+    sorted_names = _topo_sort_subset(local_deps, names)
+
+    cp_days     = _critical_path_days(sorted_names, local_deps, name_to_step)
+    chain_start = max(release - timedelta(days=cp_days - 1), horizon_start)
+
+    finish: dict = {}
+    result = []
+    for name in sorted_names:
+        s     = name_to_step[name]
+        days  = max(int(s.get("estimate_days") or 1), 1)
+        craft = s.get("craft")
+        dep_names = local_deps[name]
+        earliest  = max((finish.get(d, chain_start) + timedelta(days=1) for d in dep_names), default=chain_start)
+        cap = caps.get(craft) if craft else None
+        if cap:
+            earliest = _find_earliest_uncapped_start(earliest, days, craft, craft_windows, cap)
+        end = earliest + timedelta(days=days - 1)
+        finish[name] = end
+        # Register immediately so parallel steps within this asset count against the cap.
+        if craft and cap:
+            craft_windows.setdefault(craft, []).append((earliest, end))
+        result.append({
+            "step_name":     name,
+            "craft":         craft,
+            "estimate_days": days,
+            "start_date":    earliest.isoformat(),
+            "end_date":      end.isoformat(),
+        })
+    return result
+
+
+def _find_matching_template(vv: dict, templates: list) -> dict | None:
+    """Return the first template whose match_when is a subset of the asset's variable_values."""
+    for t in templates:
+        match_when = t.get("match_when") or {}
+        if all(vv.get(k) == v for k, v in match_when.items()):
+            return t
+    return templates[0] if templates else None
+
+
+# ── Utilities ─────────────────────────────────────────────────────────────────
+
+def _chunk(lst: list, size: int):
+    for i in range(0, len(lst), size):
+        yield lst[i:i + size]

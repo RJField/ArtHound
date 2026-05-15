@@ -70,6 +70,22 @@ ArtHound-native structured feedback records attached to canonical assets. Not sy
 
 Studios and vendors are multi-user organisations with three membership tiers: `owner`, `admin`, and `user`. New members join via an 8-character invite code; they land in a pending state until an org admin approves their join request. The org hub shows the full member list with inline role management, the current invite code (with regeneration), and pending join requests. Ownership transfer is atomic via a Postgres RPC — there is always exactly one owner. A 60-second membership cache means role changes propagate within one minute.
 
+### [Scenario Planner](docs/scenario.md)
+
+Studios model hypothetical production schedules — "when can we ship?" or "what can we complete by date X?" — without touching their source tool. A Claude Haiku scoping conversation gathers planning parameters (release cadence, asset counts by classification, optional craft caps), then a generation engine writes an ephemeral product/asset/work plan to session-scoped tables. Two engines are available: a deterministic rule-based engine (no AI, fully reproducible) and a Claude Sonnet multi-pass engine. Both support `earliest_ship` (schedule forward, derive completion date) and `target_date` (schedule backward, flag infeasibility) modes. Post-generation, Haiku answers questions about the plan in a discussion chat. Export to CSV and Write to Source are deferred.
+
+### [LoreBot](docs/lorebot.md)
+
+A proof-of-concept document-reading assistant. Given a canonical asset (studio) or a dispatch (vendor), LoreBot reads the attached files from Supabase Storage — PDFs, text, images — and answers questions about their content using Claude Haiku with vision. PDFs are extracted via `pypdf`; up to four images are passed as base64 vision blocks. Attachments must be copied to Storage before chat begins; a replication endpoint triggers the copy synchronously. Prompt caching is applied to the attachment context. Explicitly marked PoC — not for use with confidential data.
+
+### [Synthetic Data Generator](docs/synthetic.md)
+
+An admin-only tool for populating an Airtable base with realistic-looking test data. Studios save a "target" (an Airtable base with a P→A→W table mapping and encrypted PAT), then generate Products, Assets, and Work records in configurable counts with optional link fields and extra randomly-populated fields. Records are written in batches of 10 with rate-limit handling. Used to build test environments without real production data.
+
+### [Platform Admin](docs/admin.md)
+
+System-wide controls for ArtHound operators. Access is restricted to email addresses in the `PLATFORM_ADMIN_EMAILS` environment variable. Currently controls the registration gate: `registration_invite_required` (boolean) and `registration_invite_code` (the platform-wide code new users must enter). A simple admin panel UI at `/admin` exposes these settings.
+
 ---
 
 ## Dev Setup

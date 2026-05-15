@@ -166,12 +166,12 @@ async def _sync_log_trim_loop() -> None:
 
 async def _scenario_generation_loop() -> None:
     """
-    Picks up scenario sessions in pending_generation state and runs two-pass
-    Sonnet generation. Runs every 30s — independent of the sync poll interval.
-    Uses a durable DB status rather than BackgroundTasks so generation survives
-    worker restarts and proxy timeouts.
+    Picks up scenario sessions in pending_generation state and dispatches to the
+    appropriate engine (AI or rule-based). Runs every 30s.
+    Uses a durable DB status so generation survives worker restarts and proxy timeouts.
     """
     from lib.scenario.generator import run_generation
+    from lib.scenario.deterministic import run_rule_based_generation
     log.info("Scenario generation loop started — interval: 30s")
     while True:
         await asyncio.sleep(30)
@@ -181,7 +181,7 @@ async def _scenario_generation_loop() -> None:
                 params={
                     "ai_stage": "eq.pending_generation",
                     "status":   "eq.active",
-                    "select":   "id,studio_id,scope_json",
+                    "select":   "id,studio_id,scope_json,generation_mode",
                 },
                 headers=_headers(),
             )
@@ -190,20 +190,21 @@ async def _scenario_generation_loop() -> None:
                 continue
             sessions = r.json()
             for session in sessions:
-                sid = session["id"]
-                log.info("Scenario generation loop — picking up session %s", sid)
-                # Mark as generating so the loop won't double-pick it.
+                sid  = session["id"]
+                mode = session.get("generation_mode", "ai")
+                log.info("Scenario generation loop — picking up session %s (mode: %s)", sid, mode)
                 await db_client.patch(
                     _url("/rest/v1/scenario_sessions"),
                     params={"id": f"eq.{sid}"},
                     json={"ai_stage": "generating"},
                     headers=_headers({"Prefer": "return=minimal"}),
                 )
+                fn = run_rule_based_generation if mode == "rule_based" else run_generation
                 asyncio.create_task(_run_generation_task(
                     session_id=sid,
                     studio_id=session["studio_id"],
                     scope=session.get("scope_json") or {},
-                    run_generation=run_generation,
+                    run_generation=fn,
                 ))
         except Exception as exc:
             log.warning("Scenario generation loop error: %s", exc)
@@ -212,6 +213,16 @@ async def _scenario_generation_loop() -> None:
 async def _run_generation_task(session_id: str, studio_id: str, scope: dict, run_generation) -> None:
     try:
         await run_generation(session_id, studio_id, scope)
+        # Fetch counts to build the pivot message before transitioning stage.
+        pivot_text = await _build_pivot_message(session_id, studio_id, scope)
+        # Persist pivot then flip stage — order matters so the UI doesn't show
+        # discussion state before the pivot message is readable.
+        await db_client.post(
+            _url("/rest/v1/scenario_messages"),
+            json={"session_id": session_id, "studio_id": studio_id,
+                  "role": "assistant", "content": pivot_text},
+            headers=_headers({"Prefer": "return=minimal"}),
+        )
         await db_client.patch(
             _url("/rest/v1/scenario_sessions"),
             params={"id": f"eq.{session_id}"},
@@ -227,6 +238,64 @@ async def _run_generation_task(session_id: str, studio_id: str, scope: dict, run
             json={"ai_stage": "generation_failed"},
             headers=_headers({"Prefer": "return=minimal"}),
         )
+
+
+async def _build_pivot_message(session_id: str, studio_id: str, scope: dict) -> str:
+    """
+    Build the assistant pivot message shown after generation.
+    Clearly states what was generated so the discussion model is not confused
+    by prior scoping messages that said 'ready to build?'.
+    """
+    import asyncio as _asyncio
+    # Request exact counts via Prefer: count=exact (PostgREST returns Content-Range header).
+    count_headers = _headers({"Prefer": "count=exact", "Range-Unit": "items", "Range": "0-0"})
+    products_r, assets_r, work_r = await _asyncio.gather(
+        db_client.get(_url("/rest/v1/scenario_products"),
+                      params={"session_id": f"eq.{session_id}", "select": "id,name,target_release_date",
+                              "order": "created_at.asc"},
+                      headers=_headers()),
+        db_client.get(_url("/rest/v1/scenario_assets"),
+                      params={"session_id": f"eq.{session_id}", "select": "id"},
+                      headers=count_headers),
+        db_client.get(_url("/rest/v1/scenario_work"),
+                      params={"session_id": f"eq.{session_id}", "select": "id"},
+                      headers=count_headers),
+    )
+    products = products_r.json() if products_r.is_success else []
+
+    asset_count = _parse_count_header(assets_r)
+    work_count  = _parse_count_header(work_r)
+
+    horizon = scope.get("horizon_months", "?")
+    product_names = ", ".join(p["name"] for p in products[:5])
+    if len(products) > 5:
+        product_names += f" … and {len(products) - 5} more"
+
+    lines = [
+        f"Scenario generated — {len(products)} product{'s' if len(products) != 1 else ''}, "
+        f"{asset_count} asset{'s' if asset_count != 1 else ''}, "
+        f"{work_count} work item{'s' if work_count != 1 else ''} "
+        f"across a {horizon}-month horizon.",
+    ]
+    if product_names:
+        lines.append(f"Products: {product_names}.")
+    lines.append("What would you like to explore? I can analyze craft load, schedule overlaps, timeline risks, or anything else in the data.")
+    return "\n".join(lines)
+
+
+def _parse_count_header(response) -> int:
+    """Extract total count from PostgREST Content-Range header, or fall back to len(body)."""
+    cr = response.headers.get("content-range", "")
+    # Format: "0-4/156"
+    if "/" in cr:
+        try:
+            return int(cr.split("/")[1])
+        except ValueError:
+            pass
+    try:
+        return len(response.json())
+    except Exception:
+        return 0
 
 
 async def _scenario_cleanup_loop() -> None:
