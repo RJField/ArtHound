@@ -18,6 +18,10 @@ class StepBody(BaseModel):
     depends_on: list[str] = []
 
 
+class BulkDeleteBody(BaseModel):
+    ids: list[str]
+
+
 async def _fetch_steps_with_deps(studio_id: str):
     r = await db_client.get(
         _url("/rest/v1/workflow_steps"),
@@ -191,6 +195,25 @@ async def update_step(step_id: str, body: StepBody, user: CurrentUser = Depends(
     return {"ok": True}
 
 
+@router.delete("/bulk")
+async def bulk_delete_steps(body: BulkDeleteBody, user: CurrentUser = Depends(require_studio)):
+    studio_id = user.studio_id
+    if not studio_id:
+        raise HTTPException(status_code=403, detail="No studio linked")
+    if not body.ids:
+        return {"deleted": 0}
+
+    id_list = ",".join(f'"{i}"' for i in body.ids)
+    r = await db_client.delete(
+        _url("/rest/v1/workflow_steps"),
+        params={"id": f"in.({id_list})", "studio_id": f"eq.{studio_id}"},
+        headers=_headers({"Prefer": "return=minimal"}),
+    )
+    if not r.is_success:
+        raise HTTPException(status_code=500, detail=r.text)
+    return {"deleted": len(body.ids)}
+
+
 @router.delete("/{step_id}")
 async def delete_step(step_id: str, user: CurrentUser = Depends(require_studio)):
     studio_id = user.studio_id
@@ -205,9 +228,11 @@ async def delete_step(step_id: str, user: CurrentUser = Depends(require_studio))
     if not r.json():
         raise HTTPException(status_code=404, detail="Step not found")
 
-    await db_client.delete(
+    r = await db_client.delete(
         _url("/rest/v1/workflow_steps"),
         params={"id": f"eq.{step_id}", "studio_id": f"eq.{studio_id}"},
-        headers=_headers(),
+        headers=_headers({"Prefer": "return=minimal"}),
     )
+    if not r.is_success:
+        raise HTTPException(status_code=500, detail=r.text)
     return {"ok": True}
