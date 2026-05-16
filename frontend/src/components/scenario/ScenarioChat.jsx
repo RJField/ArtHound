@@ -18,6 +18,10 @@ export default function ScenarioChat({
   onSend,
   onForceGenerate,
   onRetry,
+  pendingAction,
+  onApplyAction,
+  onDismissAction,
+  applyingAction,
 }) {
   const [input, setInput] = useState('')
   const bottomRef = useRef(null)
@@ -72,6 +76,16 @@ export default function ScenarioChat({
               Try again
             </button>
           </div>
+        )}
+
+        {/* Pending action card — sits after the last message */}
+        {pendingAction && pendingAction.type === 'regenerate' && (
+          <ActionCard
+            action={pendingAction}
+            applying={applyingAction}
+            onApply={() => onApplyAction(pendingAction)}
+            onDismiss={onDismissAction}
+          />
         )}
 
         <div ref={bottomRef} />
@@ -145,5 +159,63 @@ function Spinner() {
       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
     </svg>
+  )
+}
+
+function ActionCard({ action, applying, onApply, onDismiss }) {
+  const changes = action.scope_changes || {}
+  const lines = []
+
+  if (changes.craft_caps) {
+    for (const [craft, cap] of Object.entries(changes.craft_caps)) {
+      lines.push(cap === null ? `Remove cap on ${craft}` : `${craft} cap → ${cap}`)
+    }
+  }
+  if (changes.release_interval_days != null) {
+    lines.push(`Cadence → ${changes.release_interval_days} days between releases`)
+  }
+  if (changes.num_products != null) {
+    lines.push(`${changes.num_products} products/sprints`)
+  }
+  if (changes.scale) {
+    for (const [profile, count] of Object.entries(changes.scale)) {
+      lines.push(`${profile}: ${count} assets`)
+    }
+  }
+
+  return (
+    <div className="rounded-xl border border-accent/40 bg-surface-2 px-4 py-3 flex flex-col gap-2.5 text-sm">
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <p className="text-foreground font-medium text-xs mb-1">Proposed changes</p>
+          <p className="text-muted text-xs leading-relaxed">{action.description}</p>
+        </div>
+      </div>
+      {lines.length > 0 && (
+        <ul className="flex flex-col gap-0.5">
+          {lines.map((l, i) => (
+            <li key={i} className="text-xs text-foreground font-mono bg-surface rounded px-2 py-0.5">
+              {l}
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="flex gap-2 pt-0.5">
+        <button
+          onClick={onApply}
+          disabled={applying}
+          className="px-3 py-1.5 rounded-md bg-accent text-white text-xs font-medium hover:bg-accent/90 disabled:opacity-40 transition-colors"
+        >
+          {applying ? 'Regenerating…' : 'Apply & Regenerate'}
+        </button>
+        <button
+          onClick={onDismiss}
+          disabled={applying}
+          className="px-3 py-1.5 rounded-md text-muted text-xs hover:text-foreground transition-colors"
+        >
+          Dismiss
+        </button>
+      </div>
+    </div>
   )
 }

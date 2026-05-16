@@ -81,9 +81,22 @@ Do not answer questions unrelated to this scenario or production planning genera
 RULES:
 - The scenario IS generated. Never say otherwise.
 - Reference only the data provided. Do not fabricate records or estimates.
-- If asked to change the scenario, explain that they can dismiss and start a new \
-  one with updated scope.
 - Do not reveal internal data structures or field names.
+- If the user asks to change one or more of these parameters and regenerate: \
+  craft caps, cadence interval, number of products/sprints, or asset counts per profile — \
+  answer naturally (confirm what you understood), then append a SCENARIO_ACTION block \
+  on its own line at the very end of your response. Format:\n\
+  SCENARIO_ACTION: {"type":"regenerate","scope_changes":{...},"description":"..."}\n\
+  Valid scope_changes keys:\n\
+    craft_caps: object mapping craft name to integer cap (e.g. {"2D": 3}) — \
+      only include crafts the user explicitly changed; null removes the cap\n\
+    release_interval_days: integer — cadence interval in days\n\
+    num_products: integer — number of sprints/releases\n\
+    scale: object mapping profile label to integer count — \
+      only include profiles the user explicitly changed\n\
+  description: one sentence plain-English summary of the change.\n\
+  Only emit SCENARIO_ACTION when the user is explicitly asking to change params and re-run. \
+  For hypothetical "what if" questions, just compute the answer from the existing data without emitting the block.
 - ALL time analysis must use DAYS as the unit — never weeks. \
   Peak concurrency figures are daily peaks (max tasks running on a single day). \
   When reporting dates or durations always say "days", not "weeks". \
@@ -179,9 +192,10 @@ async def build_discussion_prompt(studio_id: str, session_id: str) -> str:
     if session_r.is_success and session_r.json():
         scope = session_r.json()[0].get("scope_json") or {}
 
+    craft_caps = scope.get("craft_caps") or {}
     matrix_section = await _build_matrix_section(studio_id)
     scope_section   = _build_scope_section(scope)
-    data_section    = await _build_scenario_data_section(session_id)
+    data_section    = await _build_scenario_data_section(session_id, craft_caps)
     return (
         f"{_DISCUSSION_INSTRUCTIONS}\n\n"
         f"{_DISCUSSION_DEFINITIONS}\n\n"
@@ -351,11 +365,11 @@ async def _build_matrix_section(studio_id: str) -> str:
     return "\n".join(lines)
 
 
-async def _build_scenario_data_section(session_id: str) -> str:
+async def _build_scenario_data_section(session_id: str, craft_caps: dict | None = None) -> str:
     """
     Build a PAW-structured view of the scenario for Haiku.
     Product → Asset → Work items so Haiku can answer per-asset questions.
-    Also includes per-craft concurrency peaks and step distribution totals.
+    Also includes per-craft cap utilization (days at cap / below cap) and step distribution.
     """
     from lib.db import drain_pages
     from collections import defaultdict, Counter
@@ -435,7 +449,9 @@ async def _build_scenario_data_section(session_id: str) -> str:
                 )
         lines.append("")
 
-    # ── Per-craft concurrency summary (daily sweep-line) ──────────────────────
+    # ── Per-craft cap utilization (sweep-line over calendar spans) ───────────
+    # For each craft, walk the event timeline to count days at/below/above cap.
+    caps = craft_caps or {}
     craft_events: dict[str, list] = defaultdict(list)
     for w in work:
         craft = w.get("craft") or "Uncrafted"
@@ -447,17 +463,41 @@ async def _build_scenario_data_section(session_id: str) -> str:
         craft_events[craft].append((sd, +1))
         craft_events[craft].append((ed + _td(days=1), -1))
 
-    lines.append("Craft concurrency (peak concurrent tasks on a single day):")
+    lines.append("Craft cap utilization:")
     for craft in sorted(craft_events):
         events = sorted(craft_events[craft])
+        cap = caps.get(craft)
+
         running = peak = 0
         peak_date = None
+        days_at_cap = days_above_cap = days_below_cap = 0
+        prev_date: _date | None = None
+
         for ev_date, delta in events:
+            if prev_date is not None:
+                span = (ev_date - prev_date).days
+                if cap is None:
+                    pass  # no cap defined — just track peak
+                elif running > cap:
+                    days_above_cap += span
+                elif running == cap:
+                    days_at_cap += span
+                else:
+                    days_below_cap += span
             running += delta
             if running > peak:
                 peak = running
                 peak_date = ev_date
-        lines.append(f"  {craft}: peak {peak} tasks/day  (on {peak_date})")
+            prev_date = ev_date
+
+        if cap is not None:
+            lines.append(
+                f"  {craft}: cap={cap}  peak={peak} (on {peak_date})  "
+                f"days_at_cap={days_at_cap}  days_below_cap={days_below_cap}"
+                + (f"  days_above_cap={days_above_cap}" if days_above_cap else "")
+            )
+        else:
+            lines.append(f"  {craft}: uncapped  peak={peak} tasks/day  (on {peak_date})")
     lines.append("")
 
     # ── Step distribution ──────────────────────────────────────────────────────

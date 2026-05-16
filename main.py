@@ -266,7 +266,24 @@ async def _build_pivot_message(session_id: str, studio_id: str, scope: dict) -> 
     asset_count = _parse_count_header(assets_r)
     work_count  = _parse_count_header(work_r)
 
-    horizon = scope.get("horizon_months", "?")
+    # Derive actual horizon from work span rather than scope (earliest_ship has no pre-set horizon).
+    from datetime import date as _date
+    work_dates_r = await db_client.get(
+        _url("/rest/v1/scenario_work"),
+        params={"session_id": f"eq.{session_id}", "select": "end_date",
+                "order": "end_date.desc", "limit": "1"},
+        headers=_headers(),
+    )
+    horizon_str = "?"
+    if work_dates_r.is_success and work_dates_r.json():
+        try:
+            last_end   = _date.fromisoformat(work_dates_r.json()[0]["end_date"])
+            horizon_days = (last_end - _date.today()).days
+            horizon_months = max(1, round(horizon_days / 30.44))
+            horizon_str = str(horizon_months)
+        except (ValueError, KeyError):
+            pass
+
     product_names = ", ".join(p["name"] for p in products[:5])
     if len(products) > 5:
         product_names += f" … and {len(products) - 5} more"
@@ -275,7 +292,7 @@ async def _build_pivot_message(session_id: str, studio_id: str, scope: dict) -> 
         f"Scenario generated — {len(products)} product{'s' if len(products) != 1 else ''}, "
         f"{asset_count} asset{'s' if asset_count != 1 else ''}, "
         f"{work_count} work item{'s' if work_count != 1 else ''} "
-        f"across a {horizon}-month horizon.",
+        f"across a {horizon_str}-month horizon.",
     ]
     if product_names:
         lines.append(f"Products: {product_names}.")

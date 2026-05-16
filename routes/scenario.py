@@ -1,5 +1,7 @@
+import json
 import logging
 import os
+import re
 from typing import Literal, Optional
 
 import anthropic
@@ -9,6 +11,9 @@ from pydantic import BaseModel
 from lib.auth import CurrentUser, require_studio
 from lib.db import db_client, _url, _headers
 from lib.scenario.context import build_scoping_prompt, build_discussion_prompt
+
+# Matches "SCENARIO_ACTION: {...}" at any point in the text.
+_ACTION_RE = re.compile(r'SCENARIO_ACTION:\s*(\{.*)', re.DOTALL)
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -379,10 +384,33 @@ async def _handle_discussion(session_id: str, studio_id: str, history: list) -> 
         messages=history,
     )
     assistant_text = response.content[0].text
+
+    # Extract SCENARIO_ACTION block if Haiku emitted one.
+    action: dict | None = None
+    m = _ACTION_RE.search(assistant_text)
+    if m:
+        raw = m.group(1).strip()
+        # Find the matching closing brace so trailing prose doesn't break the parse.
+        depth, end = 0, 0
+        for i, ch in enumerate(raw):
+            if ch == '{':   depth += 1
+            elif ch == '}':
+                depth -= 1
+                if depth == 0:
+                    end = i + 1
+                    break
+        try:
+            action = json.loads(raw[:end])
+        except json.JSONDecodeError:
+            action = None
+        # Strip the SCENARIO_ACTION line from the visible reply.
+        assistant_text = assistant_text[:m.start()].rstrip()
+
     await _append_message(session_id, studio_id, "assistant", assistant_text)
     return {
         "message":  assistant_text,
         "ai_stage": "discussion",
+        "action":   action,
     }
 
 
@@ -524,6 +552,64 @@ async def retry_generation(
             detail={"message": "Session is not in generation_failed stage", "ai_stage": session["ai_stage"]},
         )
     await _update_session(session_id, {"ai_stage": "pending_generation"})
+    return {"ai_stage": "pending_generation", "generating": True}
+
+
+# ── POST /api/scenario/{session_id}/regenerate ────────────────────────────────
+
+class RegenerateBody(BaseModel):
+    scope_changes: dict
+
+
+@router.post("/{session_id}/regenerate")
+async def regenerate_scenario(
+    session_id: str,
+    body: RegenerateBody,
+    user: CurrentUser = Depends(require_studio),
+):
+    """
+    Apply scope_changes to the stored scope, roll back all generated data,
+    and re-queue the session for generation. The generation loop picks it up
+    within 30 s — same path as the original generation trigger.
+    """
+    session = await _get_session(session_id, user.studio_id)
+    if session["ai_stage"] not in ("discussion", "generation_failed"):
+        raise HTTPException(
+            status_code=409,
+            detail={"message": "Session must be in discussion stage to regenerate", "ai_stage": session["ai_stage"]},
+        )
+
+    # Merge scope_changes into the stored scope (deep-merge for dicts).
+    scope = dict(session.get("scope_json") or {})
+    changes = body.scope_changes
+
+    if "craft_caps" in changes:
+        existing = dict(scope.get("craft_caps") or {})
+        for craft, cap in (changes["craft_caps"] or {}).items():
+            if cap is None:
+                existing.pop(craft, None)
+            else:
+                existing[craft] = cap
+        scope["craft_caps"] = existing or None
+
+    if "release_interval_days" in changes:
+        scope["release_interval_days"] = changes["release_interval_days"]
+
+    if "num_products" in changes:
+        scope["num_products"] = changes["num_products"]
+
+    if "scale" in changes:
+        existing = dict(scope.get("scale") or {})
+        existing.update(changes.get("scale") or {})
+        scope["scale"] = existing
+
+    # Persist updated scope + reset to pending_generation.
+    await _update_session(session_id, {"scope_json": scope, "ai_stage": "pending_generation"})
+
+    # Roll back all scenario data — the generation loop will rebuild it.
+    from lib.scenario.shared import rollback
+    await rollback(session_id)
+
     return {"ai_stage": "pending_generation", "generating": True}
 
 

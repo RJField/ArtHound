@@ -22,8 +22,14 @@ def normalize_scale_key(k: str) -> str:
     combo key used internally ("Hero|High").  The matrix section renders profiles
     with " | " separators so the scoping agent returns that format; internal combo
     keys use "|" with no surrounding spaces.
+
+    "Default" (any case/spacing variant) maps to "__default__" so the wizard's
+    generic fallback label matches the matrix's internal default key.
     """
-    return k.replace(" | ", "|")
+    normalised = k.strip().replace(" | ", "|")
+    if normalised.lower().strip("_") == "default":
+        return "__default__"
+    return normalised
 
 
 def normalize_vv_keys(vv: dict, variable_fields: list[str]) -> dict:
@@ -298,7 +304,12 @@ async def expand_and_insert_work(
     # For earliest_ship, each product starts after the previous product ends.
     product_cursor = today  # advances per product in forward mode
 
-    for pid, p_assets in assets_by_product.items():
+    # Global across all products — the cap represents a studio-wide concurrency
+    # constraint; all assets across all sprints compete for the same slots.
+    craft_windows: dict[str, list[tuple[date, date]]] = {}
+
+    for pid in sorted(assets_by_product, key=lambda p: product_release.get(p, date.max)):
+        p_assets = assets_by_product[pid]
         release = product_release.get(pid, today + timedelta(days=365))
 
         if caps:
@@ -307,7 +318,6 @@ async def expand_and_insert_work(
                 key=lambda a: _PRIORITY_ORDER.get((a.get("priority") or "").lower(), 1),
             )
 
-        craft_windows: dict[str, list[tuple[date, date]]] = {}
         product_end: date = product_cursor  # track latest end date for forward mode
 
         for asset in p_assets:
@@ -354,16 +364,140 @@ async def expand_and_insert_work(
                     "start_date":    w["start_date"],
                     "end_date":      w["end_date"],
                 })
-                if forward:
-                    try:
-                        product_end = max(product_end, date.fromisoformat(w["end_date"]))
-                    except ValueError:
-                        pass
+                try:
+                    product_end = max(product_end, date.fromisoformat(w["end_date"]))
+                except ValueError:
+                    pass
+
+        # Always track the latest work end date per product so callers can
+        # update product release dates to reflect actual asset availability.
+        max_end_by_product[pid] = product_end.isoformat()
 
         # Advance cursor so the next product starts after this one finishes.
         if forward:
-            max_end_by_product[pid] = product_end.isoformat()
             product_cursor = product_end + timedelta(days=1)
+
+    if not payload:
+        raise ValueError("Work expansion produced no work items")
+
+    for chunk in _chunk(payload, 500):
+        r = await db_client.post(
+            _url("/rest/v1/scenario_work"),
+            json=chunk,
+            headers=_headers({"Prefer": "return=minimal"}),
+        )
+        if not r.is_success:
+            raise RuntimeError(f"Failed to insert scenario_work: {r.text}")
+
+    return max_end_by_product
+
+
+async def expand_and_insert_work_cadence(
+    session_id: str,
+    studio_id: str,
+    asset_rows: list,
+    templates: list,
+    inserted_products: list,
+    scope: dict,
+    step_order: list[str],
+    variable_fields: list,
+    matrix_by_step_name: dict,
+    craft_by_step_name: dict,
+    craft_caps: dict | None = None,
+    dep_by_step_name: dict | None = None,
+) -> dict[str, str]:
+    """
+    Forward-schedule all assets in one global cap pool, preserving existing
+    product-asset assignments (PAW hierarchy untouched).
+
+    Returns max_end_by_product {product_id: last_end_date_str} keyed by each
+    asset's ORIGINAL product_id.  The caller uses this to derive cadence-adjusted
+    sprint release dates (working backwards from the last sprint) and update
+    scenario_products separately — no asset reassignment happens here.
+    """
+    today = date.today()
+    caps  = craft_caps or {}
+    deps  = dep_by_step_name or {}
+
+    _PRIORITY_ORDER = {"high": 0, "medium": 1, "normal": 1, "low": 2}
+
+    # Build a stable product-index so Sprint 1 assets enter the cap queue
+    # before Sprint 2 assets, preserving the intended delivery order.
+    product_order = {p["id"]: i for i, p in enumerate(inserted_products)}
+
+    sorted_assets = sorted(
+        asset_rows,
+        key=lambda a: (
+            product_order.get(a.get("product_id"), 999),
+            _PRIORITY_ORDER.get((a.get("priority") or "").lower(), 1),
+        ),
+    )
+
+    craft_windows: dict[str, list[tuple[date, date]]] = {}
+    payload: list = []
+    max_end_by_product: dict[str, str] = {}
+
+    # No-caps cadence: assets for different products cannot overlap (there's
+    # nothing forcing serialisation via craft_windows), so track a per-product
+    # cursor that advances after each product's assets finish.
+    nocap_cursor: date = today
+    nocap_current_pid: str | None = None
+
+    for asset in sorted_assets:
+        pid       = asset.get("product_id")
+        vv        = asset.get("variable_values") or {}
+        combo_key = _combo_key(vv, variable_fields)
+        template  = _find_matching_template(vv, templates)
+        if not template:
+            continue
+
+        step_name_list = template.get("step_names", [])
+        ordered_names  = sort_step_names(step_name_list, step_order)
+        steps = [
+            {
+                "step_name":     name,
+                "craft":         craft_by_step_name.get(name),
+                "estimate_days": max(int((matrix_by_step_name.get(name) or {}).get(combo_key) or 1), 1),
+            }
+            for name in ordered_names
+        ]
+
+        if caps:
+            # Forward-only: start each asset from today, push capped steps out
+            # via craft windows, no backward pullback (steps land as early as
+            # possible — correct for cadence mode where we derive release dates
+            # from actual completions, not the other way around).
+            work_items = _schedule_steps_capped(
+                steps, deps, today, today, craft_windows, caps, forward_only=True
+            )
+        else:
+            # No craft caps: advance the cursor when we move to a new product
+            # so each product's assets start after the previous product finishes.
+            # Within a product, assets run in parallel (same cursor date).
+            if pid != nocap_current_pid:
+                if nocap_current_pid is not None and nocap_current_pid in max_end_by_product:
+                    nocap_cursor = date.fromisoformat(max_end_by_product[nocap_current_pid]) + timedelta(days=1)
+                nocap_current_pid = pid
+            work_items = schedule_steps_forward(steps, deps, nocap_cursor)
+
+        for w in work_items:
+            payload.append({
+                "session_id":    session_id,
+                "studio_id":     studio_id,
+                "asset_id":      asset["id"],
+                "step_name":     w["step_name"],
+                "craft":         w.get("craft"),
+                "estimate_days": w.get("estimate_days"),
+                "start_date":    w["start_date"],
+                "end_date":      w["end_date"],
+            })
+            if pid:
+                try:
+                    end = date.fromisoformat(w["end_date"])
+                    if end > date.fromisoformat(max_end_by_product.get(pid, "1900-01-01")):
+                        max_end_by_product[pid] = w["end_date"]
+                except ValueError:
+                    pass
 
     if not payload:
         raise ValueError("Work expansion produced no work items")
@@ -624,12 +758,21 @@ def _schedule_steps_capped(
     horizon_start: date,
     craft_windows: dict[str, list[tuple[date, date]]],
     caps: dict[str, int],
+    *,
+    forward_only: bool = False,
 ) -> list:
     """
-    Backward DAG scheduling with per-craft concurrent-asset caps.
+    DAG scheduling with per-craft concurrent-asset caps.
 
-    Finds the critical path to determine how early to start, then forward-schedules
-    through the DAG from that anchor, applying cap constraints per step.
+    Two-pass approach (default, backward mode):
+    1. Forward cap-push pass: anchor at (release − critical_path), schedule forward,
+       pushing capped steps out until the cap has room.
+    2. Backward pullback pass: pull uncapped steps (prep, polish, etc.) as late as
+       possible — just before their successor's actual start — so each asset's work
+       block stays compact instead of frontloading unconstrained steps.
+
+    forward_only=True: anchor at horizon_start (today), skip the backward pullback.
+    Used for cadence scheduling where work should begin as early as possible.
     """
     if not steps:
         return []
@@ -639,33 +782,113 @@ def _schedule_steps_capped(
     local_deps = {n: [d for d in dep_by_name.get(n, []) if d in names] for n in names}
     sorted_names = _topo_sort_subset(local_deps, names)
 
-    cp_days     = _critical_path_days(sorted_names, local_deps, name_to_step)
-    chain_start = max(release - timedelta(days=cp_days - 1), horizon_start)
+    if forward_only:
+        chain_start = horizon_start
+    else:
+        cp_days     = _critical_path_days(sorted_names, local_deps, name_to_step)
+        chain_start = max(release - timedelta(days=cp_days - 1), horizon_start)
 
-    finish: dict = {}
-    result = []
+    # ── Pass 1: forward cap-push ──────────────────────────────────────────────
+    actual_start: dict[str, date] = {}
+    actual_end:   dict[str, date] = {}
+    finish:       dict[str, date] = {}
+
     for name in sorted_names:
         s     = name_to_step[name]
         days  = max(int(s.get("estimate_days") or 1), 1)
         craft = s.get("craft")
         dep_names = local_deps[name]
-        earliest  = max((finish.get(d, chain_start) + timedelta(days=1) for d in dep_names), default=chain_start)
+        earliest  = max(
+            (finish.get(d, chain_start) + timedelta(days=1) for d in dep_names),
+            default=chain_start,
+        )
         cap = caps.get(craft) if craft else None
         if cap:
             earliest = _find_earliest_uncapped_start(earliest, days, craft, craft_windows, cap)
         end = earliest + timedelta(days=days - 1)
         finish[name] = end
-        # Register immediately so parallel steps within this asset count against the cap.
+        actual_start[name] = earliest
+        actual_end[name]   = end
         if craft and cap:
             craft_windows.setdefault(craft, []).append((earliest, end))
-        result.append({
+
+    if forward_only:
+        return [
+            {
+                "step_name":     name,
+                "craft":         name_to_step[name].get("craft"),
+                "estimate_days": max(int(name_to_step[name].get("estimate_days") or 1), 1),
+                "start_date":    actual_start[name].isoformat(),
+                "end_date":      actual_end[name].isoformat(),
+            }
+            for name in sorted_names
+        ]
+
+    # ── Pass 2: backward pullback for uncapped steps ──────────────────────────
+    # Pull each uncapped step to sit just before its successor starts, so
+    # prep/polish chains don't frontload at chain_start while capped production
+    # work sits months later.
+    #
+    # IMPORTANT: steps that are capped OR have any capped ancestor (transitively)
+    # must keep their forward-computed positions.  Only "pure pre-production" chains
+    # with zero capped ancestry get pulled back.  Without this guard, post-capped
+    # steps (e.g. a review step after a capped 2D pass) get anchored to the product
+    # release date, producing disconnected stubs far from the work block.
+    rdeps: dict[str, list[str]] = {n: [] for n in names}
+    for n, ds in local_deps.items():
+        for d in ds:
+            rdeps[d].append(n)
+
+    # Compute capped ancestry in topo order (predecessors before successors).
+    capped_ancestry: set[str] = set()
+    for name in sorted_names:
+        craft = name_to_step[name].get("craft")
+        is_capped = bool(caps.get(craft) if craft else False)
+        has_capped_ancestor = any(d in capped_ancestry for d in local_deps[name])
+        if is_capped or has_capped_ancestor:
+            capped_ancestry.add(name)
+
+    # Orphan fallback anchor: when an uncapped step has no explicit successors
+    # linking it to the capped work, fall back to "just before the first capped
+    # step starts" rather than "release date".  This matters when the global cap
+    # has pushed capped steps past the product release date — without this, orphan
+    # prep steps anchor to the (earlier) release date and appear disconnected.
+    directly_capped = {n for n in names if caps.get(name_to_step[n].get("craft") or "")}
+    orphan_anchor = (
+        min(actual_start[n] for n in directly_capped) - timedelta(days=1)
+        if directly_capped else release
+    )
+
+    for name in reversed(sorted_names):
+        if name in capped_ancestry:
+            continue  # capped or downstream of capped — keep forward position
+
+        successors = rdeps[name]
+        latest_end = (
+            min(actual_start[s] - timedelta(days=1) for s in successors)
+            if successors else orphan_anchor
+        )
+        days = max(int(name_to_step[name].get("estimate_days") or 1), 1)
+
+        # Floor: cannot start before all predecessors finish.
+        deps_floor = max(
+            (actual_end[d] + timedelta(days=1) for d in local_deps[name] if d in actual_end),
+            default=horizon_start,
+        )
+        latest_start       = max(latest_end - timedelta(days=days - 1), horizon_start, deps_floor)
+        actual_start[name] = latest_start
+        actual_end[name]   = latest_start + timedelta(days=days - 1)
+
+    return [
+        {
             "step_name":     name,
-            "craft":         craft,
-            "estimate_days": days,
-            "start_date":    earliest.isoformat(),
-            "end_date":      end.isoformat(),
-        })
-    return result
+            "craft":         name_to_step[name].get("craft"),
+            "estimate_days": max(int(name_to_step[name].get("estimate_days") or 1), 1),
+            "start_date":    actual_start[name].isoformat(),
+            "end_date":      actual_end[name].isoformat(),
+        }
+        for name in sorted_names
+    ]
 
 
 def _find_matching_template(vv: dict, templates: list) -> dict | None:
