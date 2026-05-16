@@ -15,6 +15,7 @@ from lib.scenario.shared import (
     insert_products,
     expand_and_insert_assets,
     expand_and_insert_work,
+    expand_and_insert_work_cadence,
     rollback,
     normalize_scale_key,
     normalize_profile_counts,
@@ -80,19 +81,42 @@ async def run_rule_based_generation(session_id: str, studio_id: str, scope: dict
         variable_fields, known_combo_keys, matrix_by_step_name, step_order
     )
 
+    has_cadence_interval = category == "earliest_ship" and bool(scope.get("release_interval_days"))
     craft_caps = scope.get("craft_caps") or {}
-    max_end_by_product_id = await expand_and_insert_work(
-        session_id, studio_id, asset_rows, templates, inserted_products,
-        scope, step_order, variable_fields, matrix_by_step_name, craft_by_step_name,
-        craft_caps=craft_caps or None,
-        scenario_category=category,
-        dep_by_step_name=dep_by_step_name,
-    )
 
-    # ── Step 4 (earliest_ship only): Derive + update product release dates ────
-    if category == "earliest_ship":
-        log.info("Scenario %s (rule-based) — computing derived product release dates", session_id)
-        await _update_product_dates_from_work(session_id, inserted_products, max_end_by_product_id)
+    if has_cadence_interval:
+        # ── Cadence algorithm ──────────────────────────────────────────────────
+        # 1. Forward-schedule all assets globally (one pool, shared cap).
+        #    Product-asset assignments are NOT changed — PAW hierarchy is fixed.
+        # 2. Compute actual completion date per product (max end_date of its assets).
+        # 3. Derive sprint release dates working backwards from Sprint N:
+        #    - Sprint N date = actual completion of Sprint N's last asset
+        #    - Sprint N-1 date = max(Sprint N date - interval, Sprint N-1 completion)
+        #    - If a sprint slips past the cadence date, all earlier sprints step
+        #      back from the slipped date (no consequence to the work schedule).
+        interval_days = int(scope.get("release_interval_days") or 14)
+        log.info("Scenario %s (rule-based) — cadence scheduling (%s products, %d-day interval)",
+                 session_id, len(inserted_products), interval_days)
+        raw_completions = await expand_and_insert_work_cadence(
+            session_id, studio_id, asset_rows, templates, inserted_products,
+            scope, step_order, variable_fields, matrix_by_step_name, craft_by_step_name,
+            craft_caps=craft_caps or None,
+            dep_by_step_name=dep_by_step_name,
+        )
+        derived_dates = _derive_cadence_sprint_dates(inserted_products, raw_completions, interval_days)
+        await _update_product_dates_from_work(session_id, inserted_products, derived_dates)
+    else:
+        # ── Single-launch (target_date or earliest_ship with no interval) ──────
+        max_end_by_product_id = await expand_and_insert_work(
+            session_id, studio_id, asset_rows, templates, inserted_products,
+            scope, step_order, variable_fields, matrix_by_step_name, craft_by_step_name,
+            craft_caps=craft_caps or None,
+            scenario_category=category,
+            dep_by_step_name=dep_by_step_name,
+        )
+        if category == "earliest_ship":
+            log.info("Scenario %s (rule-based) — computing derived product release dates", session_id)
+            await _update_product_dates_from_work(session_id, inserted_products, max_end_by_product_id)
 
     log.info("Scenario %s (rule-based) — generation complete", session_id)
 
@@ -103,8 +127,10 @@ def _build_products(scope: dict) -> list[dict]:
     """
     Generate product list without AI using cadence-aware naming.
 
-    For earliest_ship: target_release_date is set to None (placeholder) —
-    the engine computes real dates after forward scheduling.
+    For earliest_ship with a cadence interval: dates are derived from the interval
+    (today + interval_days * i), and work is backward-scheduled from them.
+    For earliest_ship single-launch (no interval): target_release_date is None —
+    the engine computes the date after forward scheduling.
     For target_date: the final product gets scope["target_date"]; earlier
     products are spaced evenly backwards from it.
     """
@@ -130,7 +156,9 @@ def _build_products(scope: dict) -> list[dict]:
             interval_days = int(horizon * 30.44 / max(n, 1))
 
     def _target(i: int) -> str | None:
-        if category == "earliest_ship":
+        # Only omit dates for earliest_ship when there's no cadence interval
+        # (i.e. single-launch mode — date is derived from forward-scheduled work).
+        if category == "earliest_ship" and not interval_days:
             return placeholder
         return (today + timedelta(days=interval_days * i)).isoformat()
 
@@ -396,6 +424,45 @@ def _build_deterministic_templates(
 
 
 # ── Step 4 helpers ────────────────────────────────────────────────────────────
+
+def _derive_cadence_sprint_dates(
+    inserted_products: list,
+    raw_completions: dict[str, str],
+    interval_days: int,
+) -> dict[str, str]:
+    """
+    Derive cadence-adjusted sprint release dates working backwards from the last sprint.
+
+    Algorithm (applied from Sprint N back to Sprint 1):
+    - Sprint N date = actual completion of Sprint N's assets.
+    - Sprint N-k date = max(Sprint N-k+1 date - interval, Sprint N-k actual completion).
+      i.e. keep the cadence spacing unless a sprint's assets aren't done in time,
+      in which case use the actual completion and cascade the slip backwards.
+
+    Returned dict maps product_id → ISO date string suitable for target_release_date.
+    """
+    today = date.today()
+    n     = len(inserted_products)
+    if n == 0:
+        return {}
+
+    completions: list[date] = []
+    for p in inserted_products:
+        comp_str = raw_completions.get(p["id"])
+        try:
+            completions.append(date.fromisoformat(comp_str) if comp_str else today)
+        except ValueError:
+            completions.append(today)
+
+    sprint_dates: list[date] = [today] * n
+    sprint_dates[n - 1] = completions[n - 1]
+
+    for i in range(n - 2, -1, -1):
+        ideal            = sprint_dates[i + 1] - timedelta(days=interval_days)
+        sprint_dates[i]  = max(ideal, completions[i])
+
+    return {p["id"]: sprint_dates[i].isoformat() for i, p in enumerate(inserted_products)}
+
 
 async def _update_product_dates_from_work(
     session_id: str,

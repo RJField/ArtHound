@@ -53,6 +53,10 @@ export default function ScenarioPlanner() {
           error={scenario.error}
           onSend={scenario.sendMessage}
           onRetry={scenario.retryGeneration}
+          pendingAction={scenario.pendingAction}
+          applyingAction={scenario.applyingAction}
+          onApplyAction={scenario.applyAction}
+          onDismissAction={scenario.dismissAction}
         />
       )}
 

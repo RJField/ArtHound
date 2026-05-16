@@ -23,6 +23,8 @@ export function useScenario() {
   const [generationMode,    setGenerationMode]    = useState('rule_based')
   const [preflightWarnings, setPreflightWarnings] = useState([])
   const [scenarioCategory,  setScenarioCategory]  = useState(null)
+  const [pendingAction,     setPendingAction]     = useState(null)  // { type, scope_changes, description }
+  const [applyingAction,    setApplyingAction]    = useState(false)
 
   const pollRef      = useRef(null)
   const pollStartRef = useRef(null)
@@ -82,6 +84,8 @@ export function useScenario() {
           schedulePoll(sid)
         } else {
           pollStartRef.current = null
+          // Generation just completed — load the pivot message the backend wrote.
+          loadMessages(sid)
         }
       } catch {
         schedulePoll(sid)
@@ -147,6 +151,7 @@ export function useScenario() {
       setMessages(prev => [...prev, { role: 'assistant', content: res.message }])
       setStage(res.ai_stage)
       setShowEscape(res.show_escape ?? false)
+      if (res.action) setPendingAction(res.action)
 
       if (res.generating) startPolling(sessionId)
     } catch (err) {
@@ -157,6 +162,32 @@ export function useScenario() {
       setSending(false)
     }
   }, [sessionId, startPolling])
+
+  // ── Apply a pending action (e.g. regenerate with changed scope) ──────────
+  const applyAction = useCallback(async (action) => {
+    if (!sessionId || !action) return
+    setApplyingAction(true)
+    setPendingAction(null)
+    setError(null)
+    try {
+      const res = await apiFetch(`/api/scenario/${sessionId}/regenerate`, {
+        method: 'POST',
+        body: JSON.stringify({ scope_changes: action.scope_changes }),
+      })
+      setStage(res.ai_stage)
+      // Clear stale scenario data immediately so the viewer shows the spinner.
+      setProducts([])
+      setAssets([])
+      setWork([])
+      startPolling(sessionId)
+    } catch (err) {
+      setError(err.message ?? 'Failed to regenerate')
+    } finally {
+      setApplyingAction(false)
+    }
+  }, [sessionId, startPolling])
+
+  const dismissAction = useCallback(() => setPendingAction(null), [])
 
   // ── Retry after generation failure ────────────────────────────────────────
   const retryGeneration = useCallback(async () => {
@@ -193,10 +224,14 @@ export function useScenario() {
     generationMode,
     preflightWarnings,
     scenarioCategory,
+    pendingAction,
+    applyingAction,
     isGenerating: GENERATING_STAGES.has(stage),
     hasData: products.length > 0 || assets.length > 0 || work.length > 0,
     beginGeneration,
     sendMessage,
+    applyAction,
+    dismissAction,
     retryGeneration,
     dismiss,
   }
