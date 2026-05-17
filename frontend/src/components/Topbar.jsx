@@ -1,10 +1,8 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { NavLink, useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { apiFetch } from '../lib/api'
 import UserModal from './UserModal'
-import FieldMappingModal from './FieldMappingModal'
-import SyntheticDataModal from './SyntheticDataModal'
 import { cn } from '../lib/utils'
 
 const STUDIO_NAV = [
@@ -26,32 +24,13 @@ const VENDOR_NAV = [
 ]
 
 export default function Topbar() {
-  const { role, isAdmin, isPlatformAdmin, signOut } = useAuth()
+  const { role, isPlatformAdmin, signOut } = useAuth()
   const navigate = useNavigate()
   const [userOpen, setUserOpen]           = useState(false)
-  const [settingsOpen, setSettingsOpen]   = useState(false)
-  const [syntheticOpen, setSyntheticOpen] = useState(false)
   const [syncing, setSyncing]             = useState(false)
   const [syncMsg, setSyncMsg]             = useState(null)
-  const [driftPending, setDriftPending]   = useState(false)
 
   const nav = role === 'vendor' ? VENDOR_NAV : STUDIO_NAV
-
-  useEffect(() => {
-    if (role !== 'studio') return
-    apiFetch('/api/sync/schema-drift')
-      .then(d => setDriftPending(d.pending))
-      .catch(() => {})
-  }, [role])
-
-  function handleSettingsClose() {
-    setSettingsOpen(false)
-    if (role === 'studio') {
-      apiFetch('/api/sync/schema-drift')
-        .then(d => setDriftPending(d.pending))
-        .catch(() => {})
-    }
-  }
 
   async function handleSync() {
     setSyncing(true)
@@ -110,14 +89,6 @@ export default function Topbar() {
               {syncing ? 'Syncing…' : syncMsg === 'ok' ? 'Synced ✓' : syncMsg === 'err' ? 'Failed' : 'Sync'}
             </button>
           )}
-          {isAdmin && (
-            <button
-              onClick={() => setSyntheticOpen(true)}
-              className="px-3 py-1.5 rounded-md text-xs text-muted hover:text-foreground hover:bg-surface-2 transition-colors cursor-pointer"
-            >
-              Synthetic Data
-            </button>
-          )}
           {isPlatformAdmin && (
             <button
               onClick={() => navigate('/admin')}
@@ -126,15 +97,6 @@ export default function Topbar() {
               Platform Admin
             </button>
           )}
-          <button
-            onClick={() => setSettingsOpen(true)}
-            className="relative px-3 py-1.5 rounded-md text-xs text-muted hover:text-foreground hover:bg-surface-2 transition-colors cursor-pointer"
-          >
-            Settings
-            {driftPending && (
-              <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-error" />
-            )}
-          </button>
           <button
             onClick={() => setUserOpen(true)}
             className="px-3 py-1.5 rounded-md text-xs text-muted hover:text-foreground hover:bg-surface-2 transition-colors cursor-pointer"
@@ -150,9 +112,7 @@ export default function Topbar() {
         </div>
       </header>
 
-      {userOpen      && <UserModal          onClose={() => setUserOpen(false)} />}
-      {settingsOpen  && <FieldMappingModal  onClose={handleSettingsClose} />}
-      {syntheticOpen && <SyntheticDataModal onClose={() => setSyntheticOpen(false)} />}
+      {userOpen && <UserModal onClose={() => setUserOpen(false)} />}
     </>
   )
 }

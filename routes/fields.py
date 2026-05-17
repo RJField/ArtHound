@@ -77,7 +77,7 @@ async def _get_slot_field_names(studio_id: str) -> dict[str, str]:
 
 @router.get("/fields")
 async def get_fields(
-    bucket: str | None = Query(None, description="Filter by meta_bucket (e.g. production, technical)"),
+    bucket: str | None = Query(None, description="Filter by meta_bucket (e.g. production, tech_specs, creative)"),
     include_native: bool = Query(False, description="Include source_native fields (hidden by default)"),
     current_user: CurrentUser = Depends(require_studio),
 ):
