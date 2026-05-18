@@ -179,24 +179,17 @@ def _build_products(scope: dict) -> list[dict]:
             products.append({"name": name, "target_release_date": _target(i)})
 
     elif cadence == "regular_releases":
-        if interval_days >= 80:
-            # Roughly quarterly or slower → quarter labels.
-            names = _quarter_labels(today, n)
-            for i, name in enumerate(names, 1):
-                products.append({"name": name, "target_release_date": _target(i)})
-        elif interval_days >= 25:
-            # Monthly-ish → "Jun '26" style labels.
-            names = _month_labels(today, n, interval_days)
-            for i, name in enumerate(names, 1):
-                products.append({"name": name, "target_release_date": _target(i)})
-        else:
+        if interval_days < 25:
             # Biweekly / weekly → "Sprint N".
             for i in range(1, n + 1):
                 products.append({"name": f"Sprint {i}", "target_release_date": _target(i)})
+        else:
+            for i in range(1, n + 1):
+                products.append({"name": f"Product {i}", "target_release_date": _target(i)})
 
     else:
         for i in range(1, n + 1):
-            products.append({"name": f"Release {i}", "target_release_date": _target(i)})
+            products.append({"name": f"Product {i}", "target_release_date": _target(i)})
 
     return products
 

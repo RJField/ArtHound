@@ -24,13 +24,15 @@ export default function ScenarioChat({
   applyingAction,
 }) {
   const [input, setInput] = useState('')
-  const bottomRef = useRef(null)
+  const scrollRef = useRef(null)
   const inputRef  = useRef(null)
 
-  // Auto-scroll to latest message.
+  // Scroll the chat container (not the page) to the bottom on new messages.
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, isGenerating, stage])
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+    }
+  }, [messages, isGenerating, stage, error])
 
   const handleSubmit = (e) => {
     e.preventDefault()
@@ -52,7 +54,7 @@ export default function ScenarioChat({
   return (
     <div className="flex flex-col border-b border-border" style={{ height: '38vh', minHeight: 220 }}>
       {/* Message thread */}
-      <div className="flex-1 overflow-y-auto px-6 py-4 flex flex-col gap-3">
+      <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-4 flex flex-col gap-3">
         {messages.map((msg, i) => (
           <MessageBubble key={i} role={msg.role} content={msg.content} />
         ))}
@@ -88,7 +90,14 @@ export default function ScenarioChat({
           />
         )}
 
-        <div ref={bottomRef} />
+        {/* Send error (e.g. overloaded) */}
+        {error && (
+          <div className="text-sm text-red-400 bg-surface-2 border border-border rounded-lg px-4 py-2">
+            {error}
+          </div>
+        )}
+
+        <div />
       </div>
 
       {/* Escape hatch */}

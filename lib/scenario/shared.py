@@ -4,6 +4,7 @@ deterministic engine (deterministic.py).
 
 Everything here is pure logic or DB I/O — no AI calls.
 """
+import bisect
 import logging
 import math
 from datetime import date, timedelta
@@ -306,7 +307,12 @@ async def expand_and_insert_work(
 
     # Global across all products — the cap represents a studio-wide concurrency
     # constraint; all assets across all sprints compete for the same slots.
-    craft_windows: dict[str, list[tuple[date, date]]] = {}
+    craft_starts: dict[str, list[date]] = {}
+    craft_ends:   dict[str, list[date]] = {}
+
+    # Cache for uncapped paths: assets sharing (combo_key, product) get identical
+    # dates so we schedule once and clone, skipping redundant DAG work.
+    _uncapped_cache: dict[tuple, list] = {}
 
     for pid in sorted(assets_by_product, key=lambda p: product_release.get(p, date.max)):
         p_assets = assets_by_product[pid]
@@ -316,6 +322,17 @@ async def expand_and_insert_work(
             p_assets = sorted(
                 p_assets,
                 key=lambda a: _PRIORITY_ORDER.get((a.get("priority") or "").lower(), 1),
+            )
+
+        # For backward scheduling with caps: pre-compute a batch anchor that gives
+        # all assets in this product enough runway to complete before release.
+        # Per-asset cp_days is far too short when many assets compete for capped crafts.
+        batch_start: date | None = None
+        if caps and not forward and p_assets:
+            batch_start = _batch_chain_start(
+                p_assets, templates, variable_fields,
+                matrix_by_step_name, craft_by_step_name, step_order,
+                deps, release, horizon_start, caps,
             )
 
         product_end: date = product_cursor  # track latest end date for forward mode
@@ -341,17 +358,28 @@ async def expand_and_insert_work(
             if forward:
                 if caps:
                     work_items = _schedule_steps_forward_capped(
-                        steps, deps, product_cursor, craft_windows, caps
+                        steps, deps, product_cursor, craft_starts, craft_ends, caps
                     )
                 else:
-                    work_items = schedule_steps_forward(steps, deps, product_cursor)
+                    _key = (combo_key, pid)
+                    if _key in _uncapped_cache:
+                        work_items = _uncapped_cache[_key]
+                    else:
+                        work_items = schedule_steps_forward(steps, deps, product_cursor)
+                        _uncapped_cache[_key] = work_items
             else:
                 if caps:
                     work_items = _schedule_steps_capped(
-                        steps, deps, release, horizon_start, craft_windows, caps
+                        steps, deps, release, horizon_start, craft_starts, craft_ends, caps,
+                        chain_start_override=batch_start,
                     )
                 else:
-                    work_items = schedule_steps(steps, deps, release, horizon_start)
+                    _key = (combo_key, pid)
+                    if _key in _uncapped_cache:
+                        work_items = _uncapped_cache[_key]
+                    else:
+                        work_items = schedule_steps(steps, deps, release, horizon_start)
+                        _uncapped_cache[_key] = work_items
 
             for w in work_items:
                 payload.append({
@@ -433,15 +461,18 @@ async def expand_and_insert_work_cadence(
         ),
     )
 
-    craft_windows: dict[str, list[tuple[date, date]]] = {}
+    craft_starts: dict[str, list[date]] = {}
+    craft_ends:   dict[str, list[date]] = {}
     payload: list = []
     max_end_by_product: dict[str, str] = {}
 
-    # No-caps cadence: assets for different products cannot overlap (there's
-    # nothing forcing serialisation via craft_windows), so track a per-product
-    # cursor that advances after each product's assets finish.
+    # No-caps cadence: assets for different products cannot overlap, so track a
+    # per-product cursor that advances after each product's assets finish.
     nocap_cursor: date = today
     nocap_current_pid: str | None = None
+
+    # Cache for uncapped paths: same (combo_key, product) → identical dates.
+    _uncapped_cache: dict[tuple, list] = {}
 
     for asset in sorted_assets:
         pid       = asset.get("product_id")
@@ -463,12 +494,11 @@ async def expand_and_insert_work_cadence(
         ]
 
         if caps:
-            # Forward-only: start each asset from today, push capped steps out
-            # via craft windows, no backward pullback (steps land as early as
-            # possible — correct for cadence mode where we derive release dates
-            # from actual completions, not the other way around).
+            # Forward-only: start each asset from today, push capped steps out,
+            # no backward pullback (steps land as early as possible — correct for
+            # cadence mode where we derive release dates from actual completions).
             work_items = _schedule_steps_capped(
-                steps, deps, today, today, craft_windows, caps, forward_only=True
+                steps, deps, today, today, craft_starts, craft_ends, caps, forward_only=True
             )
         else:
             # No craft caps: advance the cursor when we move to a new product
@@ -478,7 +508,12 @@ async def expand_and_insert_work_cadence(
                 if nocap_current_pid is not None and nocap_current_pid in max_end_by_product:
                     nocap_cursor = date.fromisoformat(max_end_by_product[nocap_current_pid]) + timedelta(days=1)
                 nocap_current_pid = pid
-            work_items = schedule_steps_forward(steps, deps, nocap_cursor)
+            _key = (combo_key, pid)
+            if _key in _uncapped_cache:
+                work_items = _uncapped_cache[_key]
+            else:
+                work_items = schedule_steps_forward(steps, deps, nocap_cursor)
+                _uncapped_cache[_key] = work_items
 
         for w in work_items:
             payload.append({
@@ -692,7 +727,8 @@ def _schedule_steps_forward_capped(
     steps: list,
     dep_by_name: dict,
     start: date,
-    craft_windows: dict[str, list[tuple[date, date]]],
+    craft_starts: dict[str, list[date]],
+    craft_ends: dict[str, list[date]],
     caps: dict[str, int],
 ) -> list:
     """Forward DAG scheduling with per-craft concurrent-asset caps."""
@@ -714,12 +750,13 @@ def _schedule_steps_forward_capped(
         earliest  = max((finish.get(d, start) + timedelta(days=1) for d in dep_names), default=start)
         cap = caps.get(craft) if craft else None
         if cap:
-            earliest = _find_earliest_uncapped_start(earliest, days, craft, craft_windows, cap)
+            earliest = _find_earliest_uncapped_start(earliest, days, craft, craft_starts, craft_ends, cap)
         end = earliest + timedelta(days=days - 1)
         finish[name] = end
         # Register immediately so parallel steps within this asset count against the cap.
         if craft and cap:
-            craft_windows.setdefault(craft, []).append((earliest, end))
+            bisect.insort(craft_starts.setdefault(craft, []), earliest)
+            bisect.insort(craft_ends.setdefault(craft, []), end)
         result.append({
             "step_name":     name,
             "craft":         craft,
@@ -734,21 +771,108 @@ def _find_earliest_uncapped_start(
     proposed_start: date,
     duration_days: int,
     craft: str,
-    craft_windows: dict[str, list[tuple[date, date]]],
+    craft_starts: dict[str, list[date]],
+    craft_ends: dict[str, list[date]],
     cap: int,
 ) -> date:
     """
-    Push proposed_start forward until fewer than `cap` already-scheduled assets
-    of the same craft overlap [proposed_start, proposed_start + duration - 1].
+    Find the earliest start >= proposed_start where fewer than `cap` already-scheduled
+    windows for `craft` overlap the span [start, start + duration - 1].
+
+    Uses sorted start/end lists with bisect for O(log W) overlap counting.
+    Candidates are proposed_start plus each (window_end + 1) >= proposed_start —
+    the only dates where concurrency can drop, so day-by-day stepping is unnecessary.
     """
-    windows = craft_windows.get(craft, [])
-    start = proposed_start
-    while True:
-        end     = start + timedelta(days=duration_days - 1)
-        overlap = sum(1 for (ws, we) in windows if ws <= end and we >= start)
-        if overlap < cap:
-            return start
-        start += timedelta(days=1)
+    starts = craft_starts.get(craft, [])
+    ends   = craft_ends.get(craft, [])
+
+    if not starts:
+        return proposed_start
+
+    def overlap_count(s: date) -> int:
+        e = s + timedelta(days=duration_days - 1)
+        # windows starting <= e  minus  windows ending < s
+        return bisect.bisect_right(starts, e) - bisect.bisect_left(ends, s)
+
+    if overlap_count(proposed_start) < cap:
+        return proposed_start
+
+    # Walk candidate starts: each (we + 1) that is strictly after proposed_start.
+    # ends is sorted; bisect_right(ends, proposed_start - 1day) gives the first
+    # index where ends[i] >= proposed_start, so ends[i] + 1 > proposed_start.
+    idx = bisect.bisect_right(ends, proposed_start - timedelta(days=1))
+    while idx < len(ends):
+        s = ends[idx] + timedelta(days=1)
+        if overlap_count(s) < cap:
+            return s
+        idx += 1
+
+    # All existing windows exhausted — start the day after the last one ends.
+    return ends[-1] + timedelta(days=1)
+
+
+def _batch_chain_start(
+    p_assets: list,
+    templates: list,
+    variable_fields: list,
+    matrix_by_step_name: dict,
+    craft_by_step_name: dict,
+    step_order: list,
+    dep_by_step_name: dict,
+    release: date,
+    horizon_start: date,
+    caps: dict,
+) -> date:
+    """
+    Compute the earliest chain_start that gives the batch of assets in p_assets
+    enough runway to all complete by release, respecting craft caps.
+
+    For each capped craft: minimum calendar span = ceil(sum_of_all_estimate_days / cap).
+    chain_start = release - max(single_asset_cp, max_craft_span).
+
+    Without this, every asset in the batch anchors to the same (release − single_cp),
+    and the cap-push shoves assets forward past the release date.
+    """
+    craft_total_days: dict[str, int] = {}
+    max_cp = 0
+
+    for asset in p_assets:
+        vv = asset.get("variable_values") or {}
+        combo_key = _combo_key(vv, variable_fields)
+        template = _find_matching_template(vv, templates)
+        if not template:
+            continue
+
+        step_name_list = template.get("step_names", [])
+        ordered_names = sort_step_names(step_name_list, step_order)
+        steps_local = []
+        for step_name in ordered_names:
+            days = max(int((matrix_by_step_name.get(step_name) or {}).get(combo_key) or 1), 1)
+            craft = craft_by_step_name.get(step_name)
+            if craft and caps.get(craft):
+                craft_total_days[craft] = craft_total_days.get(craft, 0) + days
+            steps_local.append({"step_name": step_name, "estimate_days": days})
+
+        names_local = {s["step_name"] for s in steps_local}
+        name_to_step_local = {s["step_name"]: s for s in steps_local}
+        local_deps_local = {
+            n: [d for d in dep_by_step_name.get(n, []) if d in names_local]
+            for n in names_local
+        }
+        sorted_local = _topo_sort_subset(local_deps_local, names_local)
+        max_cp = max(max_cp, _critical_path_days(sorted_local, local_deps_local, name_to_step_local))
+
+    if craft_total_days:
+        max_craft_span = max(
+            math.ceil(total / caps[craft])
+            for craft, total in craft_total_days.items()
+            if caps.get(craft, 0) > 0
+        )
+    else:
+        max_craft_span = 0
+
+    span = max(max_cp, max_craft_span)
+    return max(release - timedelta(days=span - 1), horizon_start)
 
 
 def _schedule_steps_capped(
@@ -756,20 +880,27 @@ def _schedule_steps_capped(
     dep_by_name: dict,
     release: date,
     horizon_start: date,
-    craft_windows: dict[str, list[tuple[date, date]]],
+    craft_starts: dict[str, list[date]],
+    craft_ends: dict[str, list[date]],
     caps: dict[str, int],
     *,
     forward_only: bool = False,
+    chain_start_override: date | None = None,
 ) -> list:
     """
     DAG scheduling with per-craft concurrent-asset caps.
 
     Two-pass approach (default, backward mode):
-    1. Forward cap-push pass: anchor at (release − critical_path), schedule forward,
+    1. Forward cap-push pass: anchor at chain_start, schedule forward,
        pushing capped steps out until the cap has room.
     2. Backward pullback pass: pull uncapped steps (prep, polish, etc.) as late as
        possible — just before their successor's actual start — so each asset's work
        block stays compact instead of frontloading unconstrained steps.
+
+    chain_start_override: pre-computed batch anchor from _batch_chain_start that
+    accounts for the total cap-constrained workload across all assets in the batch.
+    When provided, we use min(cp_chain_start, override) so the window is never
+    narrower than a single asset's critical path needs.
 
     forward_only=True: anchor at horizon_start (today), skip the backward pullback.
     Used for cadence scheduling where work should begin as early as possible.
@@ -785,8 +916,14 @@ def _schedule_steps_capped(
     if forward_only:
         chain_start = horizon_start
     else:
-        cp_days     = _critical_path_days(sorted_names, local_deps, name_to_step)
-        chain_start = max(release - timedelta(days=cp_days - 1), horizon_start)
+        cp_days        = _critical_path_days(sorted_names, local_deps, name_to_step)
+        cp_chain_start = max(release - timedelta(days=cp_days - 1), horizon_start)
+        if chain_start_override is not None:
+            # Take the earlier date: override accounts for total batch cap stretch;
+            # cp_chain_start ensures we never clip a single asset's own critical path.
+            chain_start = min(cp_chain_start, chain_start_override)
+        else:
+            chain_start = cp_chain_start
 
     # ── Pass 1: forward cap-push ──────────────────────────────────────────────
     actual_start: dict[str, date] = {}
@@ -804,13 +941,14 @@ def _schedule_steps_capped(
         )
         cap = caps.get(craft) if craft else None
         if cap:
-            earliest = _find_earliest_uncapped_start(earliest, days, craft, craft_windows, cap)
+            earliest = _find_earliest_uncapped_start(earliest, days, craft, craft_starts, craft_ends, cap)
         end = earliest + timedelta(days=days - 1)
         finish[name] = end
         actual_start[name] = earliest
         actual_end[name]   = end
         if craft and cap:
-            craft_windows.setdefault(craft, []).append((earliest, end))
+            bisect.insort(craft_starts.setdefault(craft, []), earliest)
+            bisect.insort(craft_ends.setdefault(craft, []), end)
 
     if forward_only:
         return [

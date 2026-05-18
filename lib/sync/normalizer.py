@@ -38,19 +38,19 @@ _SCHEDULING_NAME_PATTERNS = re.compile(
 )
 _SCHEDULING_TYPES = frozenset({"date", "dateTime"})
 
-# Production, technical, business name fragments.
+# Production, tech_specs, creative name fragments.
 _PRODUCTION_PATTERNS = re.compile(
     r"\b(status|state|phase|stage|approval|review|qc|pass|fail)\b",
     re.IGNORECASE,
 )
-_TECHNICAL_PATTERNS = re.compile(
+_TECH_SPECS_PATTERNS = re.compile(
     r"\b(format|resolution|fps|poly|triangle|texture|uv\b|lod|dimension|spec|"
     r"pipeline|rig|shader|dpi|pixel|mesh)\b",
     re.IGNORECASE,
 )
-_BUSINESS_PATTERNS = re.compile(
-    r"\b(contract|billing|rate|invoice|copyright|license|budget|cost|fee)\b"
-    r"|\bip\b",
+_CREATIVE_PATTERNS = re.compile(
+    r"\b(style|mood|concept|reference|palette|color|colour|theme|aesthetic|"
+    r"direction|art\s*direction|tone|look|feel|inspiration)\b",
     re.IGNORECASE,
 )
 
@@ -70,8 +70,8 @@ def classify_field(
       1. source_native — plumbing fields; auto-suppressed
       2. scheduling    — date/timeline fields (Work only)
       3. production    — status, approval, QC
-      4. technical     — specs, formats, pipeline
-      5. business      — contracts, billing, IP
+      4. tech_specs    — specs, formats, pipeline
+      5. creative      — style, mood, concept, art direction
       6. custom        — safe default
     """
     name_lower = field_name.lower().strip()
@@ -97,13 +97,13 @@ def classify_field(
     if _PRODUCTION_PATTERNS.search(field_name):
         return "production", "primary", False
 
-    # 4. technical
-    if _TECHNICAL_PATTERNS.search(field_name):
-        return "technical", "secondary", False
+    # 4. tech_specs
+    if _TECH_SPECS_PATTERNS.search(field_name):
+        return "tech_specs", "secondary", False
 
-    # 5. business
-    if _BUSINESS_PATTERNS.search(field_name):
-        return "business", "secondary", False
+    # 5. creative
+    if _CREATIVE_PATTERNS.search(field_name):
+        return "creative", "secondary", False
 
     # 6. custom — default
     return "custom", "secondary", False

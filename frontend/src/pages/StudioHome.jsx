@@ -43,6 +43,8 @@ export default function StudioHome() {
   const [vendorCount, setVendorCount] = useState(null)
   const [error, setError]           = useState(null)
   const [openBot, setOpenBot]       = useState(null)
+  const [syncing, setSyncing]       = useState(null) // null | 'full' | 'delta'
+  const [syncMsg, setSyncMsg]       = useState(null) // null | 'ok' | 'err'
 
   useEffect(() => {
     const controller = new AbortController()
@@ -58,14 +60,49 @@ export default function StudioHome() {
 
   const loading = !summary && !error
 
+  async function runSync(full) {
+    if (syncing) return
+    setSyncing(full ? 'full' : 'delta')
+    setSyncMsg(null)
+    try {
+      await apiFetch('/api/sync/run', { method: 'POST', body: JSON.stringify({ full }) })
+      setSyncMsg('ok')
+    } catch {
+      setSyncMsg('err')
+    } finally {
+      setSyncing(null)
+      setTimeout(() => setSyncMsg(null), 3000)
+    }
+  }
+
   return (
     <main className="flex-1 p-8 flex flex-col gap-8 max-w-4xl">
       <div className="flex items-center gap-4">
         <img src="/ArtHound_logo.png" alt="ArtHound" className="w-28 h-28 rounded-xl object-cover shrink-0" />
-        <div>
-        <h1 className="text-foreground text-2xl font-semibold mb-1">
-          Welcome{profile?.org ? `, ${profile.org.name}` : ''}
-        </h1>
+        <div className="flex flex-col gap-2">
+        <div className="flex items-center gap-3 flex-wrap">
+          <h1 className="text-foreground text-2xl font-semibold">
+            Welcome{profile?.org ? `, ${profile.org.name}` : ''}
+          </h1>
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={() => runSync(false)}
+              disabled={!!syncing}
+              className="px-2.5 py-1 rounded-md text-xs border border-border text-muted hover:text-foreground hover:border-foreground/40 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {syncing === 'delta' ? 'Syncing…' : 'Delta sync'}
+            </button>
+            <button
+              onClick={() => runSync(true)}
+              disabled={!!syncing}
+              className="px-2.5 py-1 rounded-md text-xs border border-border text-muted hover:text-foreground hover:border-foreground/40 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {syncing === 'full' ? 'Syncing…' : 'Full sync'}
+            </button>
+            {syncMsg === 'ok'  && <span className="text-success text-xs">Synced ✓</span>}
+            {syncMsg === 'err' && <span className="text-error text-xs">Failed</span>}
+          </div>
+        </div>
         {summary?.last_synced_at && (
           <p className="text-muted text-sm">
             Last synced {timeAgo(summary.last_synced_at)}

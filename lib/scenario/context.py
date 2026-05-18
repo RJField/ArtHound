@@ -101,6 +101,13 @@ RULES:
   Peak concurrency figures are daily peaks (max tasks running on a single day). \
   When reporting dates or durations always say "days", not "weeks". \
   Do not convert days to weeks in your answers.
+- PROFILE RULE: Every asset belongs to exactly ONE profile with ONE estimate per \
+  step. NEVER sum estimates across multiple profiles — that produces meaningless \
+  totals. To compute total work for a step: use (asset count for each profile) × \
+  (that profile's estimate for the step), summed across profiles. Use \
+  get_asset_schedule() for per-asset estimates; use the 'Work items by step' \
+  count table for item totals. If you cannot derive a number without summing \
+  across profiles, use the tool instead.
 - NUMERIC GROUNDING: every count, date, duration, or rollup you state must \
   either (a) come directly from a value in the injected data, or (b) be a \
   mathematical derivation you show step-by-step from values in the injected data. \
@@ -193,14 +200,14 @@ async def build_discussion_prompt(studio_id: str, session_id: str) -> str:
         scope = session_r.json()[0].get("scope_json") or {}
 
     craft_caps = scope.get("craft_caps") or {}
-    matrix_section = await _build_matrix_section(studio_id)
-    scope_section   = _build_scope_section(scope)
-    data_section    = await _build_scenario_data_section(session_id, craft_caps)
+    workflow_section = await _build_workflow_structure_section(studio_id)
+    scope_section    = _build_scope_section(scope)
+    data_section     = await _build_scenario_data_section(session_id, craft_caps)
     return (
         f"{_DISCUSSION_INSTRUCTIONS}\n\n"
         f"{_DISCUSSION_DEFINITIONS}\n\n"
         f"{scope_section}\n\n"
-        f"{matrix_section}\n\n"
+        f"{workflow_section}\n\n"
         f"{data_section}"
     )
 
@@ -248,6 +255,75 @@ def _build_scope_section(scope: dict) -> str:
         lines.append("  Additional constraints:")
         for c in constraints:
             lines.append(f"    - {c}")
+
+    return "\n".join(lines)
+
+
+async def _build_workflow_structure_section(studio_id: str) -> str:
+    """
+    Workflow structure for the discussion prompt: step names, crafts, and dependency DAG only.
+    Estimate values are intentionally omitted — each asset has exactly ONE profile with ONE
+    estimate per step; summing estimates across profiles produces meaningless numbers.
+    Per-asset estimates are available via get_asset_schedule().
+    """
+    steps_r, deps_r = await asyncio.gather(
+        db_client.get(
+            _url("/rest/v1/workflow_steps"),
+            params={"studio_id": f"eq.{studio_id}", "select": "id,name,craft", "order": "created_at.asc"},
+            headers=_headers(),
+        ),
+        db_client.get(
+            _url("/rest/v1/workflow_step_dependencies"),
+            params={"select": "step_id,depends_on_step_id"},
+            headers=_headers(),
+        ),
+    )
+
+    steps = steps_r.json() if steps_r.is_success else []
+    step_by_id = {s["id"]: s for s in steps}
+
+    dep_graph: dict[str, list[str]] = {s["id"]: [] for s in steps}
+    if deps_r.is_success:
+        for d in deps_r.json():
+            if d["step_id"] in dep_graph:
+                dep_graph[d["step_id"]].append(d["depends_on_step_id"])
+
+    sorted_step_ids = _topo_sort(dep_graph)
+
+    dep_by_name: dict[str, list[str]] = {}
+    for s in steps:
+        dep_ids = dep_graph.get(s["id"], [])
+        dep_by_name[s["name"]] = [step_by_id[did]["name"] for did in dep_ids if did in step_by_id]
+
+    lines = [
+        "WORKFLOW STRUCTURE",
+        "NOTE: Estimate values are NOT shown here. Each asset has exactly ONE profile;",
+        "each step has exactly ONE estimate for that profile. Never sum estimates across",
+        "profiles — that produces meaningless totals. Use get_asset_schedule() for",
+        "per-asset estimates, or the 'Work items by step' table below for item counts.",
+        "",
+        "Steps (name | craft):",
+    ]
+    for i, sid in enumerate(sorted_step_ids, 1):
+        s = step_by_id.get(sid)
+        if not s:
+            continue
+        craft = s.get("craft") or "unassigned"
+        lines.append(f"  {i}. {s['name']} | {craft}")
+
+    lines.append("")
+    lines.append("Step dependency DAG (what must finish before each step can start):")
+    has_deps = False
+    for sid in sorted_step_ids:
+        s = step_by_id.get(sid)
+        if not s:
+            continue
+        dep_names = dep_by_name.get(s["name"], [])
+        if dep_names:
+            has_deps = True
+            lines.append(f"  {s['name']}  requires: {', '.join(dep_names)}")
+    if not has_deps:
+        lines.append("  (no dependencies defined — all steps run in parallel)")
 
     return "\n".join(lines)
 
@@ -367,9 +443,9 @@ async def _build_matrix_section(studio_id: str) -> str:
 
 async def _build_scenario_data_section(session_id: str, craft_caps: dict | None = None) -> str:
     """
-    Build a PAW-structured view of the scenario for Haiku.
-    Product → Asset → Work items so Haiku can answer per-asset questions.
-    Also includes per-craft cap utilization (days at cap / below cap) and step distribution.
+    Build an aggregated summary of the scenario for Haiku.
+    Per-asset detail is available on demand via tool calls (list_assets_in_product,
+    get_asset_schedule) — this section stays compact regardless of scenario size.
     """
     from lib.db import drain_pages
     from collections import defaultdict, Counter
@@ -402,8 +478,6 @@ async def _build_scenario_data_section(session_id: str, craft_caps: dict | None 
     products = products_r.json() if products_r.is_success else []
     assets   = assets_r.json()   if assets_r.is_success   else []
 
-    asset_by_id: dict[str, dict] = {a["id"]: a for a in assets}
-
     # Group work items by asset_id.
     work_by_asset: dict[str, list] = defaultdict(list)
     for w in work:
@@ -418,39 +492,37 @@ async def _build_scenario_data_section(session_id: str, craft_caps: dict | None 
         "GENERATED SCENARIO DATA",
         f"Total: {len(products)} products  {len(assets)} assets  {len(work)} work items",
         "",
-        "PAW SCHEDULE — Product → Asset → Work",
-        "(Each work item: step name | craft | start → end | estimate_days)",
+        "Use the list_assets_in_product and get_asset_schedule tools when you need",
+        "per-asset or per-product detail to answer a specific question.",
         "",
+        "PRODUCT SUMMARIES (name | release date | span | assets | work items):",
     ]
 
     for p in products:
         p_assets = assets_by_product.get(p["id"], [])
         p_work_all = [w for a in p_assets for w in work_by_asset.get(a["id"], [])]
-        p_start = min((w["start_date"] for w in p_work_all if w["start_date"]), default="—")
-        p_end   = max((w["end_date"]   for w in p_work_all if w["end_date"]),   default="—")
+        p_start = min((w["start_date"] for w in p_work_all if w.get("start_date")), default="—")
+        p_end   = max((w["end_date"]   for w in p_work_all if w.get("end_date")),   default="—")
         release = p.get("target_release_date") or "—"
         lines.append(
-            f"PRODUCT: {p['name']}  release:{release}"
-            f"  span:{p_start}→{p_end}"
-            f"  ({len(p_assets)} assets, {len(p_work_all)} work items)"
+            f"  {p['name']} | release:{release}"
+            f" | span:{p_start}→{p_end}"
+            f" | {len(p_assets)} assets | {len(p_work_all)} work items"
         )
-        for a in p_assets:
-            a_work = work_by_asset.get(a["id"], [])
-            vv = a.get("variable_values") or {}
-            profile = " | ".join(str(v) for v in vv.values()) if vv else "default"
-            lines.append(f"  ASSET: {a['name']}  [{profile}]")
-            for w in sorted(a_work, key=lambda x: x.get("start_date") or ""):
-                craft = w.get("craft") or "—"
-                sd = w.get("start_date") or "—"
-                ed = w.get("end_date") or "—"
-                est = int(w["estimate_days"]) if w.get("estimate_days") else "?"
-                lines.append(
-                    f"    {w['step_name']} | {craft} | {sd}→{ed} | {est}d"
-                )
-        lines.append("")
+
+    lines.append("")
+    lines.append("ASSET PROFILE DISTRIBUTION (total assets per profile across all products):")
+    profile_counts: Counter = Counter()
+    for a in assets:
+        vv = a.get("variable_values") or {}
+        profile = " | ".join(str(v) for v in vv.values()) if vv else "default"
+        profile_counts[profile] += 1
+    for profile, count in profile_counts.most_common():
+        lines.append(f"  {profile}: {count}")
+
+    lines.append("")
 
     # ── Per-craft cap utilization (sweep-line over calendar spans) ───────────
-    # For each craft, walk the event timeline to count days at/below/above cap.
     caps = craft_caps or {}
     craft_events: dict[str, list] = defaultdict(list)
     for w in work:

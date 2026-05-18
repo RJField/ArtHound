@@ -112,7 +112,7 @@ function MatrixMissingGate() {
         Scenario planning uses your estimation matrix to generate realistic work estimates.
         Set up your matrix in Estimates before using this feature.
       </p>
-      <a href="/estimates" className="text-sm text-accent hover:text-accent/80 transition-colors">
+      <a href="/org?tab=estimates" className="text-sm text-accent hover:text-accent/80 transition-colors">
         Go to Estimates →
       </a>
     </main>

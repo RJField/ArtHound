@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { apiFetch } from '../lib/api'
+import SyntheticDataModal from '../components/SyntheticDataModal'
 
 export default function AdminPanel() {
   const [settings, setSettings]   = useState(null)
@@ -11,6 +12,8 @@ export default function AdminPanel() {
   // Local edit state
   const [inviteRequired, setInviteRequired] = useState(false)
   const [inviteCode, setInviteCode]         = useState('')
+
+  const [syntheticOpen, setSyntheticOpen] = useState(false)
 
   // Maintenance actions
   const [reconciling, setReconciling]       = useState(false)
@@ -137,6 +140,20 @@ export default function AdminPanel() {
           </div>
         </section>
 
+        {/* Synthetic data */}
+        <section className="flex flex-col gap-4 p-5 rounded-xl border border-border bg-surface">
+          <div>
+            <h2 className="text-foreground text-sm font-semibold">Synthetic data</h2>
+            <p className="text-muted text-xs mt-0.5">Generate test records in an Airtable base.</p>
+          </div>
+          <button
+            onClick={() => setSyntheticOpen(true)}
+            className="px-4 py-2 rounded-lg bg-surface-2 text-foreground text-sm hover:bg-surface-3 transition-colors cursor-pointer self-start"
+          >
+            Open wizard
+          </button>
+        </section>
+
         {settings && (
           <form onSubmit={handleSave} className="flex flex-col gap-6">
 
@@ -189,6 +206,7 @@ export default function AdminPanel() {
           </form>
         )}
       </div>
+      {syntheticOpen && <SyntheticDataModal onClose={() => setSyntheticOpen(false)} />}
     </main>
   )
 }
