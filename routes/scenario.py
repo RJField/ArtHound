@@ -95,6 +95,63 @@ _SUBMIT_SCOPE_TOOL = {
 }
 
 
+_DISCUSSION_TOOLS = [
+    {
+        "name": "get_craft_overrun_assets",
+        "description": (
+            "Returns the assets whose work overlaps the above-cap periods for a given craft. "
+            "Use this when asked which assets are causing a craft to exceed its concurrency cap."
+        ),
+        "input_schema": {
+            "type": "object",
+            "required": ["craft"],
+            "properties": {
+                "craft": {
+                    "type": "string",
+                    "description": "Craft name to investigate (e.g. 'Animation', 'VFX', '2D', '3D').",
+                },
+            },
+        },
+    },
+    {
+        "name": "list_assets_in_product",
+        "description": (
+            "Returns the full asset roster for a named product — asset names, profiles, "
+            "and priorities. Use this when you need to know which assets are in a specific "
+            "product before drilling into individual schedules."
+        ),
+        "input_schema": {
+            "type": "object",
+            "required": ["product_name"],
+            "properties": {
+                "product_name": {
+                    "type": "string",
+                    "description": "Product name to look up. Case-insensitive, partial match accepted.",
+                },
+            },
+        },
+    },
+    {
+        "name": "get_asset_schedule",
+        "description": (
+            "Returns the full step-by-step work schedule for a single named asset — "
+            "step names, craft, start/end dates, and estimate_days. Use this when you "
+            "need specific dates or durations for one asset."
+        ),
+        "input_schema": {
+            "type": "object",
+            "required": ["asset_name"],
+            "properties": {
+                "asset_name": {
+                    "type": "string",
+                    "description": "Asset name to look up. Case-insensitive, partial match accepted.",
+                },
+            },
+        },
+    },
+]
+
+
 class StartBody(BaseModel):
     mode:              Literal["ai", "rule_based"]             = "ai"
     scenario_category: Literal["earliest_ship", "target_date"] = "target_date"
@@ -313,11 +370,19 @@ async def send_message(
     # Load conversation history.
     history = await _load_messages(session_id)
 
-    if stage == "scoping":
-        return await _handle_scoping(session_id, user.studio_id, history, message_count, session)
+    try:
+        if stage == "scoping":
+            return await _handle_scoping(session_id, user.studio_id, history, message_count, session)
 
-    if stage == "discussion":
-        return await _handle_discussion(session_id, user.studio_id, history)
+        if stage == "discussion":
+            return await _handle_discussion(session_id, user.studio_id, history)
+    except anthropic.APIStatusError as exc:
+        if exc.status_code in (429, 529):
+            raise HTTPException(
+                status_code=503,
+                detail="The AI is temporarily overloaded — please try again in a moment.",
+            )
+        raise
 
     raise HTTPException(status_code=409, detail={"message": "Unexpected stage", "ai_stage": stage})
 
@@ -373,24 +438,257 @@ async def _handle_scoping(session_id: str, studio_id: str, history: list, messag
     }
 
 
+async def _execute_discussion_tool(name: str, tool_input: dict, session_id: str) -> str:
+    if name == "get_craft_overrun_assets":
+        from lib.db import drain_pages
+        from datetime import date as _date, timedelta as _td
+        from collections import defaultdict
+
+        craft_filter = (tool_input.get("craft") or "").strip()
+        if not craft_filter:
+            return "Please specify a craft name."
+
+        # Fetch all work for this session scoped to the requested craft.
+        work_r = await db_client.get(
+            _url("/rest/v1/scenario_work"),
+            params={
+                "session_id": f"eq.{session_id}",
+                "craft":      f"eq.{craft_filter}",
+                "select":     "asset_id,step_name,start_date,end_date,estimate_days",
+            },
+            headers=_headers(),
+        )
+        work = work_r.json() if work_r.is_success else []
+        if not work:
+            return f"No work items found for craft '{craft_filter}' in this scenario."
+
+        # Sweep-line: find above-cap periods and the assets active during them.
+        # Build a sorted event list then walk it to find days when count > cap.
+        # We don't store cap here so we derive peak and flag anything > peak-during-normal.
+        # Instead: build a day-by-day active set for each asset during the overrun.
+        # Simpler: collect all intervals, sweep, find dates with count > peak_normal (approximation).
+        # Use session craft_caps from scope if available — fall back to peak-1 as the cap.
+
+        # Fetch scope for cap value.
+        sess_r = await db_client.get(
+            _url("/rest/v1/scenario_sessions"),
+            params={"id": f"eq.{session_id}", "select": "scope_json", "limit": "1"},
+            headers=_headers(),
+        )
+        scope = {}
+        if sess_r.is_success and sess_r.json():
+            scope = sess_r.json()[0].get("scope_json") or {}
+        cap = (scope.get("craft_caps") or {}).get(craft_filter)
+
+        if not cap:
+            return (
+                f"No cap was set for '{craft_filter}' in this scenario, so no overrun occurred. "
+                f"The craft ran uncapped."
+            )
+
+        # Build event list: (date, +1 or -1, asset_id)
+        events = []
+        for w in work:
+            try:
+                sd = _date.fromisoformat(w["start_date"])
+                ed = _date.fromisoformat(w["end_date"])
+            except (TypeError, ValueError):
+                continue
+            events.append((sd, +1, w["asset_id"]))
+            events.append((ed + _td(days=1), -1, w["asset_id"]))
+
+        # Secondary sort by delta (-1 before +1) so ends are processed before starts
+        # on the same date — prevents transient false overruns at batch boundaries.
+        events.sort(key=lambda e: (e[0], e[1]))
+
+        active_assets: set = set()
+        overrun_assets: set = set()
+        prev_date = None
+        running = 0
+
+        for ev_date, delta, asset_id in events:
+            if running > cap and prev_date is not None:
+                overrun_assets.update(active_assets)
+            if delta == +1:
+                active_assets.add(asset_id)
+                running += 1
+            else:
+                active_assets.discard(asset_id)
+                running -= 1
+            prev_date = ev_date
+
+        if not overrun_assets:
+            return f"No above-cap overrun detected for '{craft_filter}' (cap={cap})."
+
+        # Resolve asset names.
+        assets_r = await db_client.get(
+            _url("/rest/v1/scenario_assets"),
+            params={"session_id": f"eq.{session_id}", "select": "id,name,variable_values,product_id"},
+            headers=_headers(),
+        )
+        asset_rows = assets_r.json() if assets_r.is_success else []
+        asset_by_id = {a["id"]: a for a in asset_rows}
+
+        lines = [
+            f"Assets causing '{craft_filter}' to exceed cap={cap}:",
+            f"({len(overrun_assets)} assets had overlapping {craft_filter} work during above-cap periods)",
+            "",
+        ]
+        for aid in sorted(overrun_assets, key=lambda i: asset_by_id.get(i, {}).get("name", "")):
+            a = asset_by_id.get(aid)
+            if not a:
+                continue
+            vv = a.get("variable_values") or {}
+            profile = " | ".join(str(v) for v in vv.values()) if vv else "default"
+            lines.append(f"  {a['name']}  [{profile}]")
+        return "\n".join(lines)
+
+    if name == "list_assets_in_product":
+        product_name = (tool_input.get("product_name") or "").lower()
+        products_r = await db_client.get(
+            _url("/rest/v1/scenario_products"),
+            params={"session_id": f"eq.{session_id}", "select": "id,name,target_release_date",
+                    "order": "created_at.asc"},
+            headers=_headers(),
+        )
+        products = products_r.json() if products_r.is_success else []
+        match = next((p for p in products if product_name in p["name"].lower()), None)
+        if not match:
+            return f"No product found matching '{tool_input.get('product_name')}'."
+
+        assets_r = await db_client.get(
+            _url("/rest/v1/scenario_assets"),
+            params={"session_id": f"eq.{session_id}", "product_id": f"eq.{match['id']}",
+                    "select": "name,variable_values,priority", "order": "created_at.asc"},
+            headers=_headers(),
+        )
+        assets = assets_r.json() if assets_r.is_success else []
+        if not assets:
+            return f"No assets found in product '{match['name']}'."
+
+        lines = [f"Assets in '{match['name']}' (release: {match.get('target_release_date') or '—'}):"]
+        for a in assets:
+            vv = a.get("variable_values") or {}
+            profile = " | ".join(str(v) for v in vv.values()) if vv else "default"
+            lines.append(f"  {a['name']}  [{profile}]  priority:{a.get('priority') or '—'}")
+        return "\n".join(lines)
+
+    if name == "get_asset_schedule":
+        asset_name = (tool_input.get("asset_name") or "").lower()
+        assets_r = await db_client.get(
+            _url("/rest/v1/scenario_assets"),
+            params={"session_id": f"eq.{session_id}",
+                    "select": "id,name,variable_values,priority,product_id"},
+            headers=_headers(),
+        )
+        assets = assets_r.json() if assets_r.is_success else []
+        match = next((a for a in assets if asset_name in a["name"].lower()), None)
+        if not match:
+            return f"No asset found matching '{tool_input.get('asset_name')}'."
+
+        product_r = await db_client.get(
+            _url("/rest/v1/scenario_products"),
+            params={"id": f"eq.{match['product_id']}", "select": "name,target_release_date"},
+            headers=_headers(),
+        )
+        product = (product_r.json() or [{}])[0] if product_r.is_success else {}
+
+        work_r = await db_client.get(
+            _url("/rest/v1/scenario_work"),
+            params={"asset_id": f"eq.{match['id']}",
+                    "select": "step_name,craft,start_date,end_date,estimate_days",
+                    "order": "start_date.asc"},
+            headers=_headers(),
+        )
+        work = work_r.json() if work_r.is_success else []
+
+        vv = match.get("variable_values") or {}
+        profile = " | ".join(str(v) for v in vv.values()) if vv else "default"
+        lines = [
+            f"Schedule for '{match['name']}' [{profile}]",
+            f"  Product: {product.get('name', '—')}  release:{product.get('target_release_date') or '—'}",
+            f"  Priority: {match.get('priority') or '—'}",
+            "",
+            "  Work items (step | craft | start → end | days):",
+        ]
+        for w in work:
+            est = int(w["estimate_days"]) if w.get("estimate_days") else "?"
+            lines.append(
+                f"    {w['step_name']} | {w.get('craft') or '—'}"
+                f" | {w.get('start_date') or '—'}→{w.get('end_date') or '—'} | {est}d"
+            )
+        return "\n".join(lines)
+
+    return f"Unknown tool: {name}"
+
+
 async def _handle_discussion(session_id: str, studio_id: str, history: list) -> dict:
     system_prompt = await build_discussion_prompt(studio_id, session_id)
     client = anthropic.AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
 
-    response = await client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=1024,
-        system=[{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}],
-        messages=history,
-    )
-    assistant_text = response.content[0].text
+    # Tool loop — Haiku may call multiple tools in a single response; handle all of
+    # them together to satisfy the API requirement that every tool_use block has a
+    # corresponding tool_result in the immediately following user message.
+    # Cap at 5 rounds (each round may execute multiple tools in parallel).
+    messages = list(history)
+    assistant_text = ""
+    action: dict | None = None
+
+    for _ in range(5):
+        response = await client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=1024,
+            system=[{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}],
+            tools=_DISCUSSION_TOOLS,
+            messages=messages,
+        )
+
+        tool_blocks = [b for b in response.content if b.type == "tool_use"]
+        text_block  = next((b for b in response.content if b.type == "text"), None)
+
+        if not tool_blocks:
+            assistant_text = text_block.text if text_block else ""
+            break
+
+        # Execute all tool calls from this response in parallel.
+        import asyncio as _aio
+        tool_results = await _aio.gather(*[
+            _execute_discussion_tool(tb.name, tb.input, session_id)
+            for tb in tool_blocks
+        ])
+
+        # Serialize all content blocks (both text and every tool_use) to plain dicts.
+        assistant_content = []
+        for b in response.content:
+            if b.type == "text":
+                assistant_content.append({"type": "text", "text": b.text})
+            elif b.type == "tool_use":
+                assistant_content.append({"type": "tool_use", "id": b.id, "name": b.name, "input": b.input})
+
+        # All tool_results must appear in a single user message immediately after.
+        messages = messages + [
+            {"role": "assistant", "content": assistant_content},
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": tb.id, "content": result}
+                for tb, result in zip(tool_blocks, tool_results)
+            ]},
+        ]
+
+    # If the loop exhausted all iterations on tool calls, force one final text response.
+    if not assistant_text:
+        fallback_r = await client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=1024,
+            system=[{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}],
+            messages=messages,
+        )
+        fb_text = next((b for b in fallback_r.content if b.type == "text"), None)
+        assistant_text = fb_text.text if fb_text else "I was unable to complete the analysis. Please try asking a more specific question."
 
     # Extract SCENARIO_ACTION block if Haiku emitted one.
-    action: dict | None = None
     m = _ACTION_RE.search(assistant_text)
     if m:
         raw = m.group(1).strip()
-        # Find the matching closing brace so trailing prose doesn't break the parse.
         depth, end = 0, 0
         for i, ch in enumerate(raw):
             if ch == '{':   depth += 1
@@ -403,7 +701,6 @@ async def _handle_discussion(session_id: str, studio_id: str, history: list) -> 
             action = json.loads(raw[:end])
         except json.JSONDecodeError:
             action = None
-        # Strip the SCENARIO_ACTION line from the visible reply.
         assistant_text = assistant_text[:m.start()].rstrip()
 
     await _append_message(session_id, studio_id, "assistant", assistant_text)
@@ -473,23 +770,24 @@ async def get_data(
 
     import asyncio
     from lib.db import drain_pages
-    products_r, assets_r = await asyncio.gather(
-        db_client.get(
+    product_rows, asset_rows, work_rows = await asyncio.gather(
+        drain_pages(
             _url("/rest/v1/scenario_products"),
             params={"session_id": f"eq.{session_id}", "select": "*", "order": "created_at.asc"},
             headers=_headers(),
         ),
-        db_client.get(
+        drain_pages(
             _url("/rest/v1/scenario_assets"),
             params={"session_id": f"eq.{session_id}", "select": "*", "order": "created_at.asc"},
             headers=_headers(),
+            page=1000,
         ),
-    )
-    work_rows = await drain_pages(
-        _url("/rest/v1/scenario_work"),
-        params={"session_id": f"eq.{session_id}", "select": "*", "order": "start_date.asc,created_at.asc"},
-        headers=_headers(),
-        page=1000,
+        drain_pages(
+            _url("/rest/v1/scenario_work"),
+            params={"session_id": f"eq.{session_id}", "select": "*", "order": "start_date.asc,created_at.asc"},
+            headers=_headers(),
+            page=1000,
+        ),
     )
 
     scope = session.get("scope_json") or {}
@@ -501,8 +799,8 @@ async def get_data(
         "preflight_warnings": session.get("preflight_warnings") or [],
         "scope":              scope,
         "show_escape":        session["message_count"] >= _ESCAPE_TURN and session["ai_stage"] == "scoping",
-        "products":           products_r.json() if products_r.is_success else [],
-        "assets":             assets_r.json()   if assets_r.is_success   else [],
+        "products":           product_rows,
+        "assets":             asset_rows,
         "work":               work_rows,
     }
 

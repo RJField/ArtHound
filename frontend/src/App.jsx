@@ -6,12 +6,10 @@ import Topbar from './components/Topbar'
 import Login from './pages/Login'
 import StudioHome from './pages/StudioHome'
 import VendorHome from './pages/VendorHome'
-import Workflows from './pages/Workflows'
 import Shares from './pages/Shares'
 import VendorInbox from './pages/VendorInbox'
 import Reviews from './pages/Reviews'
 import Assets from './pages/Assets'
-import Estimates from './pages/Estimates'
 import ProjectInit from './pages/ProjectInit'
 import VendorConnections from './pages/VendorConnections'
 import StudioConnections from './pages/StudioConnections'
@@ -114,8 +112,8 @@ export default function App() {
                 <Route path="/vendor-home" element={<VendorHome />} />
                 <Route path="/assets"      element={<Assets />} />
                 <Route path="/shares"      element={<Shares />} />
-                <Route path="/estimates"   element={<Estimates />} />
-                <Route path="/workflows"   element={<Workflows />} />
+                <Route path="/estimates"   element={<Navigate to="/org?tab=estimates" replace />} />
+                <Route path="/workflows"   element={<Navigate to="/org?tab=workflows" replace />} />
                 <Route path="/reviews"     element={<Reviews />} />
                 <Route path="/inbox"       element={<VendorInbox />} />
                 <Route path="/vendors"     element={<VendorConnections />} />
