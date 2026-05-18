@@ -25,6 +25,7 @@ export function useScenario() {
   const [scenarioCategory,  setScenarioCategory]  = useState(null)
   const [pendingAction,     setPendingAction]     = useState(null)  // { type, scope_changes, description }
   const [applyingAction,    setApplyingAction]    = useState(false)
+  const [generationStatus,  setGenerationStatus]  = useState(null)
 
   const pollRef      = useRef(null)
   const pollStartRef = useRef(null)
@@ -61,6 +62,7 @@ export function useScenario() {
     if (data.generation_mode)    setGenerationMode(data.generation_mode)
     if (data.preflight_warnings) setPreflightWarnings(data.preflight_warnings)
     if (data.scenario_category)  setScenarioCategory(data.scenario_category)
+    setGenerationStatus(data.generation_status ?? null)
   }, [])
 
   // ── Polling ───────────────────────────────────────────────────────────────
@@ -226,6 +228,7 @@ export function useScenario() {
     scenarioCategory,
     pendingAction,
     applyingAction,
+    generationStatus,
     isGenerating: GENERATING_STAGES.has(stage),
     hasData: products.length > 0 || assets.length > 0 || work.length > 0,
     beginGeneration,

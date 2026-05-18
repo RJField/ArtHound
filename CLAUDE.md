@@ -67,7 +67,7 @@ Sync is triggered on login (via `AuthContext.jsx`) and by a background polling l
 
 ## Backend Conventions
 
-**Auth:** Every protected route uses `get_current_user` from `lib/auth.py` as a FastAPI dependency. It verifies the Supabase JWT (JWKS + HS256 fallback), resolves the user's role (`studio` or `vendor`), and returns membership info with a 60-second cache. Do not re-implement auth logic inline.
+**Auth:** Every protected route uses `get_current_user` from `lib/auth.py` as a FastAPI dependency. It verifies the Supabase JWT (JWKS + HS256 fallback), resolves the user's role (`studio` or `vendor`), and returns membership info with a 15-second cache. Do not re-implement auth logic inline.
 
 **Supabase queries:** Use the helper in `lib/db.py` which builds the PostgREST URL and injects service-role headers. All DB writes use the service role key, not the anon key.
 

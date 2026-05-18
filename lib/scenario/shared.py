@@ -549,6 +549,15 @@ async def expand_and_insert_work_cadence(
     return max_end_by_product
 
 
+async def set_generation_status(session_id: str, msg: str) -> None:
+    await db_client.patch(
+        _url("/rest/v1/scenario_sessions"),
+        params={"id": f"eq.{session_id}"},
+        json={"generation_status": msg},
+        headers=_headers({"Prefer": "return=minimal"}),
+    )
+
+
 async def rollback(session_id: str) -> None:
     log.warning("Scenario %s — rolling back", session_id)
     await db_client.delete(

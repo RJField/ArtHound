@@ -68,7 +68,7 @@ ArtHound-native structured feedback records attached to canonical assets. Not sy
 
 ### [Member Management and Org Hub](docs/members.md)
 
-Studios and vendors are multi-user organisations with three membership tiers: `owner`, `admin`, and `user`. New members join via an 8-character invite code; they land in a pending state until an org admin approves their join request. The org hub shows the full member list with inline role management, the current invite code (with regeneration), and pending join requests. Ownership transfer is atomic via a Postgres RPC — there is always exactly one owner. A 60-second membership cache means role changes propagate within one minute.
+Studios and vendors are multi-user organisations with three membership tiers: `owner`, `admin`, and `user`. New members join via an 8-character invite code; they land in a pending state until an org admin approves their join request. The org hub shows the full member list with inline role management, the current invite code (with regeneration), and pending join requests. Ownership transfer is atomic via a Postgres RPC — there is always exactly one owner. A 15-second membership cache means role changes propagate within 15 seconds.
 
 ### [Scenario Planner](docs/scenario.md)
 
