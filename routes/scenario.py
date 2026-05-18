@@ -370,11 +370,19 @@ async def send_message(
     # Load conversation history.
     history = await _load_messages(session_id)
 
-    if stage == "scoping":
-        return await _handle_scoping(session_id, user.studio_id, history, message_count, session)
+    try:
+        if stage == "scoping":
+            return await _handle_scoping(session_id, user.studio_id, history, message_count, session)
 
-    if stage == "discussion":
-        return await _handle_discussion(session_id, user.studio_id, history)
+        if stage == "discussion":
+            return await _handle_discussion(session_id, user.studio_id, history)
+    except anthropic.APIStatusError as exc:
+        if exc.status_code in (429, 529):
+            raise HTTPException(
+                status_code=503,
+                detail="The AI is temporarily overloaded — please try again in a moment.",
+            )
+        raise
 
     raise HTTPException(status_code=409, detail={"message": "Unexpected stage", "ai_stage": stage})
 
@@ -489,7 +497,9 @@ async def _execute_discussion_tool(name: str, tool_input: dict, session_id: str)
             events.append((sd, +1, w["asset_id"]))
             events.append((ed + _td(days=1), -1, w["asset_id"]))
 
-        events.sort(key=lambda e: e[0])
+        # Secondary sort by delta (-1 before +1) so ends are processed before starts
+        # on the same date — prevents transient false overruns at batch boundaries.
+        events.sort(key=lambda e: (e[0], e[1]))
 
         active_assets: set = set()
         overrun_assets: set = set()
@@ -760,23 +770,24 @@ async def get_data(
 
     import asyncio
     from lib.db import drain_pages
-    products_r, assets_r = await asyncio.gather(
-        db_client.get(
+    product_rows, asset_rows, work_rows = await asyncio.gather(
+        drain_pages(
             _url("/rest/v1/scenario_products"),
             params={"session_id": f"eq.{session_id}", "select": "*", "order": "created_at.asc"},
             headers=_headers(),
         ),
-        db_client.get(
+        drain_pages(
             _url("/rest/v1/scenario_assets"),
             params={"session_id": f"eq.{session_id}", "select": "*", "order": "created_at.asc"},
             headers=_headers(),
+            page=1000,
         ),
-    )
-    work_rows = await drain_pages(
-        _url("/rest/v1/scenario_work"),
-        params={"session_id": f"eq.{session_id}", "select": "*", "order": "start_date.asc,created_at.asc"},
-        headers=_headers(),
-        page=1000,
+        drain_pages(
+            _url("/rest/v1/scenario_work"),
+            params={"session_id": f"eq.{session_id}", "select": "*", "order": "start_date.asc,created_at.asc"},
+            headers=_headers(),
+            page=1000,
+        ),
     )
 
     scope = session.get("scope_json") or {}
@@ -788,8 +799,8 @@ async def get_data(
         "preflight_warnings": session.get("preflight_warnings") or [],
         "scope":              scope,
         "show_escape":        session["message_count"] >= _ESCAPE_TURN and session["ai_stage"] == "scoping",
-        "products":           products_r.json() if products_r.is_success else [],
-        "assets":             assets_r.json()   if assets_r.is_success   else [],
+        "products":           product_rows,
+        "assets":             asset_rows,
         "work":               work_rows,
     }
 
