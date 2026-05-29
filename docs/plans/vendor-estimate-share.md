@@ -3,14 +3,16 @@
 **Status (dev, 2026-05-29; nothing on prod):**
 - **M-01 (Phase 0) DONE + committed** (`7af8074`) — migration `20260529000001`, `resolve_owner` shim,
   owner-aware `matrix.py`/`workflow_steps.py`. Verified on dev (`kwrlqqnzcnpjqvesygxo`).
-- **M-02 (Phase 1) BACKEND DONE, applied to dev** — migration `20260529000002` (link_id +
+- **M-02 / Phase 1 (M1) DONE, applied to dev** — migration `20260529000002` (link_id +
   `em_link_vendor_only` CHECK + 4-col `uq_em_owner` `NULLS NOT DISTINCT`); `lib/estimate/effective.py`
   resolver; `require_vendor_link` in `lib/handshake.py`; `matrix.py` per-link override write +
-  `?linkId=` effective read + 4-col `on_conflict`. Validated: on_conflict binds the NND index (§6.1
-  closed, no fallback); CHECK rejects studio+link rows (§6.6).
+  `?linkId=` effective read + 4-col `on_conflict`; **vendor override UI** in OrgHub `EstimatesTab`
+  (studio-link selector → per-link effective matrix, accent-highlighted override cells); unit test
+  `scripts/test_effective_matrix.py`. Validated: on_conflict binds the NND index (§6.1 closed, no
+  fallback); CHECK rejects studio+link rows (§6.6); overlay logic (6 assertions); frontend builds.
 - Dev is **Postgres 17** → §6.2 closed for dev.
-- **Remaining for M1:** Phase 1 frontend (vendor override editing UI), effective-resolver unit tests,
-  and the manual vendor-session smoke test (needs a vendor login). Phases 2–3 still plan-only.
+- **Remaining for M1:** manual vendor-session smoke test (needs a vendor login). **Next: Phase 2 (M2)**
+  — M-03/M-04/M-05 share tables + projector + delivery + `routes/estimate_share.py`. Phase 3 plan-only.
 
 **Summary:** Generalize the studio-only estimation stack to vendors, let a vendor maintain
 per-studio-link rate variations on top of a base matrix, and let the vendor share a frozen,
