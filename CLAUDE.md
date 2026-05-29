@@ -22,7 +22,7 @@ Both servers must run simultaneously in development. The FastAPI app also serves
 
 **Security and schema integrity first.** These are non-negotiable constraints, not trade-offs. Every decision about data access, schema shape, and inter-org data flow must pass a security and integrity check before anything else.
 
-**Named schema fields are reserved for universal production truths.** Promoted fields on canonical tables (e.g. `canonical_assets`, `replicated_assets`) must represent facts that are universally true across all studios and source tools — asset name, item type, priority, and similar. Studio-specific or source-specific data belongs in `meta` (the JSONB payload), not in named columns. Before nominating any field for promotion to a named schema slot, explicitly flag it for review. The bar is high: if it only applies to some studios, or if it duplicates what `meta` already carries, it stays in `meta`.
+**Named schema fields are reserved for universal production truths.** Promoted fields on canonical tables (e.g. `canonical_assets`, `replicated_assets`) must represent facts that are universally true across all studios and source tools — asset name, product link, project date, asset number. Studio-specific or source-specific data belongs in `meta` (the JSONB payload), not in named columns. Before nominating any field for promotion to a named schema slot, explicitly flag it for review. The bar is high: if it only applies to some studios, or if it duplicates what `meta` already carries, it stays in `meta`.
 
 **Client data is unreleased IP. Treat it accordingly.** Studios trust ArtHound with pre-release game assets, schedules, and production plans. Data must never cross org boundaries without explicit authorization (RLS, dispatch tokens, or direct studio action). No cross-tenant queries, no leaking of studio data to vendors beyond what was explicitly dispatched, no logging of payload content at levels visible outside the system.
 
@@ -101,6 +101,7 @@ Migrations live in `supabase/migrations/` and are applied in filename order. All
 
 **Sync layer:**
 - `replicated_assets` / `replicated_products` / `replicated_item_types` / `replicated_work` — synced source data; all features read from here
+- `replicated_assets.meta["__slots"]` — ArtHound-normalized values for demoted slots (`item_type`, `status`, `priority`, `team`, `dev_name`). Read via `meta.get("__slots", {}).get(slot)`. Never render `__slots` as a raw meta field — it is excluded from `_META_HIDDEN` in `routes/assets.py` and must stay excluded.
 - `source_field_mappings` — per-studio field → ArtHound slot mapping
 - `source_entity_definitions` — P→A→W hierarchy per studio/vendor (which source table is Products, Assets, Work; linking fields; filters)
 - `source_credentials` — encrypted source tokens (service role only; use `lib/source_creds.py`)
@@ -132,6 +133,8 @@ Migrations live in `supabase/migrations/` and are applied in filename order. All
 Studios and vendors are separate roles with separate home pages (`StudioHome.jsx` / `VendorHome.jsx`). Field mappings, source credentials, and sync cursors are all scoped to `studio_id` or `vendor_id`. The `source_entity_definitions` table defines each org's P→A→W hierarchy — nothing about the source table structure should be assumed or hardcoded. Data never crosses org boundaries without explicit authorization: RLS policies, dispatch tokens, or a direct studio action. Vendor data is scoped to the vendor; studio data is scoped to the studio; shared data (dispatches, reviews) requires an explicit link between the two.
 
 ## Known Debt
+
+- **Slot demotion Phase E pending** (`routes/assets.py`): Column fallbacks for `item_type`, `status`, `priority`, `team`, `dev_name` remain in `_build_asset_response()` until `meta["__slots"]` coverage is verified in production after the Tier 2 migration. Remove fallback reads and the status injection column fallback in a follow-up deploy once verified.
 
 - **Jira write-back edge cases** (`routes/schedule.py`): Sub-task creation (requires `parent.key`), missing `_jira_key` warning not surfaced to UI, per-item failure detail not returned to frontend.
 
