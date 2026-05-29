@@ -52,6 +52,11 @@ Treat both files as **manual procedures**, not push-and-forget migrations.
 
 ## 2. Ordered procedure
 
+> **STATUS (2026-05-28):** Step 1 is **DONE** — Phases A–D + the three missed readers
+> (`scheduler.py`, `fields.py` ×2) are committed and pushed on `dev` (commit `6821d06`).
+> The full sequence is **rehearsed clean on the dev DB** (see §3a). **Prod work resumes at
+> Step 2.** Exact copy-pasteable prod commands (validated on dev) are in §5.
+
 ### Step 1 — Complete the code change set (the working tree is currently incomplete)
 
 The uncommitted tree has Phases A–D for `normalizer.py`, `writer.py`, `assets.py`,
@@ -163,3 +168,63 @@ Full sequence rehearsed end-to-end on dev via `supabase db query --linked`. Clea
 - Steps 1–3 (code) roll back by redeploying prior code; `__slots` writes are additive and harmless to old code (which ignores `__slots`).
 - Step 4/6 column drops are **not** reversible without restoring column data from `__slots`. If a drop must be undone: `ADD COLUMN`, then `UPDATE … SET col = meta->'__slots'->>'col'`. Re-add the dropped indexes. Treat as incident recovery, not routine.
 - The Tier 2 CONCURRENTLY indexes (Step 5) are droppable any time with no data impact.
+
+---
+
+## 5. Prod execution — exact commands (validated on dev)
+
+These are the literal commands the dev rehearsal ran, ready for prod. Run each block
+**separately**, confirm each verify returns 0 **before** the matching drop. Do **not**
+`supabase db push` the migration files — that skips the verify gates and (for Tier 2) runs
+only the drops with no backfill.
+
+> ⚠️ **Re-link the CLI to the PROD project first.** Prod is a *separate* Supabase project
+> from dev (`kwrlqqnzcnpjqvesygxo` is **dev**). Confirm the target before any drop:
+> ```bash
+> supabase link --project-ref <PROD_PROJECT_REF>
+> supabase db query --linked -o csv "select current_database(), inet_server_addr();"   # sanity check you're on prod
+> ```
+> Every command below uses `--linked`; it hits whatever project is currently linked. Getting this wrong drops prod columns against the wrong DB.
+
+**Step 2–3:** deploy commit `6821d06` (or its merge into the prod branch) → trigger a full sync per studio.
+
+**Step 4 — Tier 1 (`dev_name`, `priority`):**
+```bash
+# 4.1 backfill
+supabase db query --linked -o csv "UPDATE replicated_assets SET meta = jsonb_set(coalesce(meta, '{}'::jsonb), '{__slots}', jsonb_build_object('dev_name', dev_name, 'priority', priority) || coalesce(meta->'__slots', '{}'::jsonb)) WHERE dev_name IS NOT NULL OR priority IS NOT NULL;"
+# 4.2 verify — BOTH must be 0
+supabase db query --linked -o csv "select (select count(*) from replicated_assets where dev_name is not null and not (meta->'__slots' ? 'dev_name')) as devname_missing, (select count(*) from replicated_assets where priority is not null and not (meta->'__slots' ? 'priority')) as priority_missing;"
+# 4.3 drop — only if 4.2 is 0,0
+supabase db query --linked -o csv "DROP INDEX IF EXISTS replicated_assets_owner_type_owner_id_priority_idx; ALTER TABLE replicated_assets DROP COLUMN IF EXISTS dev_name; ALTER TABLE replicated_assets DROP COLUMN IF EXISTS priority;"
+```
+
+**Step 5 — Tier 2 Part A (`item_type`, `team`, `status`): backfill + indexes**
+```bash
+# 5.1 backfill. On dev (247 rows) this single UPDATE was fine. If prod replicated_assets is
+#     large, use the batched cursor loop from the migration file instead (LIMIT 5000 by id).
+supabase db query --linked -o csv "UPDATE replicated_assets SET meta = jsonb_set(coalesce(meta, '{}'::jsonb), '{__slots}', jsonb_build_object('item_type', item_type, 'team', team, 'status', status) || coalesce(meta->'__slots', '{}'::jsonb)) WHERE item_type IS NOT NULL OR team IS NOT NULL OR status IS NOT NULL;"
+# 5.2 verify — ALL THREE must be 0
+supabase db query --linked -o csv "select (select count(*) from replicated_assets where item_type is not null and not (meta->'__slots' ? 'item_type')) as it_missing, (select count(*) from replicated_assets where team is not null and not (meta->'__slots' ? 'team')) as team_missing, (select count(*) from replicated_assets where status is not null and not (meta->'__slots' ? 'status')) as status_missing;"
+# 5.3 indexes — db query --linked runs CONCURRENTLY fine (no txn wrapper); run each separately
+supabase db query --linked -o csv "CREATE INDEX CONCURRENTLY replicated_assets_slot_item_type_idx ON replicated_assets (owner_type, owner_id, (meta->'__slots'->>'item_type'));"
+supabase db query --linked -o csv "CREATE INDEX CONCURRENTLY replicated_assets_slot_team_idx ON replicated_assets (owner_type, owner_id, (meta->'__slots'->>'team'));"
+supabase db query --linked -o csv "CREATE INDEX CONCURRENTLY replicated_assets_slot_status_idx ON replicated_assets (owner_type, owner_id, (meta->'__slots'->>'status'));"
+# 5.4 confirm all three indexes VALID (indisvalid = true)
+supabase db query --linked -o csv "select c.relname, i.indisvalid from pg_class c join pg_index i on i.indexrelid=c.oid where c.relname like 'replicated_assets_slot_%' order by c.relname;"
+```
+
+**Step 6 — Tier 2 Part B (drops — point of no return):**
+```bash
+# only after 5.2 = 0,0,0 and 5.4 all true
+supabase db query --linked -o csv "DROP INDEX IF EXISTS replicated_assets_owner_type_owner_id_item_type_idx; DROP INDEX IF EXISTS replicated_assets_owner_type_owner_id_team_idx; ALTER TABLE replicated_assets DROP COLUMN IF EXISTS item_type; ALTER TABLE replicated_assets DROP COLUMN IF EXISTS team; ALTER TABLE replicated_assets DROP COLUMN IF EXISTS status;"
+# confirm all five gone
+supabase db query --linked -o csv "select coalesce(string_agg(column_name, ','), '(none remain)') from information_schema.columns where table_name='replicated_assets' and column_name in ('dev_name','priority','item_type','team','status');"
+```
+
+**Post-drop smoke test** (against prod): asset list/detail, NumberBot context, reviews meta
+panel, `/schedule/*` (build_schedule no longer selects item_type/priority), and a fields
+`get_field_values`/`get_asset_combinations` call for an item_type/status/priority-mapped field.
+
+**Step 7 — Phase E:** once prod is verified, remove the dead `or row.get(...)` / `or asset_row.get(...)`
+fallbacks (`assets.py`, `scheduler.py`, `fields.py`), drop the CLAUDE.md Known-Debt entry, and
+mark the two slot-demotion memories DONE.
