@@ -1,13 +1,24 @@
 # Asset Slot Demotion — Deploy Runbook
 
+> ## ✅ COMPLETE — 2026-05-29
+> The full A–E migration has shipped on **both dev and prod**. All five columns are
+> dropped, `__slots` is backfilled + verified, both migration ledgers are consistent,
+> and the Phase E fallbacks are removed (`__slots` is the sole read path).
+> - Dev: columns dropped in the 2026-05-28 rehearsal; ledger repaired 2026-05-29.
+> - Prod: code deployed via `dev→main→prod` (`6c9d19c`); Tier 1/2 run via `db query --linked`
+>   (backfill → verify 0-missing → CONCURRENTLY indexes → drop); ledger recorded. 213/218 rows carry `__slots`.
+> - Phase E dead-code removal: commit `77d3618` → prod `b50a760`.
+>
+> The procedure below is retained as the validated reference (e.g. for the future
+> **Work** slot demotion, which follows the same pattern). It is no longer a pending action.
+
 **Status:** Authoritative ordered procedure. Supersedes the scattered guidance in
 migration-file comments, `project_asset_slot_demotion` memory, and
-`project_todo_slot_demotion_phase_e` memory. Read this top to bottom before touching prod.
+`project_todo_slot_demotion_phase_e` memory.
 
 **What this is:** Demoting five columns (`dev_name`, `priority`, `item_type`, `team`,
 `status`) off `replicated_assets` into `meta["__slots"]`. Phases A–D (code + migration
-files) were authored 2026-05-28 but are **uncommitted in the working tree** and not
-deployed. This runbook sequences the safe landing.
+files) were authored 2026-05-28; this runbook sequenced the safe landing, executed 2026-05-29.
 
 ---
 
