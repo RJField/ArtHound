@@ -134,8 +134,6 @@ Studios and vendors are separate roles with separate home pages (`StudioHome.jsx
 
 ## Known Debt
 
-- **Slot demotion Phase E pending** (`routes/assets.py`): Column fallbacks for `item_type`, `status`, `priority`, `team`, `dev_name` remain in `_build_asset_response()` until `meta["__slots"]` coverage is verified in production after the Tier 2 migration. Remove fallback reads and the status injection column fallback in a follow-up deploy once verified.
-
 - **Jira write-back edge cases** (`routes/schedule.py`): Sub-task creation (requires `parent.key`), missing `_jira_key` warning not surfaced to UI, per-item failure detail not returned to frontend.
 
 - **`sync_log` retention**: Nightly trim keeps 100 rows/owner (`SYNC_LOG_KEEP_ROWS`, default 100). `trim_sync_log()` Postgres function — migration `20260511000003`. Skips `running` rows.

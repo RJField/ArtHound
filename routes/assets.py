@@ -127,14 +127,14 @@ def _build_asset_response(
                 product_id   = pid
                 break
 
-    # Read demoted slots from meta["__slots"]; fall back to named columns for rows
-    # not yet re-synced after the slot demotion migration (Phase E removes fallbacks).
+    # Demoted slots live in meta["__slots"]; their named columns were dropped by the
+    # slot-demotion migration (Tier 1/2 applied to dev + prod 2026-05-29).
     _slots = meta.get("__slots") or {}
-    item_type = _slots.get("item_type") or row.get("item_type") or None
-    team      = _slots.get("team")      or row.get("team")      or None
-    priority  = _slots.get("priority")  or row.get("priority")  or None
-    dev_name  = _slots.get("dev_name")  or row.get("dev_name")  or None
-    status    = _slots.get("status")    or row.get("status")    or None
+    item_type = _slots.get("item_type") or None
+    team      = _slots.get("team")      or None
+    priority  = _slots.get("priority")  or None
+    dev_name  = _slots.get("dev_name")  or None
+    status    = _slots.get("status")    or None
 
     _RENAME = {"_jira_key": "Jira Key"}
     _field_to_tier = field_to_tier or {}
@@ -149,9 +149,9 @@ def _build_asset_response(
             raw_fields[_RENAME.get(k, k)] = display
 
     # Expose status in rawFields so the field selector's "Additional" section and
-    # AssetGrid's case 'status' can find it. Column fallback kept until Phase E.
+    # AssetGrid's case 'status' can find it.
     if "Status" not in raw_fields:
-        status_val = (meta.get("__slots") or {}).get("status") or row.get("status")
+        status_val = (meta.get("__slots") or {}).get("status")
         if status_val is not None:
             raw_fields["Status"] = str(status_val)
 
