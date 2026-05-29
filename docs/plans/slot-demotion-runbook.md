@@ -143,6 +143,21 @@ Now that columns are gone, the `or row.get(...)` fallbacks are dead code. Remove
 `Tier1: backfill → verify=0 → drop` → `Tier2 Part A: backfill → indexes → verify=0` →
 `Tier2 Part B: drop` → `smoke test /schedule + fields` → `Phase E dead-code removal`.
 
+## 3a. Rehearsal log (dev project `kwrlqqnzcnpjqvesygxo`, 2026-05-28)
+
+Full sequence rehearsed end-to-end on dev via `supabase db query --linked`. Clean.
+
+- Baseline: 247 assets; priority/item_type non-null on 238, status on 236, dev_name on 1, team on 0; **0** rows had `__slots` (pre-deploy state — exactly the column→`__slots` backfill path).
+- Tier 1 backfill → verify `devname_missing=0, priority_missing=0` → dropped `dev_name`, `priority`. ✓
+- Tier 2 Part A backfill → verify `it=0, team=0, status=0` → 3× `CREATE INDEX CONCURRENTLY` all built **VALID** → Part B dropped `item_type`, `team`, `status`. ✓
+- All five columns confirmed gone; `__slots` carries the values (null-valued keys for dev_name/team, as `jsonb_build_object` produces — benign).
+- **PostgREST validation against post-drop schema:** no-`select` query → `200` (dropped cols absent, `__slots` present); `select=item_type` → `400 column does not exist`; `item_type=not.is.null` filter → `400`. Confirms the fixed readers work and the old readers would have broken.
+
+**Operational findings for the prod run:**
+- `supabase db query --linked` executes `CREATE INDEX CONCURRENTLY` successfully — it does **not** force a transaction wrapper. So the whole sequence (incl. Tier 2 Part A) can be driven through `supabase db query --linked` with explicit per-statement calls; a separate `psql` is **not** required. (Still run statement-by-statement with the verify gates — do not `supabase db push` the files, which would skip the gates / run only the live SQL.)
+- Multi-statement DDL (`DROP INDEX …; ALTER TABLE … DROP COLUMN …;`) works in a single `db query` call.
+- For the 247-row dev table the Tier 2 backfill ran as a single `UPDATE` (no cursor batching). Prod must still use the batched cursor loop if `replicated_assets` is large.
+
 ## 4. Rollback notes
 
 - Steps 1–3 (code) roll back by redeploying prior code; `__slots` writes are additive and harmless to old code (which ignores `__slots`).
