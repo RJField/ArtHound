@@ -12,6 +12,25 @@ from lib.db import db_client, _url, _headers
 
 router = APIRouter()
 
+# Keys in replicated_assets.meta that must never reach the frontend rawFields dict.
+# __slots holds ArtHound-normalized slot values and is rendered via dedicated UI fields.
+# The Jira plumbing sets cover both pre- and post-re-sync key shapes.
+_META_HIDDEN: frozenset[str] = frozenset({
+    "__slots",
+    # Jira internal API IDs (old records before display-name re-sync)
+    "_jira_self", "workratio", "statuscategorychangedate", "lastViewed",
+    "watches", "votes", "progress", "timespent", "timeestimate",
+    "timeoriginalestimate", "aggregatetimespent", "aggregatetimeestimate",
+    "aggregatetimeoriginalestimate",
+    # Jira display names (new records after re-sync)
+    "Work Ratio", "Last Viewed", "Status Category", "Status Category Changed",
+    "Status Category Change Date", "Watches", "Votes", "Progress",
+    "Time Spent", "Remaining Estimate", "Original Estimate",
+    "Σ Time Spent", "Σ Remaining Estimate", "Σ Original Estimate",
+})
+# Keys whose values are suppressed but whose presence is kept off the panel.
+_META_HIDDEN_VALUES: frozenset[str] = frozenset({"Rank", "rank"})
+
 # ── Reference map cache ───────────────────────────────────────────────────────
 # Products, item_types, and field_mappings only change on sync. Caching them
 # eliminates Phase 1 round-trips (~150ms) for all but the first request per
@@ -108,68 +127,45 @@ def _build_asset_response(
                 product_id   = pid
                 break
 
-    # Resolve item type — slot column carries the display name after the sync fix.
-    # Fall back to meta for records synced before that fix.
-    item_type = row.get("item_type")
-    if not item_type:
-        for entry in (meta.get(slot_to_field_name.get("item_type", "")) or []):
-            if isinstance(entry, dict):
-                item_type = entry.get("display_name") or item_type_id_to_name.get(entry.get("source_id", ""))
-            elif isinstance(entry, str):
-                item_type = item_type_id_to_name.get(entry)
-            if item_type:
-                break
+    # Read demoted slots from meta["__slots"]; fall back to named columns for rows
+    # not yet re-synced after the slot demotion migration (Phase E removes fallbacks).
+    _slots = meta.get("__slots") or {}
+    item_type = _slots.get("item_type") or row.get("item_type") or None
+    team      = _slots.get("team")      or row.get("team")      or None
+    priority  = _slots.get("priority")  or row.get("priority")  or None
+    dev_name  = _slots.get("dev_name")  or row.get("dev_name")  or None
+    status    = _slots.get("status")    or row.get("status")    or None
 
-    team = row.get("team") or None
-
-    # Fields that are internal Jira plumbing — hide from the detail panel.
-    # Includes both the raw API IDs (pre-re-sync) and display names (post-re-sync).
-    _HIDDEN = frozenset({
-        # API IDs (old records before display-name re-sync)
-        "_jira_self", "workratio", "statuscategorychangedate", "lastViewed",
-        "watches", "votes", "progress", "timespent", "timeestimate",
-        "timeoriginalestimate", "aggregatetimespent", "aggregatetimeestimate",
-        "aggregatetimeoriginalestimate",
-        # Display names (new records after re-sync)
-        "Work Ratio", "Last Viewed", "Status Category", "Status Category Changed",
-        "Status Category Change Date", "Watches", "Votes", "Progress",
-        "Time Spent", "Remaining Estimate", "Original Estimate",
-        "Σ Time Spent", "Σ Remaining Estimate", "Σ Original Estimate",
-    })
-    # Rank is a Lexorank ordering string — suppress its value but keep it off the panel.
-    _HIDDEN_VALUES = frozenset({"Rank", "rank"})
-    # Fields to surface with a friendlier label.
     _RENAME = {"_jira_key": "Jira Key"}
-
     _field_to_tier = field_to_tier or {}
     raw_fields = {}
     for k, v in meta.items():
         # Tier-based suppression (new studios): hidden fields never reach the UI.
-        # Fallback: hardcoded _HIDDEN list for studios without bucket data yet.
-        if _field_to_tier.get(k) == "hidden" or k in _HIDDEN or k in _HIDDEN_VALUES:
+        # Fallback: _META_HIDDEN for studios without bucket data yet.
+        if _field_to_tier.get(k) == "hidden" or k in _META_HIDDEN or k in _META_HIDDEN_VALUES:
             continue
         display = _fmt(v)
         if display is not None:
             raw_fields[_RENAME.get(k, k)] = display
 
-    # Expose slot values that aren't in BUILTIN_FIELDS so they're available in the
-    # field selector's "Additional" section (e.g. Status).
-    for slot, field_name in (("status", "Status"),):
-        val = row.get(slot)
-        if val is not None and field_name not in raw_fields:
-            raw_fields[field_name] = str(val)
+    # Expose status in rawFields so the field selector's "Additional" section and
+    # AssetGrid's case 'status' can find it. Column fallback kept until Phase E.
+    if "Status" not in raw_fields:
+        status_val = (meta.get("__slots") or {}).get("status") or row.get("status")
+        if status_val is not None:
+            raw_fields["Status"] = str(status_val)
 
     return {
         "id":           row["source_record_id"],
         "canonicalId":  row.get("canonical_asset_id"),
         "assetNumber":  row.get("asset_number"),
         "name":         row.get("name") or "",
-        "devName":      row.get("dev_name"),
+        "devName":      dev_name,
         "productId":    product_id,
         "product":      product_name,
         "itemType":     item_type,
         "team":         team,
-        "priority":     row.get("priority"),
+        "priority":     priority,
         "projectDate":  row.get("project_date"),
         "rawFields":    raw_fields,
     }

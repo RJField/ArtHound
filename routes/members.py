@@ -80,6 +80,51 @@ async def _get_user_emails(user_ids: list[str]) -> dict[str, str]:
     return result
 
 
+async def _write_audit(
+    org_type: str,
+    org_id: str,
+    actor_id: str,
+    action: str,
+    *,
+    target_user_id: Optional[str] = None,
+    old_role: Optional[str] = None,
+    new_role: Optional[str] = None,
+) -> None:
+    try:
+        await db_client.post(
+            _url("/rest/v1/org_role_audit_log"),
+            headers=_headers({"Prefer": "return=minimal"}),
+            json={
+                "org_type": org_type,
+                "org_id": org_id,
+                "actor_id": actor_id,
+                "action": action,
+                "target_user_id": target_user_id,
+                "old_role": old_role,
+                "new_role": new_role,
+            },
+        )
+    except Exception:
+        log.exception("Failed to write org_role_audit_log entry")
+
+
+def _audit(
+    org_type: str,
+    org_id: str,
+    actor_id: str,
+    action: str,
+    *,
+    target_user_id: Optional[str] = None,
+    old_role: Optional[str] = None,
+    new_role: Optional[str] = None,
+) -> None:
+    """Fire-and-forget audit log entry. Never blocks or raises."""
+    asyncio.create_task(
+        _write_audit(org_type, org_id, actor_id, action,
+                     target_user_id=target_user_id, old_role=old_role, new_role=new_role)
+    )
+
+
 # ── Public endpoint — invite code resolution ─────────────────────────────────
 
 @router.get("/invite-code/{code}/resolve")
@@ -260,6 +305,7 @@ async def accept_join_request(request_id: str, user: CurrentUser = Depends(get_c
 
     # Invalidate cache so the new member sees access on their next /api/user/me call.
     invalidate_member_cache(new_user_id)
+    _audit(org_type, org_id, user.id, "member_accepted", target_user_id=new_user_id, new_role="user")
     return {"ok": True}
 
 
@@ -272,7 +318,7 @@ async def decline_join_request(request_id: str, user: CurrentUser = Depends(get_
 
     r = await db_client.get(
         _url(f"/rest/v1/{req_table}"),
-        params={"id": f"eq.{request_id}", "select": "id,status", org_fk: f"eq.{org_id}"},
+        params={"id": f"eq.{request_id}", "select": "id,user_id,status", org_fk: f"eq.{org_id}"},
         headers=_headers(),
     )
     r.raise_for_status()
@@ -282,6 +328,7 @@ async def decline_join_request(request_id: str, user: CurrentUser = Depends(get_
     if rows[0]["status"] != "pending":
         raise HTTPException(status_code=409, detail="Request is no longer pending")
 
+    declined_user_id = rows[0]["user_id"]
     now = datetime.now(timezone.utc).isoformat()
     await db_client.patch(
         _url(f"/rest/v1/{req_table}"),
@@ -289,6 +336,7 @@ async def decline_join_request(request_id: str, user: CurrentUser = Depends(get_
         headers=_headers({"Prefer": "return=minimal"}),
         json={"status": "declined", "resolved_at": now, "resolved_by": user.id},
     )
+    _audit(org_type, org_id, user.id, "member_declined", target_user_id=declined_user_id)
     return {"ok": True}
 
 
@@ -311,6 +359,7 @@ async def regenerate_invite_code(user: CurrentUser = Depends(get_current_user)):
         log.error("Invite code regeneration failed for org %s: %s", org_id, r.text[:300])
         raise HTTPException(status_code=500, detail="Failed to regenerate invite code")
 
+    _audit(org_type, org_id, user.id, "invite_code_regenerated")
     return {"invite_code": r.json()[0]["invite_code"]}
 
 
@@ -379,6 +428,8 @@ async def update_member_role(
             raise HTTPException(status_code=500, detail="Ownership transfer failed")
         invalidate_member_cache(user.id)
         invalidate_member_cache(target_user_id)
+        _audit(org_type, org_id, user.id, "ownership_transferred",
+               target_user_id=target_user_id, old_role=current_role, new_role="owner")
         return {"ok": True}
 
     # admin ↔ user promotion/demotion — admins cannot touch other admins' roles.
@@ -395,6 +446,8 @@ async def update_member_role(
         raise HTTPException(status_code=500, detail="Failed to update member role")
 
     invalidate_member_cache(target_user_id)
+    _audit(org_type, org_id, user.id, "role_changed",
+           target_user_id=target_user_id, old_role=current_role, new_role=body.role)
     return {"ok": True}
 
 
@@ -427,6 +480,7 @@ async def remove_member(
     if rows[0]["member_role"] == "admin" and user.member_role != "owner":
         raise HTTPException(status_code=403, detail="Only the owner can remove admins")
 
+    removed_role = rows[0]["member_role"]
     r2 = await db_client.delete(
         _url(f"/rest/v1/{member_table}"),
         params={"user_id": f"eq.{target_user_id}", org_fk: f"eq.{org_id}"},
@@ -436,4 +490,45 @@ async def remove_member(
         raise HTTPException(status_code=500, detail="Failed to remove member")
 
     invalidate_member_cache(target_user_id)
+    _audit(org_type, org_id, user.id, "member_removed",
+           target_user_id=target_user_id, old_role=removed_role)
     return {"ok": True}
+
+
+# ── Audit log ─────────────────────────────────────────────────────────────────
+
+@router.get("/org/audit-log")
+async def get_audit_log(user: CurrentUser = Depends(get_current_user)):
+    """Return the last 100 privilege-change events for this org. Admin-only."""
+    require_admin(user)
+    org_type, org_id = _org_ids(user)
+
+    r = await db_client.get(
+        _url("/rest/v1/org_role_audit_log"),
+        params={
+            "org_type": f"eq.{org_type}",
+            "org_id":   f"eq.{org_id}",
+            "order":    "created_at.desc",
+            "limit":    "100",
+        },
+        headers=_headers(),
+    )
+    r.raise_for_status()
+    rows = r.json()
+
+    user_ids: set[str] = set()
+    for row in rows:
+        user_ids.add(row["actor_id"])
+        if row.get("target_user_id"):
+            user_ids.add(row["target_user_id"])
+
+    emails = await _get_user_emails(list(user_ids))
+
+    return [
+        {
+            **row,
+            "actor_email":  emails.get(row["actor_id"], ""),
+            "target_email": emails.get(row["target_user_id"], "") if row.get("target_user_id") else None,
+        }
+        for row in rows
+    ]

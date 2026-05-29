@@ -25,7 +25,7 @@ FIELD_CATEGORY = {
 
 @router.get("")
 async def get_schema(current_user: CurrentUser = Depends(require_studio)):
-    token, base_id = await get_studio_airtable_creds(current_user.studio_id)
+    token, base_id = await get_studio_airtable_creds(current_user.studio_id, current_user.id)
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         r = await client.get(

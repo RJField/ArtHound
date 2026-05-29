@@ -10,7 +10,7 @@ from lib.db import db_client, _url, _headers
 
 router = APIRouter()
 
-_SLOTS = "name,dev_name,item_type,priority,product,project_date,status,asset_number"
+_SLOTS = "name,product,project_date,asset_number,meta"
 
 # Meta keys whose values are worth surfacing to NumberBot (milestone/date lookups, team).
 # Bare record-ID arrays are already excluded by _fmt_meta below.
@@ -73,8 +73,8 @@ async def _build_context(user: CurrentUser) -> str:
         return "No assets have been synced yet. Run a sync from Settings first."
 
     products   = Counter(a.get("product") or "—" for a in assets)
-    item_types = Counter(a.get("item_type") or "—" for a in assets)
-    statuses   = Counter(a.get("status") or "—" for a in assets)
+    item_types = Counter(a.get("meta", {}).get("__slots", {}).get("item_type") or "—" for a in assets)
+    statuses   = Counter(a.get("meta", {}).get("__slots", {}).get("status") or "—" for a in assets)
 
     owner_label = "STUDIO" if owner_type == "studio" else "VENDOR"
     lines = [
@@ -97,10 +97,16 @@ async def _build_context(user: CurrentUser) -> str:
 
     asset_name_by_canonical_id: dict[str, str] = {}
     for a in assets:
-        row = " | ".join(
-            str(a.get(col) if a.get(col) is not None else "—")
-            for col in ("name", "product", "item_type", "status", "priority", "project_date", "asset_number")
-        )
+        _ah = a.get("meta", {}).get("__slots", {})
+        row = " | ".join([
+            str(a.get("name") or "—"),
+            str(a.get("product") or "—"),
+            str(_ah.get("item_type") or "—"),
+            str(_ah.get("status") or "—"),
+            str(_ah.get("priority") or "—"),
+            str(a.get("project_date") or "—"),
+            str(a.get("asset_number") or "—"),
+        ])
         meta = a.get("meta") or {}
         extras = []
         for k, v in meta.items():

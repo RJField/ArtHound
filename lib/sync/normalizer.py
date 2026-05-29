@@ -16,6 +16,11 @@ ARTHOUND_SLOTS = {
     "product", "project_date", "status", "asset_number", "team",
 }
 
+# These slots are no longer named columns on replicated_assets. Their coerced
+# values are written to meta["__slots"] instead of the top-level row dict.
+# Alias recognition and coercion logic are unchanged — only the write destination moved.
+_DEMOTED_SLOTS = {"dev_name", "item_type", "priority", "status", "team"}
+
 # ── Field classification ──────────────────────────────────────────────────────
 
 # Field types that are always source-native plumbing regardless of name.
@@ -280,7 +285,10 @@ def normalize_asset(
         if slot and slot in ARTHOUND_SLOTS:
             coerced = _coerce_slot(slot, canonical, _adp)
             if coerced is not None:
-                slots[slot] = coerced
+                if slot in _DEMOTED_SLOTS:
+                    meta.setdefault("__slots", {})[slot] = coerced
+                else:
+                    slots[slot] = coerced
             if slot == "product":
                 src_id = _extract_product_source_id(canonical)
                 if src_id:

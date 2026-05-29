@@ -11,11 +11,16 @@ from lib.utils import resolve_name, link_id
 
 DEFAULT_MATRIX_KEY = json.dumps({}, sort_keys=True)  # sentinel for the default estimate row
 
-# Columns on replicated_assets that correspond to ArtHound standard slots.
+# ArtHound standard slots recognised on replicated_assets.
 _STANDARD_SLOTS = frozenset({
     "name", "dev_name", "item_type", "priority", "product",
     "project_date", "status", "asset_number",
 })
+
+# Slots demoted from named columns to meta["__slots"] (mirror of
+# lib/sync/normalizer._DEMOTED_SLOTS). Read from __slots first; the column
+# fallback is for rows not yet re-synced/back-filled and is dead after Phase E.
+_DEMOTED_SLOTS = frozenset({"dev_name", "item_type", "priority", "status", "team"})
 
 
 def subtract_working_days(d: date, days: int) -> date:
@@ -97,15 +102,16 @@ async def build_schedule(asset_id: str, studio_id: str) -> dict:
         _fetch_slot_field_names(studio_id),
     )
 
-    # Fetch asset from replicated_assets.
-    # Standard slots are top-level columns; non-standard source fields are in meta.
+    # Fetch asset from replicated_assets. No explicit select: the demoted slots
+    # (item_type, priority, …) live in meta["__slots"] and the named columns are
+    # dropped by the slot-demotion migration. Fetching all columns keeps the
+    # column fallback working pre-migration without 400-ing post-drop.
     r_asset = await db_client.get(
         _url("/rest/v1/replicated_assets"),
         params={
             "owner_type":       "eq.studio",
             "owner_id":         f"eq.{studio_id}",
             "source_record_id": f"eq.{asset_id}",
-            "select":           "name,item_type,product,priority,project_date,meta,canonical_asset_id",
         },
         headers=_headers(),
     )
@@ -119,23 +125,31 @@ async def build_schedule(asset_id: str, studio_id: str) -> dict:
 
     asset_row = asset_rows[0]
     meta: dict = asset_row.get("meta") or {}
+    _aslots: dict = meta.get("__slots") or {}
     canonical_asset_id: Optional[str] = asset_row.get("canonical_asset_id")
+
+    def _slot_val(slot):
+        """Read an ArtHound slot value. Demoted slots live in meta['__slots'];
+        the column fallback covers rows not yet re-synced/back-filled (dead post-Phase E)."""
+        if slot in _DEMOTED_SLOTS:
+            return _aslots.get(slot) or asset_row.get(slot)
+        return asset_row.get(slot)
 
     # Invert slot_fields so we can look up slot from source field name.
     _fn_to_slot = {v: k for k, v in slot_fields.items()}
 
     def f(source_field_name):
         """Return asset value for a source field name.
-        Checks normalized slot columns first, then falls back to meta."""
+        Checks normalized slots first (column or __slots), then falls back to meta."""
         if not source_field_name:
             return None
         slot = _fn_to_slot.get(source_field_name)
         if slot in _STANDARD_SLOTS:
-            return asset_row.get(slot)
+            return _slot_val(slot)
         return meta.get(source_field_name)
 
     # item_type is already the display name string (normalised by the sync layer).
-    asset_item_name: Optional[str] = asset_row.get("item_type") or None
+    asset_item_name: Optional[str] = _slot_val("item_type") or None
     item_type_name_to_id = {v: k for k, v in item_type_names.items()}
     asset_item_id: Optional[str] = item_type_name_to_id.get(asset_item_name) if asset_item_name else None
 
@@ -150,7 +164,7 @@ async def build_schedule(asset_id: str, studio_id: str) -> dict:
         fn_prod = slot_fields.get("product", "<unmapped>")
         raise ValueError(f"Asset is not linked to a product (mapped source field: '{fn_prod}')")
 
-    strategic_priority = asset_row.get("priority")
+    strategic_priority = _slot_val("priority")
 
     date_raw = asset_row.get("project_date")
     if not date_raw:

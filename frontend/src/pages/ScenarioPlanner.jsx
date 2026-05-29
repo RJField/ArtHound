@@ -69,6 +69,7 @@ export default function ScenarioPlanner() {
         hasData={scenario.hasData}
         generationMode={scenario.generationMode}
         preflightWarnings={scenario.preflightWarnings}
+        generationStatus={scenario.generationStatus}
       />
 
       {/* Action bar */}
