@@ -3,23 +3,27 @@
 **Status (dev, 2026-05-29; nothing on prod):**
 - **M-01 (Phase 0) DONE + committed** (`7af8074`) — migration `20260529000001`, `resolve_owner` shim,
   owner-aware `matrix.py`/`workflow_steps.py`. Verified on dev (`kwrlqqnzcnpjqvesygxo`).
-- **M-02 / Phase 1 (M1) DONE, applied to dev** — migration `20260529000002` (link_id +
-  `em_link_vendor_only` CHECK + 4-col `uq_em_owner` `NULLS NOT DISTINCT`); `lib/estimate/effective.py`
-  resolver; `require_vendor_link` in `lib/handshake.py`; `matrix.py` per-link override write +
-  `?linkId=` effective read + 4-col `on_conflict`; **vendor override UI** in OrgHub `EstimatesTab`
-  (studio-link selector → per-link effective matrix, accent-highlighted override cells); unit test
-  `scripts/test_effective_matrix.py`. Validated: on_conflict binds the NND index (§6.1 closed, no
-  fallback); CHECK rejects studio+link rows (§6.6); overlay logic (6 assertions); frontend builds.
+- **M-02 / Phase 1 (M1) DONE, applied to dev** (backend `899501f`, frontend+test `201ff60`) —
+  migration `20260529000002` (link_id + `em_link_vendor_only` CHECK + 4-col `uq_em_owner`
+  `NULLS NOT DISTINCT`); `lib/estimate/effective.py` resolver; `require_vendor_link` in
+  `lib/handshake.py`; `matrix.py` per-link override write + `?linkId=` effective read + 4-col
+  `on_conflict`; **vendor override UI** in OrgHub `EstimatesTab` (studio-link selector → per-link
+  effective matrix, accent-highlighted override cells); unit test `scripts/test_effective_matrix.py`.
+  Validated: on_conflict binds the NND index (§6.1 closed, no fallback); CHECK rejects studio+link
+  rows (§6.6); overlay logic (6 assertions); frontend builds.
 - Dev is **Postgres 17** → §6.2 closed for dev.
-- **Phase 2 (M2) BACKEND DONE, applied to dev** — migration `20260529000003` (3 share tables +
-  `create_estimate_share` RPC for atomic find-or-create-series + supersede + insert + logging);
-  `lib/estimate/projector.py` (granularity exposure boundary), `lib/estimate/delivery.py`
+- **Phase 2 (M2) BACKEND DONE, applied to dev** (commit `82c4a05`) — migration `20260529000003`
+  (3 share tables + `create_estimate_share` RPC for atomic find-or-create-series + supersede + insert
+  + logging); `lib/estimate/projector.py` (granularity exposure boundary), `lib/estimate/delivery.py`
   (`route_inbox` strategy), `routes/estimate_share.py` (vendor targets/create/outbox/revoke + studio
   inbox/view), registered in `main.py`. Validated on dev: RPC end-to-end (1 series, supersede →
   one-live, `shared`×2/`superseded`×1 logging, cleaned up); projector exposure test (§6.5);
   effective + projector unit tests pass; router imports.
-- **Remaining:** Phase 2 frontend (M3 — vendor "Share estimates" modal + outbox + revoke) and Phase 3
-  (M4 — studio inbox read-only viewer). Plus the manual vendor-login smoke test.
+- **PAUSED HERE (backend complete).** Remaining: **Phase 2 frontend (M3)** — vendor "Share estimates"
+  modal + outbox + revoke on the vendor's studio-connection view (`StudioConnections.jsx`); **Phase 3
+  (M4)** — studio read-only inbox viewer on the vendor-connection view (`VendorConnections.jsx`);
+  and the **manual vendor-login smoke test** of the full chain. API ready: `/api/estimate-shares`
+  (`GET /targets`, `POST ""`, `GET /outbox`, `POST /{id}/revoke`, `GET /inbox`, `POST /{id}/view`).
 
 **Summary:** Generalize the studio-only estimation stack to vendors, let a vendor maintain
 per-studio-link rate variations on top of a base matrix, and let the vendor share a frozen,
