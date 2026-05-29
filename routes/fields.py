@@ -153,20 +153,20 @@ async def get_field_values(field: str = Query(...), current_user: CurrentUser = 
             if v is not None:
                 seen[str(v)] = str(v)
     elif slot in _DEMOTED_SLOTS:
-        # Demoted to meta["__slots"] — the named column is dropped by the
-        # slot-demotion migration. No explicit select so the pre-migration column
-        # fallback works without 400-ing post-drop (matches lib/scheduler.py).
+        # Demoted to meta["__slots"] — the named column was dropped by the
+        # slot-demotion migration, so we must never name it in select.
         r = await db_client.get(
             _url("/rest/v1/replicated_assets"),
             params={
                 "owner_type": "eq.studio",
                 "owner_id":   f"eq.{studio_id}",
+                "select":     "meta",
                 "limit":      "10000",
             },
             headers=_headers(),
         )
         for row in (r.json() if r.is_success else []):
-            v = (row.get("meta") or {}).get("__slots", {}).get(slot) or row.get(slot)
+            v = (row.get("meta") or {}).get("__slots", {}).get(slot)
             if v is not None:
                 seen[str(v)] = str(v)
     else:
@@ -227,7 +227,7 @@ async def get_asset_combinations(field: List[str] = Query(default=[]), current_u
     def _val(row, fname):
         slot = fn_to_slot.get(fname)
         if slot in _DEMOTED_SLOTS:
-            v = (row.get("meta") or {}).get("__slots", {}).get(slot) or row.get(slot)
+            v = (row.get("meta") or {}).get("__slots", {}).get(slot)
         elif slot in _STANDARD_SLOTS:
             v = row.get(slot)
         else:

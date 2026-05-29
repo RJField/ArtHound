@@ -130,9 +130,9 @@ async def build_schedule(asset_id: str, studio_id: str) -> dict:
 
     def _slot_val(slot):
         """Read an ArtHound slot value. Demoted slots live in meta['__slots'];
-        the column fallback covers rows not yet re-synced/back-filled (dead post-Phase E)."""
+        their named columns were dropped by the slot-demotion migration."""
         if slot in _DEMOTED_SLOTS:
-            return _aslots.get(slot) or asset_row.get(slot)
+            return _aslots.get(slot)
         return asset_row.get(slot)
 
     # Invert slot_fields so we can look up slot from source field name.
