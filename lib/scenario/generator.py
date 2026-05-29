@@ -23,6 +23,7 @@ from lib.scenario.shared import (
     expand_and_insert_assets,
     expand_and_insert_work,
     rollback,
+    set_generation_status,
     normalize_vv_keys,
     normalize_profile_counts,
     validate_profiles,
@@ -105,12 +106,14 @@ async def run_generation(session_id: str, studio_id: str, scope: dict) -> None:
 
     # ── Pass 1a: products ─────────────────────────────────────────────────────
     log.info("Scenario %s — pass 1a (products)", session_id)
+    await set_generation_status(session_id, "Pass 1 of 3 — Generating products")
     p1a_text = await _json_call(client, system=_PASS1A_SYSTEM, prompt=_prompt_1a(scope), max_tokens=4096)
     p1a_data = _parse_json(p1a_text, "pass 1a")
     inserted_products = await insert_products(session_id, studio_id, p1a_data.get("products", []))
 
     # ── Pass 1b: profile totals (O(profiles), not O(products×profiles)) ──────
     log.info("Scenario %s — pass 1b (profile totals)", session_id)
+    await set_generation_status(session_id, "Pass 2 of 3 — Building asset profiles")
     p1b_text = await _json_call(client, system=_PASS1B_SYSTEM, prompt=_prompt_1b(scope, matrix_section, variable_fields), max_tokens=2048)
     p1b_data = _parse_json(p1b_text, "pass 1b")
     profiles = p1b_data.get("profiles", [])
@@ -122,6 +125,7 @@ async def run_generation(session_id: str, studio_id: str, scope: dict) -> None:
 
     # ── Pass 2: work templates per profile ────────────────────────────────────
     log.info("Scenario %s — pass 2 (work templates)", session_id)
+    await set_generation_status(session_id, "Pass 3 of 3 — Scheduling work")
     p2_text = await _json_call(client, system=_PASS2_SYSTEM, prompt=_prompt_2(scope, matrix_section, variable_fields), max_tokens=4096)
     p2_data = _parse_json(p2_text, "pass 2")
     templates = p2_data.get("templates", [])

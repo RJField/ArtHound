@@ -13,6 +13,7 @@ import httpx
 from lib.canonical import get_or_create_canonical_ids
 from lib.crypto import decrypt_credentials
 from lib.db import db_client, drain_pages, _url, _headers
+from lib.source_creds import log_credential_access
 from lib.sync.connector import BaseConnector
 from lib.sync.connectors.airtable import AirtableConnector
 from lib.sync.differ import find_changes
@@ -87,7 +88,9 @@ async def _get_credentials(owner_type: str, owner_id: str, source_type: str) -> 
     r.raise_for_status()
     rows = r.json()
     if rows:
-        return decrypt_credentials(rows[0]["credentials"])
+        creds = decrypt_credentials(rows[0]["credentials"])
+        log_credential_access(owner_type, owner_id, source_type)
+        return creds
 
     return None
 

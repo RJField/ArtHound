@@ -49,7 +49,7 @@ async def _fetch_studio_asset_meta(studio_id: str, canonical_asset_ids: list[str
     r = await db_client.get(
         _url("/rest/v1/replicated_assets"),
         params={
-            "select": "canonical_asset_id,name,item_type,priority,product,status,source_type,source_record_id,meta",
+            "select": "canonical_asset_id,name,product,source_type,source_record_id,meta",
             "owner_type": "eq.studio",
             "owner_id": f"eq.{studio_id}",
             "canonical_asset_id": f"in.({ids_csv})",

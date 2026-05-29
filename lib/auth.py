@@ -18,9 +18,9 @@ _jwks_client: PyJWKClient | None = None
 
 # Per-user membership cache: user_id -> (studio_id, vendor_id, member_role, cached_at)
 # Keyed strictly by verified JWT sub — no cross-user leakage possible.
-# TTL of 60s: a removed member retains access for at most one minute;
-# a newly-accepted pending member sees access within one minute of approval.
-_MEMBERSHIP_TTL = 60
+# TTL of 15s: a removed member retains access for at most 15 seconds;
+# a newly-accepted pending member sees access within 15 seconds of approval.
+_MEMBERSHIP_TTL = 15
 _membership_cache: dict[str, tuple[Optional[str], Optional[str], Optional[str], float]] = {}
 
 

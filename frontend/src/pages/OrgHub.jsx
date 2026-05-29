@@ -66,6 +66,75 @@ const btnGhost     = () => 'px-3 py-1.5 rounded-md text-muted text-xs hover:text
 const ROLE_LABELS = { owner: 'Owner', admin: 'Admin', user: 'Member' }
 const ROLE_ORDER  = { owner: 0, admin: 1, user: 2 }
 
+function auditLabel(entry) {
+  const role = r => ROLE_LABELS[r] ?? r
+  const tgt  = entry.target_email || (entry.target_user_id ? entry.target_user_id.slice(0, 8) + '…' : null)
+  switch (entry.action) {
+    case 'member_accepted':         return `Accepted ${tgt} as Member`
+    case 'member_declined':         return `Declined join request from ${tgt}`
+    case 'role_changed':            return `Changed ${tgt}'s role: ${role(entry.old_role)} → ${role(entry.new_role)}`
+    case 'ownership_transferred':   return `Transferred ownership to ${tgt}`
+    case 'member_removed':          return `Removed ${tgt} (was ${role(entry.old_role)})`
+    case 'invite_code_regenerated': return 'Regenerated invite code'
+    default:                        return entry.action
+  }
+}
+
+function AuditLogSection() {
+  const [open, setOpen]       = useState(false)
+  const [entries, setEntries] = useState(null)
+  const [loading, setLoading] = useState(false)
+
+  async function load() {
+    setLoading(true)
+    try {
+      const data = await apiFetch('/api/org/audit-log')
+      setEntries(data)
+    } catch (err) {
+      toast.error(err.message || 'Failed to load activity log')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  function toggle() {
+    if (!open && entries === null) load()
+    setOpen(o => !o)
+  }
+
+  return (
+    <div className="flex flex-col gap-3 p-5 rounded-xl bg-surface border border-border">
+      <button
+        onClick={toggle}
+        className="flex items-center justify-between text-left w-full"
+      >
+        <h2 className="text-foreground text-sm font-semibold">Activity log</h2>
+        <span className="text-muted text-xs">{open ? 'Hide' : 'Show'}</span>
+      </button>
+
+      {open && (
+        <div className="flex flex-col">
+          {loading && <p className="text-muted text-xs py-2">Loading…</p>}
+          {!loading && entries?.length === 0 && (
+            <p className="text-muted text-xs py-2">No activity recorded yet.</p>
+          )}
+          {!loading && entries?.map(e => (
+            <div key={e.id} className="flex items-start justify-between gap-4 py-2.5 border-t border-border first:border-t-0">
+              <div className="flex flex-col min-w-0">
+                <span className="text-foreground text-sm">{auditLabel(e)}</span>
+                <span className="text-muted text-xs mt-0.5">by {e.actor_email || e.actor_id.slice(0, 8) + '…'}</span>
+              </div>
+              <span className="text-muted text-xs shrink-0 mt-0.5">
+                {new Date(e.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function RoleBadge({ role }) {
   const colours = {
     owner: 'bg-accent/10 text-accent border-accent/20',
@@ -280,6 +349,9 @@ function MembersTab() {
           })}
         </div>
       </div>
+
+      {/* Activity log — admin only */}
+      {isAdmin && <AuditLogSection />}
     </div>
   )
 }

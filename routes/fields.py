@@ -14,6 +14,11 @@ _STANDARD_SLOTS = frozenset({
     "project_date", "status", "asset_number",
 })
 
+# Slots demoted from named columns to meta["__slots"] (mirror of
+# lib/sync/normalizer._DEMOTED_SLOTS). Their distinct values are read from
+# __slots, not a column — see get_field_values.
+_DEMOTED_SLOTS = frozenset({"dev_name", "item_type", "priority", "status", "team"})
+
 _DISPLAY_KEYS = ("name", "label", "displayName", "value", "title")
 
 
@@ -130,7 +135,8 @@ async def get_field_values(field: str = Query(...), current_user: CurrentUser = 
 
     seen: dict = {}
 
-    if slot in _STANDARD_SLOTS:
+    if slot in _STANDARD_SLOTS and slot not in _DEMOTED_SLOTS:
+        # Real top-level column (name, product, project_date, asset_number).
         r = await db_client.get(
             _url("/rest/v1/replicated_assets"),
             params={
@@ -144,6 +150,23 @@ async def get_field_values(field: str = Query(...), current_user: CurrentUser = 
         )
         for row in (r.json() if r.is_success else []):
             v = row.get(slot)
+            if v is not None:
+                seen[str(v)] = str(v)
+    elif slot in _DEMOTED_SLOTS:
+        # Demoted to meta["__slots"] — the named column is dropped by the
+        # slot-demotion migration. No explicit select so the pre-migration column
+        # fallback works without 400-ing post-drop (matches lib/scheduler.py).
+        r = await db_client.get(
+            _url("/rest/v1/replicated_assets"),
+            params={
+                "owner_type": "eq.studio",
+                "owner_id":   f"eq.{studio_id}",
+                "limit":      "10000",
+            },
+            headers=_headers(),
+        )
+        for row in (r.json() if r.is_success else []):
+            v = (row.get("meta") or {}).get("__slots", {}).get(slot) or row.get(slot)
             if v is not None:
                 seen[str(v)] = str(v)
     else:
@@ -182,7 +205,12 @@ async def get_asset_combinations(field: List[str] = Query(default=[]), current_u
     slot_fields = await _get_slot_field_names(studio_id)
     fn_to_slot = {v: k for k, v in slot_fields.items()}
 
-    std_cols = {fn_to_slot[f] for f in field_names if fn_to_slot.get(f) in _STANDARD_SLOTS}
+    # Only non-demoted standard slots are real columns; demoted slots are read from
+    # meta["__slots"] (always fetched via "meta") so we never name a dropped column.
+    std_cols = {
+        fn_to_slot[f] for f in field_names
+        if fn_to_slot.get(f) in _STANDARD_SLOTS and fn_to_slot.get(f) not in _DEMOTED_SLOTS
+    }
     select_cols = ",".join({"meta"} | std_cols)
 
     r = await db_client.get(
@@ -198,7 +226,12 @@ async def get_asset_combinations(field: List[str] = Query(default=[]), current_u
 
     def _val(row, fname):
         slot = fn_to_slot.get(fname)
-        v = row.get(slot) if slot in _STANDARD_SLOTS else (row.get("meta") or {}).get(fname)
+        if slot in _DEMOTED_SLOTS:
+            v = (row.get("meta") or {}).get("__slots", {}).get(slot) or row.get(slot)
+        elif slot in _STANDARD_SLOTS:
+            v = row.get(slot)
+        else:
+            v = (row.get("meta") or {}).get(fname)
         return _extract_str(v)
 
     combo_counts: dict = {}

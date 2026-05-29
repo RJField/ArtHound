@@ -792,16 +792,17 @@ async def get_data(
 
     scope = session.get("scope_json") or {}
     return {
-        "ai_stage":           session["ai_stage"],
-        "message_count":      session["message_count"],
-        "generation_mode":    session.get("generation_mode", "ai"),
-        "scenario_category":  scope.get("scenario_category", "target_date"),
-        "preflight_warnings": session.get("preflight_warnings") or [],
-        "scope":              scope,
-        "show_escape":        session["message_count"] >= _ESCAPE_TURN and session["ai_stage"] == "scoping",
-        "products":           product_rows,
-        "assets":             asset_rows,
-        "work":               work_rows,
+        "ai_stage":            session["ai_stage"],
+        "message_count":       session["message_count"],
+        "generation_mode":     session.get("generation_mode", "ai"),
+        "scenario_category":   scope.get("scenario_category", "target_date"),
+        "preflight_warnings":  session.get("preflight_warnings") or [],
+        "generation_status":   session.get("generation_status"),
+        "scope":               scope,
+        "show_escape":         session["message_count"] >= _ESCAPE_TURN and session["ai_stage"] == "scoping",
+        "products":            product_rows,
+        "assets":              asset_rows,
+        "work":                work_rows,
     }
 
 
@@ -919,7 +920,7 @@ async def _get_session(session_id: str, studio_id: str) -> dict:
         params={
             "id":       f"eq.{session_id}",
             "studio_id": f"eq.{studio_id}",
-            "select":   "id,studio_id,ai_stage,scope_json,message_count,status,generation_mode,preflight_warnings",
+            "select":   "id,studio_id,ai_stage,scope_json,message_count,status,generation_mode,preflight_warnings,generation_status",
             "limit":    "1",
         },
         headers=_headers(),

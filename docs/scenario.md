@@ -62,6 +62,8 @@ POST /api/scenario/start
 
 **Retry** — if generation fails, `ai_stage = "generation_failed"`. `POST /api/scenario/{id}/retry-generation` resets to `pending_generation` without re-running the scoping phase.
 
+**Overload error handling** — if the Anthropic API returns a 429 (rate limit) or 529 (overloaded) response during any `send_message` call, the route catches `anthropic.APIStatusError` and returns HTTP 503 with a plain-text `detail` string. The frontend renders this as an inline error banner in the chat UI. A 400 `invalid_request_error` from the API (e.g. token limit) is not caught here and propagates as a 500.
+
 ---
 
 ## AI Scoping (Haiku)
@@ -77,6 +79,52 @@ The model has a single tool available: `submit_scope` — a structured tool call
 At turn 8, the route forces `tool_choice = {type: "tool", name: "submit_scope"}` regardless of whether the model would have chosen it naturally, ensuring the scoping phase always terminates.
 
 Prompt caching (`cache_control: {type: "ephemeral"}`) is applied to the system prompt to reduce latency on subsequent turns within the same scoping conversation.
+
+---
+
+## Discussion Mode (Haiku)
+
+After generation completes (`ai_stage = "discussion"`), Haiku answers questions about the generated plan. The discussion prompt is built in `lib/scenario/context.py` (`build_discussion_prompt`) and contains four sections:
+
+1. **Instructions + definitions** — strict grounding rules (no fabricated numbers, all derivations shown, days-not-weeks), production planning formulas (critical path, float, utilisation, throughput), and the SCENARIO_ACTION protocol.
+2. **Generation constraints** — the scope used to produce this scenario (mode, target date, cadence, scale, craft caps, distribution).
+3. **Workflow structure** — step names, crafts, and the dependency DAG. Estimate values are intentionally omitted: each asset has exactly one profile with one estimate per step; summing across profiles produces meaningless totals. Per-asset estimates are available on demand via `get_asset_schedule`.
+4. **Scenario data** — compact aggregated summary (product spans, asset profile distribution, per-craft cap utilisation with peak date and days-at/above/below-cap, work item counts by step). Per-asset and per-product detail is fetched on demand via tools.
+
+### Discussion tool loop
+
+Haiku may call multiple tools in a single response. The handler (`_handle_discussion` in `routes/scenario.py`) runs up to 5 rounds:
+
+- Each round: Haiku responds → tool blocks extracted → all tools executed **in parallel** via `asyncio.gather` → results fed back as a single `tool_result` user message.
+- If a round produces no tool blocks, the text response is captured and the loop exits.
+- If all 5 rounds consume tool calls without producing a text response, a forced final text request is issued (tool-free) to ensure a reply is always returned.
+
+### Discussion tools
+
+| Tool | Description |
+|---|---|
+| `get_craft_overrun_assets` | Returns assets whose work overlaps above-cap periods for a given craft. Uses a sweep-line event sort (end events before start events on the same date) to avoid false positives at batch boundaries. Returns the empty set if no cap was set. |
+| `list_assets_in_product` | Returns the full asset roster for a named product — names, profiles, priorities. Accepts case-insensitive partial match on product name. |
+| `get_asset_schedule` | Returns the step-by-step work schedule for a single named asset — step, craft, start/end dates, estimate days. Accepts case-insensitive partial match on asset name. |
+
+### SCENARIO_ACTION — iterating on a scenario
+
+When a user explicitly asks to change scope parameters and regenerate, Haiku appends a structured `SCENARIO_ACTION` block to its response. The route parses this block and returns it as `action` in the message response.
+
+```
+SCENARIO_ACTION: {"type":"regenerate","scope_changes":{...},"description":"..."}
+```
+
+**Valid `scope_changes` keys:**
+
+| Key | Type | Description |
+|---|---|---|
+| `craft_caps` | object | Craft name → integer cap. `null` removes a cap. Only include crafts the user explicitly changed. |
+| `release_interval_days` | integer | New cadence interval in days |
+| `num_products` | integer | New number of sprints/releases |
+| `scale` | object | Profile label → integer count. Only include profiles the user changed. |
+
+The frontend renders an `ActionCard` component when `action.type === "regenerate"`. The user can **Apply & Regenerate** (calls `POST /api/scenario/{id}/regenerate` with `scope_changes`, which deep-merges the changes into the stored scope and re-queues generation) or **Dismiss**. Haiku only emits `SCENARIO_ACTION` for explicit "change and re-run" requests — not for hypothetical "what if" questions.
 
 ---
 
@@ -276,6 +324,14 @@ created_at
 
 `ScenarioViewer.jsx` renders a three-tab read-only view of the generated plan: Products list, Assets list, and Work list with Gantt timeline view. All three datasets are paginated server-side via `drain_pages` so there is no display cap regardless of scenario size.
 
+**Work tab controls:**
+
+- **Filter bar** — filter by product (dropdown of all products in the scenario), craft (dropdown of all crafts), or asset name (free-text search). Active filters are highlighted; a "Clear" button resets all three. Tab label shows `filtered/total` count when any filter is active.
+- **Group by** — groups work rows by Product, Asset, or Craft. Each group is collapsible. The column for the active group axis is hidden to avoid redundancy.
+- **Table / Timeline toggle** — switches between the flat/grouped table and the Gantt timeline. Timeline is a per-asset swimlane chart with month headers, colour-coded bars by craft, and a legend. Group controls are hidden in timeline mode.
+
+**Generation mode badge** — a small label in the tab bar shows `Rule-based` (highlighted) or `AI` to indicate which engine produced the scenario.
+
 **Deferred actions** — "Export to CSV" and "Write to Source" buttons appear in the action bar but are disabled (grey). Both are planned future features.
 
 ---
@@ -291,6 +347,7 @@ All endpoints are under `/api/scenario`. Studio-only.
 | POST | `/generate` | Direct generation with fully-formed scope (wizard path) |
 | POST | `/{id}/message` | Send a message in scoping or discussion stage |
 | POST | `/{id}/force-generate` | Skip remaining scoping; generate with partial scope |
+| POST | `/{id}/regenerate` | Apply `scope_changes` to stored scope and re-queue generation (discussion stage only) |
 | POST | `/{id}/retry-generation` | Retry after `generation_failed` |
 | GET | `/{id}/data` | Session state, scope, and all generated rows (paginated, no row limit) |
 | GET | `/{id}/messages` | Full message history |
@@ -304,6 +361,8 @@ All endpoints are under `/api/scenario`. Studio-only.
 
 **No session history or comparison** — each session produces a fresh plan with no link to prior scenarios. Comparing two plan alternatives requires running two sessions manually.
 
-**Discussion mode context on large scenarios** — the Haiku discussion prompt loads aggregated data from the session tables. On very large scenarios (thousands of work rows), the context summary may be truncated.
+**Discussion mode context on large scenarios** — the Haiku discussion prompt uses a compact aggregated summary (product spans, profile distribution, craft utilisation, step counts). Per-asset and per-product detail is fetched on demand via tools. This design keeps the context bounded regardless of scenario size, but very large tool result payloads (e.g. `list_assets_in_product` on a product with hundreds of assets) may still approach token limits.
+
+**Missing `compare_profile_costs` discussion tool** — Haiku cannot yet answer "which asset type is cheapest to produce?" or "how does 3D allocation differ between Hero and Support characters?" with grounded data. A `compare_profile_costs` tool is planned that aggregates `scenario_work` by profile label and returns ranked craft-day totals per profile.
 
 **Craft caps are greedy without backtracking** — assets are placed in priority order and each asset claims the earliest available cap slot. A sub-optimal early placement can push later assets past their target window even when a valid schedule exists. The sweep-line placement ensures the earliest feasible slot for each step is found efficiently, but the overall asset ordering is not optimised.

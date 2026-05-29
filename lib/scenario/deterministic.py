@@ -17,6 +17,7 @@ from lib.scenario.shared import (
     expand_and_insert_work,
     expand_and_insert_work_cadence,
     rollback,
+    set_generation_status,
     normalize_scale_key,
     normalize_profile_counts,
     validate_profiles,
@@ -39,16 +40,19 @@ async def run_rule_based_generation(session_id: str, studio_id: str, scope: dict
     await rollback(session_id)
 
     category = scope.get("scenario_category", "target_date")
+    await set_generation_status(session_id, "Step 1 of 4 — Loading studio data")
     valid_steps, variable_fields, known_combo_keys, step_order, matrix_by_step_name, craft_by_step_name, dep_by_step_name = \
         await fetch_validation_data(studio_id)
 
     # ── Step 1: Products ──────────────────────────────────────────────────────
     log.info("Scenario %s (rule-based, %s) — generating products", session_id, category)
+    await set_generation_status(session_id, "Step 2 of 4 — Generating products")
     products = _build_products(scope)
     inserted_products = await insert_products(session_id, studio_id, products)
 
     # ── Step 2: Asset profiles ────────────────────────────────────────────────
     log.info("Scenario %s (rule-based) — resolving asset profiles", session_id)
+    await set_generation_status(session_id, "Step 3 of 4 — Expanding assets")
     profiles = _resolve_scale_to_profiles(scope, variable_fields, known_combo_keys)
     profiles = normalize_profile_counts(profiles, scope, session_id)
 
@@ -77,6 +81,7 @@ async def run_rule_based_generation(session_id: str, studio_id: str, scope: dict
 
     # ── Step 3: Work templates ────────────────────────────────────────────────
     log.info("Scenario %s (rule-based) — building work templates", session_id)
+    await set_generation_status(session_id, "Step 4 of 4 — Scheduling work")
     templates = _build_deterministic_templates(
         variable_fields, known_combo_keys, matrix_by_step_name, step_order
     )
