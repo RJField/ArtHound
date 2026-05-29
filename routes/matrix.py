@@ -6,7 +6,7 @@ from typing import List
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from lib.auth import CurrentUser, require_studio, require_admin
+from lib.auth import CurrentUser, get_current_user, resolve_owner, require_admin
 from lib.db import db_client, _url, _headers
 
 log = logging.getLogger(__name__)
@@ -14,26 +14,25 @@ router = APIRouter()
 
 
 @router.get("/matrix-table-pg")
-async def get_matrix_table_pg(current_user: CurrentUser = Depends(require_studio)):
-    studio_id = current_user.studio_id
-    if not studio_id:
-        raise HTTPException(status_code=403, detail="No studio linked to this user")
+async def get_matrix_table_pg(current_user: CurrentUser = Depends(get_current_user)):
+    owner_col, owner_id = resolve_owner(current_user)
+    owner_q = {owner_col: f"eq.{owner_id}"}
 
     r_cfg, r_steps, r_matrix = await asyncio.gather(
         db_client.get(
             _url("/rest/v1/estimate_config"),
-            params={"studio_id": f"eq.{studio_id}", "select": "variable_fields"},
+            params={**owner_q, "select": "variable_fields"},
             headers=_headers(),
         ),
         db_client.get(
             _url("/rest/v1/workflow_steps"),
-            params={"studio_id": f"eq.{studio_id}", "select": "id,name,craft"},
+            params={**owner_q, "select": "id,name,craft"},
             headers=_headers(),
         ),
         db_client.get(
             _url("/rest/v1/estimate_matrix"),
             params={
-                "studio_id": f"eq.{studio_id}",
+                **owner_q,
                 "select": "workflow_step_id,variable_values,estimate_days",
                 "limit": "10000",
             },
@@ -139,16 +138,16 @@ class MatrixCellBody(BaseModel):
 @router.patch("/matrix-cell")
 async def update_matrix_cell(
     body: MatrixCellBody,
-    current_user: CurrentUser = Depends(require_studio),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
-    studio_id = current_user.studio_id
+    owner_col, owner_id = resolve_owner(current_user)
     if body.estimate_days < 0:
         raise HTTPException(status_code=422, detail="estimate_days must be >= 0")
 
     r = await db_client.post(
-        _url("/rest/v1/estimate_matrix?on_conflict=studio_id,workflow_step_id,variable_values"),
+        _url("/rest/v1/estimate_matrix?on_conflict=owner_key,workflow_step_id,variable_values"),
         json={
-            "studio_id":        studio_id,
+            owner_col:          owner_id,
             "workflow_step_id": body.workflow_step_id,
             "variable_values":  body.variable_values,
             "estimate_days":    body.estimate_days,
@@ -175,32 +174,30 @@ class CreateMatrixBody(BaseModel):
 @router.post("/create-matrix-pg")
 async def create_matrix_pg(
     body: CreateMatrixBody,
-    current_user: CurrentUser = Depends(require_studio),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     """ArtHound-native estimation matrix stored in Postgres."""
-    studio_id = current_user.studio_id
-    if not studio_id:
-        raise HTTPException(status_code=403, detail="No studio linked to this user")
+    owner_col, owner_id = resolve_owner(current_user)
 
     variable_fields = sorted(v.field for v in body.variables)
 
     if body.clearExisting:
         await db_client.delete(
             _url("/rest/v1/estimate_matrix"),
-            params={"studio_id": f"eq.{studio_id}"},
+            params={owner_col: f"eq.{owner_id}"},
             headers=_headers(),
         )
 
     await db_client.post(
         _url("/rest/v1/estimate_config"),
-        params={"on_conflict": "studio_id"},
+        params={"on_conflict": "owner_key"},
         headers=_headers({"Prefer": "resolution=merge-duplicates,return=minimal"}),
-        json={"studio_id": studio_id, "variable_fields": variable_fields},
+        json={owner_col: owner_id, "variable_fields": variable_fields},
     )
 
     r_steps = await db_client.get(
         _url("/rest/v1/workflow_steps"),
-        params={"studio_id": f"eq.{studio_id}", "select": "id"},
+        params={owner_col: f"eq.{owner_id}", "select": "id"},
         headers=_headers(),
     )
     workflow_steps = r_steps.json()
@@ -211,7 +208,7 @@ async def create_matrix_pg(
         r_defaults = await db_client.get(
             _url("/rest/v1/estimate_matrix"),
             params={
-                "studio_id": f"eq.{studio_id}",
+                owner_col: f"eq.{owner_id}",
                 "variable_values": "eq.{}",
                 "select": "workflow_step_id,estimate_days",
             },
@@ -228,7 +225,7 @@ async def create_matrix_pg(
         for combo in active_combos:
             variable_values = {f: combo["values"].get(f, {}).get("name", "") for f in variable_fields}
             matrix_rows.append({
-                "studio_id": studio_id,
+                owner_col: owner_id,
                 "workflow_step_id": step_id,
                 "variable_values": variable_values,
                 "estimate_days": seed,
@@ -237,7 +234,7 @@ async def create_matrix_pg(
     if matrix_rows:
         r = await db_client.post(
             _url("/rest/v1/estimate_matrix"),
-            params={"on_conflict": "studio_id,workflow_step_id,variable_values"},
+            params={"on_conflict": "owner_key,workflow_step_id,variable_values"},
             headers=_headers({"Prefer": "resolution=ignore-duplicates,return=minimal"}),
             json=matrix_rows,
         )
@@ -245,13 +242,13 @@ async def create_matrix_pg(
             raise HTTPException(status_code=500, detail=f"Failed to upsert estimate_matrix: {r.text}")
 
     default_rows = [
-        {"studio_id": studio_id, "workflow_step_id": step["id"], "variable_values": {}, "estimate_days": 0}
+        {owner_col: owner_id, "workflow_step_id": step["id"], "variable_values": {}, "estimate_days": 0}
         for step in workflow_steps
     ]
     if default_rows:
         await db_client.post(
             _url("/rest/v1/estimate_matrix"),
-            params={"on_conflict": "studio_id,workflow_step_id,variable_values"},
+            params={"on_conflict": "owner_key,workflow_step_id,variable_values"},
             headers=_headers({"Prefer": "resolution=ignore-duplicates,return=minimal"}),
             json=default_rows,
         )
@@ -264,15 +261,15 @@ async def create_matrix_pg(
 
 
 @router.post("/randomize-matrix")
-async def randomize_matrix(current_user: CurrentUser = Depends(require_studio)):
+async def randomize_matrix(current_user: CurrentUser = Depends(get_current_user)):
     """Admin-only: overwrite every existing matrix cell with a random value between 5 and 25."""
     require_admin(current_user)
-    studio_id = current_user.studio_id
+    owner_col, owner_id = resolve_owner(current_user)
 
     r = await db_client.get(
         _url("/rest/v1/estimate_matrix"),
         params={
-            "studio_id": f"eq.{studio_id}",
+            owner_col: f"eq.{owner_id}",
             "select": "workflow_step_id,variable_values",
             "limit": "10000",
         },
@@ -284,7 +281,7 @@ async def randomize_matrix(current_user: CurrentUser = Depends(require_studio)):
 
     updates = [
         {
-            "studio_id": studio_id,
+            owner_col: owner_id,
             "workflow_step_id": row["workflow_step_id"],
             "variable_values": row["variable_values"],
             "estimate_days": random.randint(5, 25),
@@ -294,7 +291,7 @@ async def randomize_matrix(current_user: CurrentUser = Depends(require_studio)):
 
     await db_client.post(
         _url("/rest/v1/estimate_matrix"),
-        params={"on_conflict": "studio_id,workflow_step_id,variable_values"},
+        params={"on_conflict": "owner_key,workflow_step_id,variable_values"},
         headers=_headers({"Prefer": "resolution=merge-duplicates,return=minimal"}),
         json=updates,
     )

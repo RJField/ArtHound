@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from lib.auth import CurrentUser, require_studio
+from lib.auth import CurrentUser, get_current_user, resolve_owner
 from lib.db import db_client, _url, _headers
 
 router = APIRouter()
@@ -22,11 +22,11 @@ class BulkDeleteBody(BaseModel):
     ids: list[str]
 
 
-async def _fetch_steps_with_deps(studio_id: str):
+async def _fetch_steps_with_deps(owner_col: str, owner_id: str):
     r = await db_client.get(
         _url("/rest/v1/workflow_steps"),
         params={
-            "studio_id": f"eq.{studio_id}",
+            owner_col: f"eq.{owner_id}",
             "select": "id,name,craft,step_deps:workflow_step_dependencies!step_id(depends_on_step_id)",
             "order": "created_at.asc",
         },
@@ -46,12 +46,10 @@ async def _fetch_steps_with_deps(studio_id: str):
 
 # /csv must be declared before /{step_id} so FastAPI matches it as a literal path
 @router.get("/csv")
-async def download_csv(user: CurrentUser = Depends(require_studio)):
-    studio_id = user.studio_id
-    if not studio_id:
-        raise HTTPException(status_code=403, detail="No studio linked")
+async def download_csv(user: CurrentUser = Depends(get_current_user)):
+    owner_col, owner_id = resolve_owner(user)
 
-    steps, deps = await _fetch_steps_with_deps(studio_id)
+    steps, deps = await _fetch_steps_with_deps(owner_col, owner_id)
     step_name = {s["id"]: s["name"] for s in steps}
 
     output = io.StringIO()
@@ -87,12 +85,10 @@ async def download_csv(user: CurrentUser = Depends(require_studio)):
 
 
 @router.get("")
-async def list_steps(user: CurrentUser = Depends(require_studio)):
-    studio_id = user.studio_id
-    if not studio_id:
-        raise HTTPException(status_code=403, detail="No studio linked")
+async def list_steps(user: CurrentUser = Depends(get_current_user)):
+    owner_col, owner_id = resolve_owner(user)
 
-    steps, deps = await _fetch_steps_with_deps(studio_id)
+    steps, deps = await _fetch_steps_with_deps(owner_col, owner_id)
     step_by_id = {s["id"]: s for s in steps}
     depends_on: dict = {s["id"]: [] for s in steps}
     depended_by: dict = {s["id"]: [] for s in steps}
@@ -123,16 +119,14 @@ async def list_steps(user: CurrentUser = Depends(require_studio)):
 
 
 @router.post("")
-async def create_step(body: StepBody, user: CurrentUser = Depends(require_studio)):
-    studio_id = user.studio_id
-    if not studio_id:
-        raise HTTPException(status_code=403, detail="No studio linked")
+async def create_step(body: StepBody, user: CurrentUser = Depends(get_current_user)):
+    owner_col, owner_id = resolve_owner(user)
 
     r = await db_client.post(
         _url("/rest/v1/workflow_steps"),
         headers=_headers({"Prefer": "return=representation"}),
         json={
-            "studio_id": studio_id,
+            owner_col: owner_id,
             "name": body.name.strip(),
             "craft": body.craft.strip() if body.craft else None,
         },
@@ -154,14 +148,12 @@ async def create_step(body: StepBody, user: CurrentUser = Depends(require_studio
 
 
 @router.patch("/{step_id}")
-async def update_step(step_id: str, body: StepBody, user: CurrentUser = Depends(require_studio)):
-    studio_id = user.studio_id
-    if not studio_id:
-        raise HTTPException(status_code=403, detail="No studio linked")
+async def update_step(step_id: str, body: StepBody, user: CurrentUser = Depends(get_current_user)):
+    owner_col, owner_id = resolve_owner(user)
 
     r = await db_client.get(
         _url("/rest/v1/workflow_steps"),
-        params={"id": f"eq.{step_id}", "studio_id": f"eq.{studio_id}", "select": "id"},
+        params={"id": f"eq.{step_id}", owner_col: f"eq.{owner_id}", "select": "id"},
         headers=_headers(),
     )
     if not r.json():
@@ -169,7 +161,7 @@ async def update_step(step_id: str, body: StepBody, user: CurrentUser = Depends(
 
     await db_client.patch(
         _url("/rest/v1/workflow_steps"),
-        params={"id": f"eq.{step_id}", "studio_id": f"eq.{studio_id}"},
+        params={"id": f"eq.{step_id}", owner_col: f"eq.{owner_id}"},
         headers=_headers(),
         json={
             "name": body.name.strip(),
@@ -196,17 +188,15 @@ async def update_step(step_id: str, body: StepBody, user: CurrentUser = Depends(
 
 
 @router.delete("/bulk")
-async def bulk_delete_steps(body: BulkDeleteBody, user: CurrentUser = Depends(require_studio)):
-    studio_id = user.studio_id
-    if not studio_id:
-        raise HTTPException(status_code=403, detail="No studio linked")
+async def bulk_delete_steps(body: BulkDeleteBody, user: CurrentUser = Depends(get_current_user)):
+    owner_col, owner_id = resolve_owner(user)
     if not body.ids:
         return {"deleted": 0}
 
     id_list = ",".join(f'"{i}"' for i in body.ids)
     r = await db_client.delete(
         _url("/rest/v1/workflow_steps"),
-        params={"id": f"in.({id_list})", "studio_id": f"eq.{studio_id}"},
+        params={"id": f"in.({id_list})", owner_col: f"eq.{owner_id}"},
         headers=_headers({"Prefer": "return=minimal"}),
     )
     if not r.is_success:
@@ -215,14 +205,12 @@ async def bulk_delete_steps(body: BulkDeleteBody, user: CurrentUser = Depends(re
 
 
 @router.delete("/{step_id}")
-async def delete_step(step_id: str, user: CurrentUser = Depends(require_studio)):
-    studio_id = user.studio_id
-    if not studio_id:
-        raise HTTPException(status_code=403, detail="No studio linked")
+async def delete_step(step_id: str, user: CurrentUser = Depends(get_current_user)):
+    owner_col, owner_id = resolve_owner(user)
 
     r = await db_client.get(
         _url("/rest/v1/workflow_steps"),
-        params={"id": f"eq.{step_id}", "studio_id": f"eq.{studio_id}", "select": "id"},
+        params={"id": f"eq.{step_id}", owner_col: f"eq.{owner_id}", "select": "id"},
         headers=_headers(),
     )
     if not r.json():
@@ -230,7 +218,7 @@ async def delete_step(step_id: str, user: CurrentUser = Depends(require_studio))
 
     r = await db_client.delete(
         _url("/rest/v1/workflow_steps"),
-        params={"id": f"eq.{step_id}", "studio_id": f"eq.{studio_id}"},
+        params={"id": f"eq.{step_id}", owner_col: f"eq.{owner_id}"},
         headers=_headers({"Prefer": "return=minimal"}),
     )
     if not r.is_success:
