@@ -11,8 +11,15 @@
   `scripts/test_effective_matrix.py`. Validated: on_conflict binds the NND index (§6.1 closed, no
   fallback); CHECK rejects studio+link rows (§6.6); overlay logic (6 assertions); frontend builds.
 - Dev is **Postgres 17** → §6.2 closed for dev.
-- **Remaining for M1:** manual vendor-session smoke test (needs a vendor login). **Next: Phase 2 (M2)**
-  — M-03/M-04/M-05 share tables + projector + delivery + `routes/estimate_share.py`. Phase 3 plan-only.
+- **Phase 2 (M2) BACKEND DONE, applied to dev** — migration `20260529000003` (3 share tables +
+  `create_estimate_share` RPC for atomic find-or-create-series + supersede + insert + logging);
+  `lib/estimate/projector.py` (granularity exposure boundary), `lib/estimate/delivery.py`
+  (`route_inbox` strategy), `routes/estimate_share.py` (vendor targets/create/outbox/revoke + studio
+  inbox/view), registered in `main.py`. Validated on dev: RPC end-to-end (1 series, supersede →
+  one-live, `shared`×2/`superseded`×1 logging, cleaned up); projector exposure test (§6.5);
+  effective + projector unit tests pass; router imports.
+- **Remaining:** Phase 2 frontend (M3 — vendor "Share estimates" modal + outbox + revoke) and Phase 3
+  (M4 — studio inbox read-only viewer). Plus the manual vendor-login smoke test.
 
 **Summary:** Generalize the studio-only estimation stack to vendors, let a vendor maintain
 per-studio-link rate variations on top of a base matrix, and let the vendor share a frozen,
