@@ -28,9 +28,16 @@
 - **Backend addition:** `GET /api/estimate-shares/preview?link_id=&granularity=` (read-only project,
   returns `{snapshot, unset_cells, profile_count}`); `create_share` refactored onto a shared
   `_build_snapshot` helper. Frontend builds clean; projector + effective-matrix tests pass.
-- **Only remaining:** the **manual vendor-login smoke test** of the full chain (needs a vendor
-  session; can't be done headlessly). API: `/api/estimate-shares` (`GET /targets`, `GET /preview`,
-  `POST ""`, `GET /outbox`, `POST /{id}/revoke`, `GET /inbox`, `POST /{id}/view`).
+- **Phase 0 completeness fix:** `routes/fields.py` (`/fields`, `/field-values`, `/asset-combinations`
+  — the Setup wizard's variable/value discovery) was still `require_studio` + hardcoded
+  `owner_type='studio'`, so a vendor hit "Studio access required" on Setup. Now owner-aware
+  (`_owner_scope` resolves `owner_type` from role; queries the org's own `source_field_mappings` /
+  `replicated_assets`). Vendors derive estimation variables from their own synced source data (both
+  dev test vendors have it). No manual-variable path needed.
+- **SMOKE TEST PASSED (2026-05-29)** — full vendor-login chain working: vendor authors base matrix +
+  per-link overrides, shares at a granularity, studio receives in inbox. Feature complete for v1.
+  API: `/api/estimate-shares` (`GET /targets`, `GET /preview`, `POST ""`, `GET /outbox`,
+  `POST /{id}/revoke`, `GET /inbox`, `POST /{id}/view`). Still nothing on prod.
 
 **Summary:** Generalize the studio-only estimation stack to vendors, let a vendor maintain
 per-studio-link rate variations on top of a base matrix, and let the vendor share a frozen,
