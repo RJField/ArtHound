@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from lib.auth import CurrentUser, get_current_user, resolve_owner
 from lib.db import db_client, _url, _headers
+from lib.workflow_graph import detect_cycle
 
 router = APIRouter()
 
@@ -42,6 +43,38 @@ async def _fetch_steps_with_deps(owner_col: str, owner_id: str):
     ]
 
     return steps, deps
+
+
+async def _validate_deps(owner_col: str, owner_id: str, depends_on: list[str],
+                         *, step_id: str | None = None) -> None:
+    """Reject dependency changes that are cross-tenant, self-referential, or would form a cycle.
+
+    The route layer is the authoritative guard (the UI also disables cycle-forming choices). On
+    create, step_id is None — a brand-new step has no incoming edges so it cannot close a cycle; we
+    still validate that every dependency is one of this owner's own steps.
+    """
+    if not depends_on:
+        return
+
+    steps, deps = await _fetch_steps_with_deps(owner_col, owner_id)
+    owned = {s["id"] for s in steps}
+    name_by_id = {s["id"]: s["name"] for s in steps}
+
+    missing = [d for d in depends_on if d not in owned]
+    if missing:
+        raise HTTPException(status_code=400, detail="A selected dependency is not a step in your workflow")
+
+    if step_id is not None and step_id in depends_on:
+        raise HTTPException(status_code=400, detail="A step cannot depend on itself")
+
+    if step_id is not None:
+        cycle = detect_cycle(steps, deps, step_id=step_id, depends_on=depends_on)
+        if cycle:
+            chain = " → ".join(name_by_id.get(c, c) for c in cycle)
+            raise HTTPException(
+                status_code=400,
+                detail=f"This change would create a circular dependency: {chain}",
+            )
 
 
 # /csv must be declared before /{step_id} so FastAPI matches it as a literal path
@@ -122,6 +155,8 @@ async def list_steps(user: CurrentUser = Depends(get_current_user)):
 async def create_step(body: StepBody, user: CurrentUser = Depends(get_current_user)):
     owner_col, owner_id = resolve_owner(user)
 
+    await _validate_deps(owner_col, owner_id, body.depends_on)
+
     r = await db_client.post(
         _url("/rest/v1/workflow_steps"),
         headers=_headers({"Prefer": "return=representation"}),
@@ -158,6 +193,8 @@ async def update_step(step_id: str, body: StepBody, user: CurrentUser = Depends(
     )
     if not r.json():
         raise HTTPException(status_code=404, detail="Step not found")
+
+    await _validate_deps(owner_col, owner_id, body.depends_on, step_id=step_id)
 
     await db_client.patch(
         _url("/rest/v1/workflow_steps"),
