@@ -13,6 +13,7 @@ import httpx
 
 from lib.crypto import decrypt_credentials, encrypt_credentials
 from lib.db import db_client, _url, _headers
+from lib.system_auth import system_identity
 
 log = logging.getLogger(__name__)
 
@@ -109,15 +110,20 @@ async def get_jira_token(
             ).isoformat(),
         }
 
-        await db_client.post(
-            _url("/rest/v1/source_credentials?on_conflict=owner_type,owner_id,source_type"),
-            headers=_headers({"Prefer": "resolution=merge-duplicates,return=minimal"}),
-            json={
-                "owner_type":  owner_type,
-                "owner_id":    owner_id,
-                "source_type": "jira",
-                "credentials": encrypt_credentials(updated),
-            },
-        )
+        # source_credentials is system-managed (Pattern F). Token refresh is automated backend plumbing
+        # that runs in BOTH the system poll-sync and user routes that need a fresh Jira token, so write
+        # the refreshed creds under the system identity regardless of caller (the owner is already known
+        # from the credential row we just read). Flag-off this is a no-op (the service-role key is used).
+        async with system_identity():
+            await db_client.post(
+                _url("/rest/v1/source_credentials?on_conflict=owner_type,owner_id,source_type"),
+                headers=_headers({"Prefer": "resolution=merge-duplicates,return=minimal"}),
+                json={
+                    "owner_type":  owner_type,
+                    "owner_id":    owner_id,
+                    "source_type": "jira",
+                    "credentials": encrypt_credentials(updated),
+                },
+            )
 
         return updated

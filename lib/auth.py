@@ -8,7 +8,7 @@ from jwt import PyJWKClient
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
-from lib.db import db_client, _url, _headers, _user_headers
+from lib.db import db_client, _url, _headers, _user_headers, set_request_token, _use_user_identity
 
 bearer_scheme = HTTPBearer()
 bearer_scheme_optional = HTTPBearer(auto_error=False)
@@ -125,7 +125,21 @@ async def _resolve_membership(user_id: str, role: str) -> tuple[Optional[str], O
     vendor_id = None
     member_role = None
 
-    if role == "studio":
+    if _use_user_identity():
+        # Post-cutover: resolve via the SECURITY DEFINER RPC (RLS migration §6 #9). The DB — not the
+        # app_metadata.role claim — is the source of truth for which org the user belongs to. The
+        # caller's token is already bound (set_request_token in get_current_user), so the RPC runs as
+        # this user and auth.uid() inside it is their id. `role` is ignored on this path.
+        r = await db_client.post(
+            _url("/rest/v1/rpc/resolve_my_membership"),
+            headers=_headers(),
+        )
+        rows = r.json() if r.is_success else []
+        if rows:
+            studio_id = rows[0].get("studio_id")
+            vendor_id = rows[0].get("vendor_id")
+            member_role = rows[0].get("member_role")
+    elif role == "studio":
         r = await db_client.get(
             _url("/rest/v1/studio_members"),
             params={"select": "studio_id,member_role", "user_id": f"eq.{user_id}"},
@@ -158,6 +172,11 @@ async def get_current_user(
     Used by all protected routes. get_current_user_or_pending is the only exception.
     """
     token = credentials.credentials
+    # Bind the caller's identity for the whole request (RLS migration §4). Dormant pre-cutover
+    # (_headers ignores it while USE_USER_IDENTITY is off); post-cutover every DB call in this
+    # request — including the membership resolution below — runs AS this user. Set before the JWT
+    # is decoded so even the bootstrap read is identity-bound.
+    set_request_token(token)
     payload = _decode_jwt(token)
 
     app_metadata = payload.get("app_metadata") or {}
@@ -198,6 +217,7 @@ async def get_current_user_or_pending(
     Raises 403 for authenticated users with no membership and no pending request.
     """
     token = credentials.credentials
+    set_request_token(token)  # bind identity for the request (RLS migration §4; dormant pre-cutover)
     payload = _decode_jwt(token)
 
     app_metadata = payload.get("app_metadata") or {}
@@ -225,6 +245,30 @@ async def get_current_user_or_pending(
         )
 
     # No membership — check for a pending join request.
+    if _use_user_identity():
+        # Flag-on: a non-member is denied a direct studios/vendors read (st_sel/v_sel), so resolve the
+        # pending request + its org name via the auth.uid()-scoped DEFINER RPC (migration 6). The
+        # caller's token is already bound (set_request_token above), so the RPC runs as this user.
+        pr = await db_client.post(
+            _url("/rest/v1/rpc/rpc_my_pending_org"),
+            headers=_headers(),
+            json={},
+        )
+        rows = pr.json() if pr.is_success else []
+        if not rows:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="No organisation linked to this account",
+            )
+        return PendingUser(
+            id=user_id,
+            email=email,
+            role=role,
+            org_name=rows[0].get("org_name") or "",
+            org_type=role,
+        )
+
+    # Flag-off (service-role): direct reads as today.
     req_table = "studio_join_requests" if role == "studio" else "vendor_join_requests"
     org_fk    = "studio_id"             if role == "studio" else "vendor_id"
     org_table = "studios"               if role == "studio" else "vendors"

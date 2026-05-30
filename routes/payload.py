@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
 
 from lib.auth import CurrentUser, get_current_user, require_studio, require_vendor
-from lib.db import db_client, _url, _headers
+from lib.db import db_client, _url, _headers, _admin_headers, _use_user_identity
 from lib.sync.qualifiers import airtable_write_defaults, airtable_qualifier_gaps, jira_write_defaults
 
 router = APIRouter()
@@ -607,7 +607,7 @@ async def get_outbox(user: CurrentUser = Depends(require_studio)):
             try:
                 ru = await db_client.get(
                     _url(f"/auth/v1/admin/users/{uid}"),
-                    headers=_headers(),
+                    headers=_admin_headers(),
                 )
                 if ru.is_success:
                     data = ru.json()
@@ -954,17 +954,29 @@ async def do_ingest(dispatch_id: str, user: CurrentUser = Depends(require_vendor
     if existing_export:
         source_record_id = existing_export["vendor_tool_record_id"]
         source_type      = existing_export["vendor_source_type"]
-        await db_client.patch(
-            _url("/rest/v1/payload_field_mappings"),
-            params={"dispatch_id": f"eq.{dispatch_id}", "recipient_vendor_id": f"eq.{user.vendor_id}"},
-            headers=_headers({"Prefer": "return=minimal"}),
-            json={
-                "ingested_at":                _now_iso(),
-                "ingested_source_record_id":  source_record_id,
-                "ingested_by_user_id":        user.id,
-            },
-        )
-        await _log(dispatch_id, "ingested", detail={"source_record_id": source_record_id, "reused": True})
+        if _use_user_identity():
+            # Flag-on: rpc_ingest_payload links THIS dispatch to the reused source record (export insert
+            # for the new dispatch; replicated stub ON CONFLICT no-ops) + marks ingested + logs.
+            rr = await db_client.post(
+                _url("/rest/v1/rpc/rpc_ingest_payload"),
+                headers=_headers(),
+                json={"p_dispatch_id": dispatch_id, "p_source_record_id": source_record_id,
+                      "p_source_type": source_type},
+            )
+            if not rr.is_success:
+                raise HTTPException(status_code=400, detail=f"Ingest failed: {rr.text}")
+        else:
+            await db_client.patch(
+                _url("/rest/v1/payload_field_mappings"),
+                params={"dispatch_id": f"eq.{dispatch_id}", "recipient_vendor_id": f"eq.{user.vendor_id}"},
+                headers=_headers({"Prefer": "return=minimal"}),
+                json={
+                    "ingested_at":                _now_iso(),
+                    "ingested_source_record_id":  source_record_id,
+                    "ingested_by_user_id":        user.id,
+                },
+            )
+            await _log(dispatch_id, "ingested", detail={"source_record_id": source_record_id, "reused": True})
         return {"ok": True, "source_record_id": source_record_id, "reused": True}
 
     # Extract meta-summary config before iterating direct mappings.
@@ -1110,6 +1122,37 @@ async def do_ingest(dispatch_id: str, user: CurrentUser = Depends(require_vendor
                     detail=f"Source tool rejected the record: {exc.response.text}",
                 ) from exc
 
+    if _use_user_identity():
+        # Flag-on: the canonical-link writes (export record + replicated stub + pfm.ingested_at + access
+        # log) are RLS-denied to a user; rpc_ingest_payload does them atomically as the vendor and
+        # SELF-QUARANTINES to failed_ingests on failure (returns 'ok' | 'quarantined'). The external
+        # record already exists above, so a quarantine is recoverable via /retry-canonical.
+        rr = await db_client.post(
+            _url("/rest/v1/rpc/rpc_ingest_payload"),
+            headers=_headers(),
+            json={"p_dispatch_id": dispatch_id, "p_source_record_id": source_record_id,
+                  "p_source_type": source_type},
+        )
+        if not rr.is_success:
+            raise HTTPException(status_code=400, detail=f"Ingest failed: {rr.text}")
+        if rr.json() == "ok":
+            resp = {"ok": True, "source_record_id": source_record_id}
+            if at_q_gaps:
+                resp["qualifierWarnings"] = at_q_gaps
+            return resp
+        # 'quarantined' — ORPHAN prefix is the alerting hook for log aggregators.
+        log.error(
+            "ORPHAN: canonical link quarantined — dispatch=%s vendor=%s source_record=%s canonical_asset=%s",
+            dispatch_id, user.vendor_id, source_record_id, dispatch["asset_id"],
+        )
+        return {
+            "ok": True,
+            "source_record_id": source_record_id,
+            "canonical_link": "failed",
+            "retry_path": f"POST /api/payload/{dispatch_id}/retry-canonical",
+        }
+
+    # Flag-off (service-role) path follows.
     # Step 1 — record the new source record ID immediately. The external record exists
     # from this point; the retry endpoint needs this ID regardless of what follows.
     await db_client.patch(
@@ -1183,6 +1226,24 @@ async def do_ingest(dispatch_id: str, user: CurrentUser = Depends(require_vendor
 
 @router.post("/{dispatch_id}/retry-canonical")
 async def retry_canonical(dispatch_id: str, user: CurrentUser = Depends(require_vendor)):
+    if _use_user_identity():
+        # Flag-on: failed_ingests is an F-table (no user read), so skip the pre-check and let
+        # rpc_retry_canonical_link (recipient-vendor authz + own failed_ingests read) re-attempt the link.
+        # It returns the source_record_id on success and RAISEs (leaving the row retryable) on failure.
+        rr = await db_client.post(
+            _url("/rest/v1/rpc/rpc_retry_canonical_link"),
+            headers=_headers(),
+            json={"p_dispatch_id": dispatch_id},
+        )
+        if not rr.is_success:
+            txt = rr.text
+            if "no failed ingest" in txt:
+                raise HTTPException(status_code=404, detail="No failed ingest record found for this dispatch")
+            if "already resolved" in txt:
+                raise HTTPException(status_code=409, detail="Already resolved")
+            raise HTTPException(status_code=400, detail=f"Retry failed: {txt}")
+        return {"ok": True, "source_record_id": rr.json()}
+
     r_fi = await db_client.get(
         _url("/rest/v1/failed_ingests"),
         params={

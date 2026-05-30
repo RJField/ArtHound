@@ -7,7 +7,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from lib.auth import CurrentUser, get_current_user, require_studio, require_vendor
-from lib.db import db_client, _url, _headers
+from lib.db import db_client, _url, _headers, _use_user_identity
 from lib.sync.runner import run_sync, create_sync_log
 
 log = logging.getLogger(__name__)
@@ -34,17 +34,29 @@ async def save_credentials(
     if not owner_id:
         raise HTTPException(status_code=403, detail="No studio/vendor linked to account")
 
-    r = await db_client.post(
-        _url("/rest/v1/source_credentials?on_conflict=owner_type,owner_id,source_type"),
-        headers=_headers({"Prefer": "resolution=merge-duplicates,return=minimal"}),
-        json={
-            "owner_type":  owner_type,
-            "owner_id":    owner_id,
-            "source_type": body.source_type,
-            "credentials": body.credentials,
-        },
-    )
-    r.raise_for_status()
+    if _use_user_identity():
+        # Flag-on: source_credentials is system-managed (Pattern F, no direct user write); the user-facing
+        # save goes through rpc_upsert_credential (is_my_org authz → own org only).
+        r = await db_client.post(
+            _url("/rest/v1/rpc/rpc_upsert_credential"),
+            headers=_headers(),
+            json={"p_owner_type": owner_type, "p_owner_id": owner_id,
+                  "p_source_type": body.source_type, "p_credentials": body.credentials},
+        )
+        if not r.is_success:
+            raise HTTPException(status_code=400, detail=f"Failed to save credentials: {r.text}")
+    else:
+        r = await db_client.post(
+            _url("/rest/v1/source_credentials?on_conflict=owner_type,owner_id,source_type"),
+            headers=_headers({"Prefer": "resolution=merge-duplicates,return=minimal"}),
+            json={
+                "owner_type":  owner_type,
+                "owner_id":    owner_id,
+                "source_type": body.source_type,
+                "credentials": body.credentials,
+            },
+        )
+        r.raise_for_status()
     return {"ok": True}
 
 

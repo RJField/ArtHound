@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from lib.auth import CurrentUser, PendingUser, get_current_user, get_current_user_or_pending
-from lib.db import db_client, _url, _headers
+from lib.db import db_client, _url, _headers, _admin_headers
 
 _PLATFORM_ADMIN_EMAILS: set[str] = {
     e.strip().lower()
@@ -285,7 +285,7 @@ async def delete_account(user: CurrentUser = Depends(get_current_user)):
     # ── Auth user (must be last — invalidates all tokens) ────────────────────
     r = await db_client.delete(
         _url(f"/auth/v1/admin/users/{user.id}"),
-        headers=_headers(),
+        headers=_admin_headers(),
     )
     if not r.is_success:
         log.error("Failed to delete auth user %s: %s %s", user.id, r.status_code, r.text[:200])

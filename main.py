@@ -17,7 +17,9 @@ from fastapi.responses import FileResponse, JSONResponse
 
 import httpx
 from lib.crypto import decrypt_credentials
-from lib.db import db_client, _url, _headers
+from lib.db import db_client, _url, _headers, _use_user_identity
+from lib.system_auth import system_identity, system_token_accepted
+from lib.db_breakglass import assert_breakglass_not_in_server
 from lib.auth import CurrentUser, get_current_user
 from lib.sync.runner import run_sync
 from routes.assets import router as assets_router
@@ -70,22 +72,26 @@ async def _poll_loop() -> None:
             log.warning("Poll backoff: %ds after %d consecutive failure(s)", backoff, consecutive_failures)
             await asyncio.sleep(backoff)
         try:
-            r = await db_client.get(
-                _url("/rest/v1/source_credentials"),
-                params={"select": "owner_type,owner_id,source_type", "owner_type": "eq.studio"},
-                headers=_headers(),
-            )
-            if r.is_success:
-                for row in r.json():
-                    asyncio.create_task(
-                        run_sync(
-                            owner_type=row["owner_type"],
-                            owner_id=row["owner_id"],
-                            source_type=row["source_type"],
-                            trigger="poll",
-                            full=False,
+            # System identity for the discovery read (RLS migration §4). The create_task'd run_sync
+            # self-opens its own system context, so the spawned syncs are covered regardless of the
+            # captured context (plan §8e).
+            async with system_identity():
+                r = await db_client.get(
+                    _url("/rest/v1/source_credentials"),
+                    params={"select": "owner_type,owner_id,source_type", "owner_type": "eq.studio"},
+                    headers=_headers(),
+                )
+                if r.is_success:
+                    for row in r.json():
+                        asyncio.create_task(
+                            run_sync(
+                                owner_type=row["owner_type"],
+                                owner_id=row["owner_id"],
+                                source_type=row["source_type"],
+                                trigger="poll",
+                                full=False,
+                            )
                         )
-                    )
             if consecutive_failures:
                 log.info("Poll cycle recovered after %d consecutive failure(s)", consecutive_failures)
             consecutive_failures = 0
@@ -108,7 +114,8 @@ async def _attachment_drain_loop() -> None:
     while True:
         await asyncio.sleep(30)
         try:
-            await drain_attachment_jobs()
+            async with system_identity():  # RLS migration §4 — background identity
+                await drain_attachment_jobs()
         except Exception as exc:
             log.warning("Attachment drain error: %s", exc)
 
@@ -128,7 +135,8 @@ async def _attachment_purge_loop() -> None:
         log.info("Attachment purge: starting")
         try:
             from lib.attachments import purge_orphaned_attachments
-            result = await purge_orphaned_attachments()
+            async with system_identity():  # RLS migration §4
+                result = await purge_orphaned_attachments()
             log.info("Attachment purge complete: %s", result)
         except Exception as exc:
             log.error("Attachment purge error: %s", exc)
@@ -151,11 +159,12 @@ async def _sync_log_trim_loop() -> None:
     while True:
         log.info("Sync log trim: starting")
         try:
-            r = await db_client.post(
-                _url("/rest/v1/rpc/trim_sync_log"),
-                headers=_headers(),
-                json={"keep_rows": keep_rows},
-            )
+            async with system_identity():  # RLS migration §4
+                r = await db_client.post(
+                    _url("/rest/v1/rpc/trim_sync_log"),
+                    headers=_headers(),
+                    json={"keep_rows": keep_rows},
+                )
             if r.is_success:
                 log.info("Sync log trim: deleted %d rows", r.json())
             else:
@@ -177,68 +186,74 @@ async def _scenario_generation_loop() -> None:
     while True:
         await asyncio.sleep(30)
         try:
-            r = await db_client.get(
-                _url("/rest/v1/scenario_sessions"),
-                params={
-                    "ai_stage": "eq.pending_generation",
-                    "status":   "eq.active",
-                    "select":   "id,studio_id,scope_json,generation_mode",
-                },
-                headers=_headers(),
-            )
-            if not r.is_success:
-                log.warning("Scenario generation loop — failed to fetch sessions: %s", r.text)
-                continue
-            sessions = r.json()
-            for session in sessions:
-                sid  = session["id"]
-                mode = session.get("generation_mode", "ai")
-                log.info("Scenario generation loop — picking up session %s (mode: %s)", sid, mode)
-                await db_client.patch(
+            # Discovery read + claim-PATCH as system (RLS migration §4); _run_generation_task
+            # self-opens its own system context for the spawned work.
+            async with system_identity():
+                r = await db_client.get(
                     _url("/rest/v1/scenario_sessions"),
-                    params={"id": f"eq.{sid}"},
-                    json={"ai_stage": "generating"},
-                    headers=_headers({"Prefer": "return=minimal"}),
+                    params={
+                        "ai_stage": "eq.pending_generation",
+                        "status":   "eq.active",
+                        "select":   "id,studio_id,scope_json,generation_mode",
+                    },
+                    headers=_headers(),
                 )
-                fn = run_rule_based_generation if mode == "rule_based" else run_generation
-                asyncio.create_task(_run_generation_task(
-                    session_id=sid,
-                    studio_id=session["studio_id"],
-                    scope=session.get("scope_json") or {},
-                    run_generation=fn,
-                ))
+                if not r.is_success:
+                    log.warning("Scenario generation loop — failed to fetch sessions: %s", r.text)
+                    continue
+                sessions = r.json()
+                for session in sessions:
+                    sid  = session["id"]
+                    mode = session.get("generation_mode", "ai")
+                    log.info("Scenario generation loop — picking up session %s (mode: %s)", sid, mode)
+                    await db_client.patch(
+                        _url("/rest/v1/scenario_sessions"),
+                        params={"id": f"eq.{sid}"},
+                        json={"ai_stage": "generating"},
+                        headers=_headers({"Prefer": "return=minimal"}),
+                    )
+                    fn = run_rule_based_generation if mode == "rule_based" else run_generation
+                    asyncio.create_task(_run_generation_task(
+                        session_id=sid,
+                        studio_id=session["studio_id"],
+                        scope=session.get("scope_json") or {},
+                        run_generation=fn,
+                    ))
         except Exception as exc:
             log.warning("Scenario generation loop error: %s", exc)
 
 
 async def _run_generation_task(session_id: str, studio_id: str, scope: dict, run_generation) -> None:
-    try:
-        await run_generation(session_id, studio_id, scope)
-        # Fetch counts to build the pivot message before transitioning stage.
-        pivot_text = await _build_pivot_message(session_id, studio_id, scope)
-        # Persist pivot then flip stage — order matters so the UI doesn't show
-        # discussion state before the pivot message is readable.
-        await db_client.post(
-            _url("/rest/v1/scenario_messages"),
-            json={"session_id": session_id, "studio_id": studio_id,
-                  "role": "assistant", "content": pivot_text},
-            headers=_headers({"Prefer": "return=minimal"}),
-        )
-        await db_client.patch(
-            _url("/rest/v1/scenario_sessions"),
-            params={"id": f"eq.{session_id}"},
-            json={"ai_stage": "discussion"},
-            headers=_headers({"Prefer": "return=minimal"}),
-        )
-        log.info("Scenario %s — generation complete, stage → discussion", session_id)
-    except Exception as exc:
-        log.error("Scenario %s — generation failed: %s", session_id, exc)
-        await db_client.patch(
-            _url("/rest/v1/scenario_sessions"),
-            params={"id": f"eq.{session_id}"},
-            json={"ai_stage": "generation_failed"},
-            headers=_headers({"Prefer": "return=minimal"}),
-        )
+    # create_task'd entrypoint → self-open system identity at the top (RLS migration §4/§8e); do not
+    # rely on the spawning loop's context being inherited. Re-mints a fresh token for long generations.
+    async with system_identity():
+        try:
+            await run_generation(session_id, studio_id, scope)
+            # Fetch counts to build the pivot message before transitioning stage.
+            pivot_text = await _build_pivot_message(session_id, studio_id, scope)
+            # Persist pivot then flip stage — order matters so the UI doesn't show
+            # discussion state before the pivot message is readable.
+            await db_client.post(
+                _url("/rest/v1/scenario_messages"),
+                json={"session_id": session_id, "studio_id": studio_id,
+                      "role": "assistant", "content": pivot_text},
+                headers=_headers({"Prefer": "return=minimal"}),
+            )
+            await db_client.patch(
+                _url("/rest/v1/scenario_sessions"),
+                params={"id": f"eq.{session_id}"},
+                json={"ai_stage": "discussion"},
+                headers=_headers({"Prefer": "return=minimal"}),
+            )
+            log.info("Scenario %s — generation complete, stage → discussion", session_id)
+        except Exception as exc:
+            log.error("Scenario %s — generation failed: %s", session_id, exc)
+            await db_client.patch(
+                _url("/rest/v1/scenario_sessions"),
+                params={"id": f"eq.{session_id}"},
+                json={"ai_stage": "generation_failed"},
+                headers=_headers({"Prefer": "return=minimal"}),
+            )
 
 
 async def _build_pivot_message(session_id: str, studio_id: str, scope: dict) -> str:
@@ -329,11 +344,12 @@ async def _scenario_cleanup_loop() -> None:
     await asyncio.sleep(interval_secs)
     while True:
         try:
-            r = await db_client.delete(
-                _url("/rest/v1/scenario_sessions"),
-                params={"expires_at": "lt.now()"},
-                headers=_headers({"Prefer": "return=minimal"}),
-            )
+            async with system_identity():  # RLS migration §4
+                r = await db_client.delete(
+                    _url("/rest/v1/scenario_sessions"),
+                    params={"expires_at": "lt.now()"},
+                    headers=_headers({"Prefer": "return=minimal"}),
+                )
             if r.is_success:
                 log.info("Scenario cleanup: expired sessions deleted")
             else:
@@ -359,7 +375,8 @@ async def _schema_drift_loop() -> None:
     while True:
         try:
             from lib.sync.schema_drift import run_schema_drift_check
-            await run_schema_drift_check()
+            async with system_identity():  # RLS migration §4
+                await run_schema_drift_check()
         except Exception as exc:
             log.warning("Schema drift check error: %s", exc)
         await asyncio.sleep(interval_secs)
@@ -382,22 +399,23 @@ async def _nightly_full_sync_loop() -> None:
     while True:
         log.info("Nightly full sync: starting reconciliation pass")
         try:
-            r = await db_client.get(
-                _url("/rest/v1/source_credentials"),
-                params={"select": "owner_type,owner_id,source_type", "owner_type": "eq.studio"},
-                headers=_headers(),
-            )
-            if r.is_success:
-                for row in r.json():
-                    asyncio.create_task(
-                        run_sync(
-                            owner_type=row["owner_type"],
-                            owner_id=row["owner_id"],
-                            source_type=row["source_type"],
-                            trigger="scheduled_full",
-                            full=True,
+            async with system_identity():  # RLS migration §4 — discovery read; run_sync self-opens
+                r = await db_client.get(
+                    _url("/rest/v1/source_credentials"),
+                    params={"select": "owner_type,owner_id,source_type", "owner_type": "eq.studio"},
+                    headers=_headers(),
+                )
+                if r.is_success:
+                    for row in r.json():
+                        asyncio.create_task(
+                            run_sync(
+                                owner_type=row["owner_type"],
+                                owner_id=row["owner_id"],
+                                source_type=row["source_type"],
+                                trigger="scheduled_full",
+                                full=True,
+                            )
                         )
-                    )
         except Exception as exc:
             log.error("Nightly full sync error: %s", exc)
         await asyncio.sleep(interval_secs)
@@ -430,16 +448,39 @@ def _validate_env() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _validate_env()
+    # RLS migration §0c: a request-serving process must never run with break-glass enabled.
+    assert_breakglass_not_in_server()
+
+    # RLS migration §8: the background loops run on the system identity. Prove the system token is
+    # accepted by PostgREST BEFORE launching them. Post-cutover (USE_USER_IDENTITY=1) this is a BLOCKING
+    # go/no-go — otherwise every loop would silently deny-all on source_credentials and sync/drift/
+    # attachments die quietly. Pre-cutover the loops still use service-role until the flip, so a failure
+    # here is informational (but tells us the system identity isn't ready before we flip the flag).
+    try:
+        token_ok = await system_token_accepted()
+    except Exception as exc:  # never let the probe itself crash startup pre-cutover
+        token_ok = False
+        log.error("System token probe raised: %s", exc)
+    if not token_ok:
+        if _use_user_identity():
+            raise RuntimeError(
+                "USE_USER_IDENTITY=1 but the system token was rejected by PostgREST — refusing to "
+                "start (background jobs would deny-all). Check SUPABASE_JWT_SECRET and the "
+                "arthound_system role + grants (migration 20260530000002)."
+            )
+        log.warning("System token not yet accepted by PostgREST — non-blocking pre-cutover. "
+                    "Resolve before flipping USE_USER_IDENTITY=1.")
 
     # Reset any scenario sessions that were stuck mid-generation when the
     # previous worker died. The generation loop will re-pick them up.
     try:
-        await db_client.patch(
-            _url("/rest/v1/scenario_sessions"),
-            params={"ai_stage": "eq.generating"},
-            json={"ai_stage": "pending_generation"},
-            headers=_headers({"Prefer": "return=minimal"}),
-        )
+        async with system_identity():  # RLS migration §4
+            await db_client.patch(
+                _url("/rest/v1/scenario_sessions"),
+                params={"ai_stage": "eq.generating"},
+                json={"ai_stage": "pending_generation"},
+                headers=_headers({"Prefer": "return=minimal"}),
+            )
     except Exception as exc:
         log.warning("Startup: failed to reset stuck scenario sessions: %s", exc)
 

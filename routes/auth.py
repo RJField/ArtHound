@@ -12,46 +12,44 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from lib.db import db_client, _url, _headers
+from lib.db import db_client, _url, _headers, _anon_headers, _admin_headers
 
 log = logging.getLogger(__name__)
 router = APIRouter()
 
 
 # ── System settings helpers ──────────────────────────────────────────────────
-
-async def _get_system_settings() -> dict:
-    """Fetch the system_settings singleton. Returns defaults on any failure."""
-    r = await db_client.get(
-        _url("/rest/v1/system_settings"),
-        params={
-            "id":     "eq.true",
-            "select": "registration_invite_required,registration_invite_code",
-        },
-        headers=_headers(),
-    )
-    if r.is_success and r.json():
-        return r.json()[0]
-    return {"registration_invite_required": False, "registration_invite_code": None}
+# These are PUBLIC (pre-login) reads of the system_settings singleton — an F-table that denies all
+# user reads under RLS. They go through anon-callable SECURITY DEFINER read-RPCs (migration 6) that
+# return ONLY a boolean (never the configured code), reached with the anon key. Flag-independent.
 
 
 async def _check_system_invite(code: Optional[str]) -> None:
-    """Raise 422 SYSTEM_INVITE_INVALID if the platform gate is active and code is wrong."""
-    settings = await _get_system_settings()
-    if not settings.get("registration_invite_required"):
-        return
-    stored = (settings.get("registration_invite_code") or "").strip()
-    if not stored:
-        return  # gate is on but no code is configured — allow through
-    if not code or code.strip().upper() != stored.upper():
+    """Raise 422 SYSTEM_INVITE_INVALID if the platform gate rejects this code.
+
+    The gate/code comparison lives in rpc_check_system_invite (the configured code never enters the
+    app). Fails OPEN on a transport error (matches the prior defaults-on-failure behaviour): only an
+    explicit `false` from the gate rejects — gate-off / no-code-configured / a match all return true.
+    """
+    r = await db_client.post(
+        _url("/rest/v1/rpc/rpc_check_system_invite"),
+        headers=_anon_headers(),
+        json={"p_code": code or ""},
+    )
+    if r.is_success and r.json() is False:
         raise HTTPException(status_code=422, detail="SYSTEM_INVITE_INVALID")
 
 
 @router.get("/config")
 async def get_auth_config():
     """Public — returns whether a system-level invite code is required to register."""
-    settings = await _get_system_settings()
-    return {"registration_invite_required": settings.get("registration_invite_required", False)}
+    r = await db_client.post(
+        _url("/rest/v1/rpc/rpc_registration_required"),
+        headers=_anon_headers(),
+        json={},
+    )
+    required = bool(r.json()) if r.is_success else False
+    return {"registration_invite_required": required}
 
 
 @router.get("/system-invite/{code}/validate")
@@ -124,7 +122,7 @@ async def _signup_create(body: SignupBody) -> dict:
     # ── 1. Create auth user ───────────────────────────────────────────────────
     r = await db_client.post(
         _url("/auth/v1/admin/users"),
-        headers=_headers(),
+        headers=_admin_headers(),
         json={
             "email":         body.email,
             "password":      body.password,
@@ -221,7 +219,7 @@ async def _signup_join(body: SignupBody) -> dict:
     # ── Create auth user ──────────────────────────────────────────────────────
     r = await db_client.post(
         _url("/auth/v1/admin/users"),
-        headers=_headers(),
+        headers=_admin_headers(),
         json={
             "email":         body.email,
             "password":      body.password,

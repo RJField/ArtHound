@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from lib.auth import CurrentUser, get_current_user, require_studio, require_vendor
-from lib.db import db_client, _url, _headers
+from lib.db import db_client, _url, _headers, _use_user_identity
 
 log = logging.getLogger(__name__)
 
@@ -313,7 +313,21 @@ async def accept_invite(invite_id: str, user: CurrentUser = Depends(require_vend
 
     studio_id = invite["studio_id"]
 
-    # Snapshot the studio's current payload templates at acceptance time
+    if _use_user_identity():
+        # Flag-on: a vendor can't read the studio's payload_templates (pt_all is studio-only) nor INSERT
+        # studio_vendor_links under RLS. rpc_accept_link_invite (SECURITY DEFINER, vendor-authz via
+        # auth.uid()) snapshots the templates + creates the active link + marks the invite accepted in one
+        # txn, and returns the new link id.
+        rr = await db_client.post(
+            _url("/rest/v1/rpc/rpc_accept_link_invite"),
+            json={"p_invite_id": invite_id},
+            headers=_headers(),
+        )
+        if not rr.is_success:
+            raise HTTPException(status_code=400, detail=f"Failed to accept invite: {rr.text}")
+        return {"ok": True, "link_id": rr.json()}
+
+    # Flag-off (service-role): snapshot the studio's current payload templates at acceptance time
     r_templates = await db_client.get(
         _url("/rest/v1/payload_templates"),
         params={"studio_id": f"eq.{studio_id}", "select": "id,name,field_schema", "order": "name.asc"},
@@ -442,6 +456,19 @@ async def cancel_link(link_id: str, user: CurrentUser = Depends(get_current_user
     if not rows:
         raise HTTPException(status_code=404, detail="Active link not found")
     link = rows[0]
+
+    if _use_user_identity():
+        # Flag-on: rpc_cancel_link (is_link_party authz) revokes the pair's live dispatches, writes the
+        # cancellation audit + per-dispatch rows, and marks the link cancelled in one txn — none of which
+        # a user may write directly under RLS. Returns the count of dispatches revoked.
+        rr = await db_client.post(
+            _url("/rest/v1/rpc/rpc_cancel_link"),
+            json={"p_link_id": link_id, "p_reason": None},
+            headers=_headers(),
+        )
+        if not rr.is_success:
+            raise HTTPException(status_code=400, detail=f"Failed to cancel link: {rr.text}")
+        return {"ok": True, "dispatches_revoked": rr.json()}
 
     now = _now_iso()
 
