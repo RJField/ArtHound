@@ -22,6 +22,14 @@ foreign key (`studio_id` / `vendor_id`, exactly one set) plus a generated `owner
 byte-for-byte unchanged — studio rows keep `studio_id`; vendor rows are new. See
 [Estimation Engine](estimation.md) for the matrix mechanics.
 
+**Authoring prerequisite.** A vendor builds its base matrix through the same OrgHub **Setup** wizard a
+studio uses. The wizard's variable/value discovery (`routes/fields.py` — `/fields`, `/field-values`,
+`/asset-combinations`) is owner-aware: it reads the **org's own** `source_field_mappings` /
+`replicated_assets`. So a vendor's estimation axes come from the vendor's *own* synced assets, not the
+studio's — a vendor must have a connected, synced source for the wizard to offer any variables. (There
+is deliberately no manual-variable entry path; the eventual studio-side reconciliation of vendor vs.
+studio vocabulary is the deferred Phase 4 work.)
+
 **Base matrix + per-link overrides.** A vendor keeps one **base** matrix (`link_id IS NULL`) and may
 override individual cells for a specific studio link (`link_id` set). The **effective matrix** for a
 link is the base overlaid with that link's overrides — overrides win per `(workflow_step_id,
