@@ -40,7 +40,11 @@ The central UI surface. A three-panel layout — filterable asset list on the le
 
 ### [Estimation Engine](docs/estimation.md)
 
-Studios define a library of **workflow steps** (production tasks with optional craft labels and dependency edges), then choose **variable fields** from their source schema (e.g., "Asset Type", "Complexity"). The system enumerates all unique combinations of those field values across synced assets and builds an estimate matrix: one cell per (workflow step × variable combination), each holding a day count. Studios fill in the matrix via an inline spreadsheet UI. When the scheduler generates work for an asset, it resolves the asset's variable values against this matrix to produce step-level estimates.
+An organisation defines a library of **workflow steps** (production tasks with optional craft labels and dependency edges), then chooses **variable fields** from their source schema (e.g., "Asset Type", "Complexity"). The system enumerates all unique combinations of those field values across synced assets and builds an estimate matrix: one cell per (workflow step × variable combination), each holding a day count. The matrix is filled via an inline spreadsheet UI. When the scheduler generates work for an asset, it resolves the asset's variable values against this matrix to produce step-level estimates. Dependency edges between steps are validated server-side so a circular dependency can never be saved. The stack is org-scoped — owned by either a studio or a vendor.
+
+### [Vendor Estimate Sharing](docs/estimate-sharing.md)
+
+Vendors maintain their own estimation matrix, optionally vary their rates per studio relationship (a base matrix overlaid with per-link overrides), and share a **frozen, granularity-controlled snapshot** with a linked studio — the reverse direction of asset payload dispatch. At share time the vendor chooses how much process detail to expose (asset total, by craft, or per workflow step); the projector enforces that boundary so internal process detail never leaks beyond the chosen level. Re-sharing replaces the prior share in that channel, so dialing disclosure down genuinely reduces what the studio can see. Delivery is a route-scoped inbox with revoke, optional expiry, and an append-only access log. v1 is visible-only on the studio side — not yet wired into scenario planning.
 
 ### [Schedule and Generated Work](docs/schedule.md)
 

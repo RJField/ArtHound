@@ -6,8 +6,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from lib.auth import CurrentUser, require_studio
+from lib.auth import CurrentUser, get_current_user, resolve_owner
 from lib.db import db_client, _url, _headers
+from lib.workflow_graph import detect_cycle
 
 router = APIRouter()
 
@@ -22,11 +23,11 @@ class BulkDeleteBody(BaseModel):
     ids: list[str]
 
 
-async def _fetch_steps_with_deps(studio_id: str):
+async def _fetch_steps_with_deps(owner_col: str, owner_id: str):
     r = await db_client.get(
         _url("/rest/v1/workflow_steps"),
         params={
-            "studio_id": f"eq.{studio_id}",
+            owner_col: f"eq.{owner_id}",
             "select": "id,name,craft,step_deps:workflow_step_dependencies!step_id(depends_on_step_id)",
             "order": "created_at.asc",
         },
@@ -44,14 +45,44 @@ async def _fetch_steps_with_deps(studio_id: str):
     return steps, deps
 
 
+async def _validate_deps(owner_col: str, owner_id: str, depends_on: list[str],
+                         *, step_id: str | None = None) -> None:
+    """Reject dependency changes that are cross-tenant, self-referential, or would form a cycle.
+
+    The route layer is the authoritative guard (the UI also disables cycle-forming choices). On
+    create, step_id is None — a brand-new step has no incoming edges so it cannot close a cycle; we
+    still validate that every dependency is one of this owner's own steps.
+    """
+    if not depends_on:
+        return
+
+    steps, deps = await _fetch_steps_with_deps(owner_col, owner_id)
+    owned = {s["id"] for s in steps}
+    name_by_id = {s["id"]: s["name"] for s in steps}
+
+    missing = [d for d in depends_on if d not in owned]
+    if missing:
+        raise HTTPException(status_code=400, detail="A selected dependency is not a step in your workflow")
+
+    if step_id is not None and step_id in depends_on:
+        raise HTTPException(status_code=400, detail="A step cannot depend on itself")
+
+    if step_id is not None:
+        cycle = detect_cycle(steps, deps, step_id=step_id, depends_on=depends_on)
+        if cycle:
+            chain = " → ".join(name_by_id.get(c, c) for c in cycle)
+            raise HTTPException(
+                status_code=400,
+                detail=f"This change would create a circular dependency: {chain}",
+            )
+
+
 # /csv must be declared before /{step_id} so FastAPI matches it as a literal path
 @router.get("/csv")
-async def download_csv(user: CurrentUser = Depends(require_studio)):
-    studio_id = user.studio_id
-    if not studio_id:
-        raise HTTPException(status_code=403, detail="No studio linked")
+async def download_csv(user: CurrentUser = Depends(get_current_user)):
+    owner_col, owner_id = resolve_owner(user)
 
-    steps, deps = await _fetch_steps_with_deps(studio_id)
+    steps, deps = await _fetch_steps_with_deps(owner_col, owner_id)
     step_name = {s["id"]: s["name"] for s in steps}
 
     output = io.StringIO()
@@ -87,12 +118,10 @@ async def download_csv(user: CurrentUser = Depends(require_studio)):
 
 
 @router.get("")
-async def list_steps(user: CurrentUser = Depends(require_studio)):
-    studio_id = user.studio_id
-    if not studio_id:
-        raise HTTPException(status_code=403, detail="No studio linked")
+async def list_steps(user: CurrentUser = Depends(get_current_user)):
+    owner_col, owner_id = resolve_owner(user)
 
-    steps, deps = await _fetch_steps_with_deps(studio_id)
+    steps, deps = await _fetch_steps_with_deps(owner_col, owner_id)
     step_by_id = {s["id"]: s for s in steps}
     depends_on: dict = {s["id"]: [] for s in steps}
     depended_by: dict = {s["id"]: [] for s in steps}
@@ -123,16 +152,16 @@ async def list_steps(user: CurrentUser = Depends(require_studio)):
 
 
 @router.post("")
-async def create_step(body: StepBody, user: CurrentUser = Depends(require_studio)):
-    studio_id = user.studio_id
-    if not studio_id:
-        raise HTTPException(status_code=403, detail="No studio linked")
+async def create_step(body: StepBody, user: CurrentUser = Depends(get_current_user)):
+    owner_col, owner_id = resolve_owner(user)
+
+    await _validate_deps(owner_col, owner_id, body.depends_on)
 
     r = await db_client.post(
         _url("/rest/v1/workflow_steps"),
         headers=_headers({"Prefer": "return=representation"}),
         json={
-            "studio_id": studio_id,
+            owner_col: owner_id,
             "name": body.name.strip(),
             "craft": body.craft.strip() if body.craft else None,
         },
@@ -154,22 +183,22 @@ async def create_step(body: StepBody, user: CurrentUser = Depends(require_studio
 
 
 @router.patch("/{step_id}")
-async def update_step(step_id: str, body: StepBody, user: CurrentUser = Depends(require_studio)):
-    studio_id = user.studio_id
-    if not studio_id:
-        raise HTTPException(status_code=403, detail="No studio linked")
+async def update_step(step_id: str, body: StepBody, user: CurrentUser = Depends(get_current_user)):
+    owner_col, owner_id = resolve_owner(user)
 
     r = await db_client.get(
         _url("/rest/v1/workflow_steps"),
-        params={"id": f"eq.{step_id}", "studio_id": f"eq.{studio_id}", "select": "id"},
+        params={"id": f"eq.{step_id}", owner_col: f"eq.{owner_id}", "select": "id"},
         headers=_headers(),
     )
     if not r.json():
         raise HTTPException(status_code=404, detail="Step not found")
 
+    await _validate_deps(owner_col, owner_id, body.depends_on, step_id=step_id)
+
     await db_client.patch(
         _url("/rest/v1/workflow_steps"),
-        params={"id": f"eq.{step_id}", "studio_id": f"eq.{studio_id}"},
+        params={"id": f"eq.{step_id}", owner_col: f"eq.{owner_id}"},
         headers=_headers(),
         json={
             "name": body.name.strip(),
@@ -196,17 +225,15 @@ async def update_step(step_id: str, body: StepBody, user: CurrentUser = Depends(
 
 
 @router.delete("/bulk")
-async def bulk_delete_steps(body: BulkDeleteBody, user: CurrentUser = Depends(require_studio)):
-    studio_id = user.studio_id
-    if not studio_id:
-        raise HTTPException(status_code=403, detail="No studio linked")
+async def bulk_delete_steps(body: BulkDeleteBody, user: CurrentUser = Depends(get_current_user)):
+    owner_col, owner_id = resolve_owner(user)
     if not body.ids:
         return {"deleted": 0}
 
     id_list = ",".join(f'"{i}"' for i in body.ids)
     r = await db_client.delete(
         _url("/rest/v1/workflow_steps"),
-        params={"id": f"in.({id_list})", "studio_id": f"eq.{studio_id}"},
+        params={"id": f"in.({id_list})", owner_col: f"eq.{owner_id}"},
         headers=_headers({"Prefer": "return=minimal"}),
     )
     if not r.is_success:
@@ -215,14 +242,12 @@ async def bulk_delete_steps(body: BulkDeleteBody, user: CurrentUser = Depends(re
 
 
 @router.delete("/{step_id}")
-async def delete_step(step_id: str, user: CurrentUser = Depends(require_studio)):
-    studio_id = user.studio_id
-    if not studio_id:
-        raise HTTPException(status_code=403, detail="No studio linked")
+async def delete_step(step_id: str, user: CurrentUser = Depends(get_current_user)):
+    owner_col, owner_id = resolve_owner(user)
 
     r = await db_client.get(
         _url("/rest/v1/workflow_steps"),
-        params={"id": f"eq.{step_id}", "studio_id": f"eq.{studio_id}", "select": "id"},
+        params={"id": f"eq.{step_id}", owner_col: f"eq.{owner_id}", "select": "id"},
         headers=_headers(),
     )
     if not r.json():
@@ -230,7 +255,7 @@ async def delete_step(step_id: str, user: CurrentUser = Depends(require_studio))
 
     r = await db_client.delete(
         _url("/rest/v1/workflow_steps"),
-        params={"id": f"eq.{step_id}", "studio_id": f"eq.{studio_id}"},
+        params={"id": f"eq.{step_id}", owner_col: f"eq.{owner_id}"},
         headers=_headers({"Prefer": "return=minimal"}),
     )
     if not r.is_success:

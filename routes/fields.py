@@ -3,11 +3,22 @@ from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from lib.auth import CurrentUser, require_studio
+from lib.auth import CurrentUser, get_current_user
 from lib.db import db_client, _url, _headers
 
 log = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _owner_scope(user: CurrentUser) -> tuple[str, str]:
+    """Resolve (owner_type, owner_id) for the sync-layer tables (source_field_mappings,
+    replicated_assets) which use the owner_type/owner_id convention. Estimation variables are
+    discovered from the org's own synced assets, so this works for studio or vendor alike."""
+    if user.role == "studio" and user.studio_id:
+        return "studio", user.studio_id
+    if user.role == "vendor" and user.vendor_id:
+        return "vendor", user.vendor_id
+    raise HTTPException(status_code=403, detail="No organisation linked to this account")
 
 _STANDARD_SLOTS = frozenset({
     "name", "dev_name", "item_type", "priority", "product",
@@ -43,7 +54,7 @@ def _extract_str(v) -> str | None:
     return str(v)
 
 
-async def _get_mapping_data(studio_id: str) -> tuple[dict, dict, dict]:
+async def _get_mapping_data(owner_type: str, owner_id: str) -> tuple[dict, dict, dict]:
     """
     Return (slot_to_field, field_to_bucket, field_to_tier) from source_field_mappings.
 
@@ -53,7 +64,7 @@ async def _get_mapping_data(studio_id: str) -> tuple[dict, dict, dict]:
     """
     r = await db_client.get(
         _url("/rest/v1/source_field_mappings"),
-        params={"owner_type": "eq.studio", "owner_id": f"eq.{studio_id}", "select": "mappings"},
+        params={"owner_type": f"eq.{owner_type}", "owner_id": f"eq.{owner_id}", "select": "mappings"},
         headers=_headers(),
     )
     if not r.is_success or not r.json():
@@ -75,8 +86,8 @@ async def _get_mapping_data(studio_id: str) -> tuple[dict, dict, dict]:
     return slot_to_field, field_to_bucket, field_to_tier
 
 
-async def _get_slot_field_names(studio_id: str) -> dict[str, str]:
-    slot_to_field, _, _ = await _get_mapping_data(studio_id)
+async def _get_slot_field_names(owner_type: str, owner_id: str) -> dict[str, str]:
+    slot_to_field, _, _ = await _get_mapping_data(owner_type, owner_id)
     return slot_to_field
 
 
@@ -84,19 +95,19 @@ async def _get_slot_field_names(studio_id: str) -> dict[str, str]:
 async def get_fields(
     bucket: str | None = Query(None, description="Filter by meta_bucket (e.g. production, tech_specs, creative)"),
     include_native: bool = Query(False, description="Include source_native fields (hidden by default)"),
-    current_user: CurrentUser = Depends(require_studio),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
-    """Return source field names available on replicated_assets for this studio.
+    """Return source field names available on replicated_assets for this org (studio or vendor).
 
     source_native fields are excluded by default. Use include_native=true to see them.
     Use bucket= to filter to a specific category.
     """
-    studio_id = current_user.studio_id
-    slot_to_field, field_to_bucket, field_to_tier = await _get_mapping_data(studio_id)
+    owner_type, owner_id = _owner_scope(current_user)
+    slot_to_field, field_to_bucket, field_to_tier = await _get_mapping_data(owner_type, owner_id)
 
     r_assets = await db_client.get(
         _url("/rest/v1/replicated_assets"),
-        params={"owner_type": "eq.studio", "owner_id": f"eq.{studio_id}", "select": "meta", "limit": "500"},
+        params={"owner_type": f"eq.{owner_type}", "owner_id": f"eq.{owner_id}", "select": "meta", "limit": "500"},
         headers=_headers(),
     )
     meta_keys: set = set()
@@ -126,10 +137,10 @@ async def get_fields(
 
 
 @router.get("/field-values")
-async def get_field_values(field: str = Query(...), current_user: CurrentUser = Depends(require_studio)):
+async def get_field_values(field: str = Query(...), current_user: CurrentUser = Depends(get_current_user)):
     """Return distinct values for a source field name from replicated_assets."""
-    studio_id = current_user.studio_id
-    slot_fields = await _get_slot_field_names(studio_id)
+    owner_type, owner_id = _owner_scope(current_user)
+    slot_fields = await _get_slot_field_names(owner_type, owner_id)
     fn_to_slot = {v: k for k, v in slot_fields.items()}
     slot = fn_to_slot.get(field)
 
@@ -140,8 +151,8 @@ async def get_field_values(field: str = Query(...), current_user: CurrentUser = 
         r = await db_client.get(
             _url("/rest/v1/replicated_assets"),
             params={
-                "owner_type": "eq.studio",
-                "owner_id":   f"eq.{studio_id}",
+                "owner_type": f"eq.{owner_type}",
+                "owner_id":   f"eq.{owner_id}",
                 "select":     slot,
                 slot:         "not.is.null",
                 "limit":      "10000",
@@ -158,8 +169,8 @@ async def get_field_values(field: str = Query(...), current_user: CurrentUser = 
         r = await db_client.get(
             _url("/rest/v1/replicated_assets"),
             params={
-                "owner_type": "eq.studio",
-                "owner_id":   f"eq.{studio_id}",
+                "owner_type": f"eq.{owner_type}",
+                "owner_id":   f"eq.{owner_id}",
                 "select":     "meta",
                 "limit":      "10000",
             },
@@ -173,8 +184,8 @@ async def get_field_values(field: str = Query(...), current_user: CurrentUser = 
         r = await db_client.get(
             _url("/rest/v1/replicated_assets"),
             params={
-                "owner_type": "eq.studio",
-                "owner_id":   f"eq.{studio_id}",
+                "owner_type": f"eq.{owner_type}",
+                "owner_id":   f"eq.{owner_id}",
                 "select":     "meta",
                 "limit":      "10000",
             },
@@ -195,14 +206,14 @@ async def get_field_values(field: str = Query(...), current_user: CurrentUser = 
 
 
 @router.get("/asset-combinations")
-async def get_asset_combinations(field: List[str] = Query(default=[]), current_user: CurrentUser = Depends(require_studio)):
+async def get_asset_combinations(field: List[str] = Query(default=[]), current_user: CurrentUser = Depends(get_current_user)):
     """Return combination counts across assets for the given source field names."""
     field_names = [f.strip() for f in field if f.strip()]
     if not field_names:
         raise HTTPException(status_code=400, detail="at least one field param required")
 
-    studio_id = current_user.studio_id
-    slot_fields = await _get_slot_field_names(studio_id)
+    owner_type, owner_id = _owner_scope(current_user)
+    slot_fields = await _get_slot_field_names(owner_type, owner_id)
     fn_to_slot = {v: k for k, v in slot_fields.items()}
 
     # Only non-demoted standard slots are real columns; demoted slots are read from
@@ -216,8 +227,8 @@ async def get_asset_combinations(field: List[str] = Query(default=[]), current_u
     r = await db_client.get(
         _url("/rest/v1/replicated_assets"),
         params={
-            "owner_type": "eq.studio",
-            "owner_id":   f"eq.{studio_id}",
+            "owner_type": f"eq.{owner_type}",
+            "owner_id":   f"eq.{owner_id}",
             "select":     select_cols,
             "limit":      "10000",
         },

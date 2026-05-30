@@ -42,6 +42,7 @@ from routes.handshake import router as handshake_router
 from routes.members import router as members_router
 from routes.admin import router as admin_router
 from routes.scenario import router as scenario_router
+from routes.estimate_share import router as estimate_share_router
 
 log = logging.getLogger(__name__)
 
@@ -516,6 +517,7 @@ app.include_router(handshake_router,      prefix="/api/handshake",   dependencie
 app.include_router(members_router,        prefix="/api")
 app.include_router(admin_router,          prefix="/api/admin")
 app.include_router(scenario_router,       prefix="/api/scenario",    dependencies=_auth)
+app.include_router(estimate_share_router, prefix="/api/estimate-shares", dependencies=_auth)
 
 
 _REPLICATED_TABLE: dict[str, str] = {

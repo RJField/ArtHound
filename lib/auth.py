@@ -273,6 +273,26 @@ def require_owner(user: CurrentUser) -> None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Owner only")
 
 
+def resolve_owner(user: CurrentUser) -> tuple[str, str]:
+    """
+    Resolve the org owner for the estimation stack (workflow_steps / estimate_config /
+    estimate_matrix), which is scoped to either a studio or a vendor.
+
+    Returns (owner_col, owner_id) where owner_col is the PostgREST column name
+    ("studio_id" | "vendor_id") and owner_id is the resolved uuid. This pair is the
+    runtime isolation boundary — every estimate-stack / share query must filter on it
+    (see docs/plans/vendor-estimate-share.md §2.4/§6.4). Raises 403 if neither is set.
+    """
+    if user.role == "studio" and user.studio_id:
+        return "studio_id", user.studio_id
+    if user.role == "vendor" and user.vendor_id:
+        return "vendor_id", user.vendor_id
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="No organisation linked to this account",
+    )
+
+
 def require_studio(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
     if user.role != "studio":
         raise HTTPException(

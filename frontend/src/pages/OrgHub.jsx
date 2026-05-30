@@ -364,7 +364,7 @@ function colNameToVariableValues(colName, variableFields) {
   return Object.fromEntries(variableFields.map((f, i) => [f, parts[i] ?? '']))
 }
 
-function MatrixCell({ stepId, colName, variableFields, initialValue }) {
+function MatrixCell({ stepId, colName, variableFields, initialValue, linkId = null, isOverride = false }) {
   const initStr = (initialValue != null && initialValue !== 0) ? String(initialValue) : ''
   const [value, setValue] = useState(initStr)
   const [saving, setSaving] = useState(false)
@@ -389,6 +389,8 @@ function MatrixCell({ stepId, colName, variableFields, initialValue }) {
           workflow_step_id: stepId,
           variable_values: colNameToVariableValues(colName, variableFields),
           estimate_days: num,
+          // linkId set → write a per-link override instead of the base cell
+          ...(linkId ? { link_id: linkId } : {}),
         }),
       })
       committed.current = next
@@ -399,7 +401,7 @@ function MatrixCell({ stepId, colName, variableFields, initialValue }) {
     } finally {
       setSaving(false)
     }
-  }, [value, stepId, colName, variableFields])
+  }, [value, stepId, colName, variableFields, linkId])
 
   function handleKeyDown(e) {
     if (e.key === 'Enter') e.currentTarget.blur()
@@ -423,6 +425,9 @@ function MatrixCell({ stepId, colName, variableFields, initialValue }) {
           'border border-transparent hover:border-border focus:border-accent',
           'text-foreground placeholder:text-muted [appearance:textfield]',
           '[&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none',
+          // per-link mode: accent ring on override cells, muted text on inherited (base) cells
+          linkId && isOverride && 'bg-accent/10 text-accent ring-1 ring-inset ring-accent/40',
+          linkId && !isOverride && 'text-muted',
           saving && 'opacity-40 cursor-wait',
         )}
       />
@@ -437,7 +442,7 @@ function renderTags(arr) {
   ))
 }
 
-function MatrixTable({ reloadKey }) {
+function MatrixTable({ reloadKey, linkId = null }) {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -447,11 +452,14 @@ function MatrixTable({ reloadKey }) {
     const controller = new AbortController()
     setLoading(true)
     setError(null)
-    apiFetch('/api/setup/matrix-table-pg', { signal: controller.signal })
+    const url = linkId
+      ? `/api/setup/matrix-table-pg?linkId=${encodeURIComponent(linkId)}`
+      : '/api/setup/matrix-table-pg'
+    apiFetch(url, { signal: controller.signal })
       .then(d => { setData(d); setLoading(false) })
       .catch(e => { if (e.name !== 'AbortError') { setError(e.message); setLoading(false) } })
     return () => controller.abort()
-  }, [reloadKey])
+  }, [reloadKey, linkId])
 
   useEffect(() => {
     if (!tableRef.current || !data) return
@@ -557,6 +565,8 @@ function MatrixTable({ reloadKey }) {
                   colName={c.colName}
                   variableFields={variableFields}
                   initialValue={t.estimates[c.colName]}
+                  linkId={linkId}
+                  isOverride={(t.overriddenKeys || []).includes(c.colName)}
                 />
               ))}
             </tr>
@@ -568,10 +578,18 @@ function MatrixTable({ reloadKey }) {
 }
 
 function EstimatesTab() {
-  const { isAdmin } = useAuth()
+  const { isAdmin, role } = useAuth()
+  const isVendor = role === 'vendor'
   const [showWizard, setShowWizard] = useState(false)
   const [reloadKey, setReloadKey]   = useState(0)
   const [randomizing, setRandomizing] = useState(false)
+  const [links, setLinks] = useState([])
+  const [selectedLinkId, setSelectedLinkId] = useState(null)   // null = base matrix
+
+  useEffect(() => {
+    if (!isVendor) return
+    apiFetch('/api/handshake/links').then(setLinks).catch(() => {})
+  }, [isVendor])
 
   function handleComplete() {
     setShowWizard(false)
@@ -619,9 +637,27 @@ function EstimatesTab() {
             {randomizing ? 'Randomizing…' : 'Randomize'}
           </button>
         )}
+        {isVendor && links.length > 0 && (
+          <select
+            value={selectedLinkId ?? ''}
+            onChange={e => setSelectedLinkId(e.target.value || null)}
+            className={cn(btn, 'border-border text-foreground bg-surface hover:border-foreground/40')}
+          >
+            <option value="">Base matrix (all studios)</option>
+            {links.map(l => (
+              <option key={l.id} value={l.id}>{l.studio?.name || 'Studio'}</option>
+            ))}
+          </select>
+        )}
       </div>
+      {selectedLinkId && (
+        <p className="text-xs text-muted shrink-0 -mt-2">
+          Editing per-studio overrides — <span className="text-accent">accent</span> cells override the base;
+          others inherit it. Editing an inherited cell creates an override.
+        </p>
+      )}
       <div className="flex-1 overflow-auto">
-        <MatrixTable reloadKey={reloadKey} />
+        <MatrixTable reloadKey={reloadKey} linkId={selectedLinkId} />
       </div>
       {showWizard && (
         <EstimateWizardModal onClose={() => setShowWizard(false)} onComplete={handleComplete} />
