@@ -64,6 +64,36 @@ async def _log(dispatch_id: str, event: str, *, actor_vendor_id: str | None = No
     )
 
 
+async def _build_snapshot(vendor_id: str, link_id: str, granularity: str) -> tuple[dict, int]:
+    """Project the vendor's effective matrix for `link_id` at `granularity`.
+
+    Returns (snapshot, unset_cells) where unset_cells counts effective cells with no value
+    (null or 0) — surfaced in the share preview so a vendor doesn't ship zeros unknowingly
+    (plan §6.7). Shared by the preview and create paths so both project identically.
+    """
+    eff_rows, r_steps, r_cfg, r_vendor = await asyncio.gather(
+        resolve_effective_matrix("vendor_id", vendor_id, link_id),
+        db_client.get(_url("/rest/v1/workflow_steps"),
+                      params={"vendor_id": f"eq.{vendor_id}", "select": "id,name,craft"}, headers=_headers()),
+        db_client.get(_url("/rest/v1/estimate_config"),
+                      params={"vendor_id": f"eq.{vendor_id}", "select": "variable_fields"}, headers=_headers()),
+        db_client.get(_url("/rest/v1/vendors"),
+                      params={"id": f"eq.{vendor_id}", "select": "id,name,handle"}, headers=_headers()),
+    )
+
+    cfg_rows = r_cfg.json()
+    if not cfg_rows:
+        raise HTTPException(status_code=400, detail="No estimate matrix configured for this vendor")
+    variable_fields = cfg_rows[0]["variable_fields"]
+    step_by_id = {s["id"]: s for s in r_steps.json()}
+    vendor_rows = r_vendor.json()
+    vendor = vendor_rows[0] if vendor_rows else {"id": vendor_id}
+
+    unset = sum(1 for c in eff_rows if not c.get("estimate_days"))
+    snapshot = project(eff_rows, step_by_id, variable_fields, granularity, vendor, link_id)
+    return snapshot, unset
+
+
 # ── vendor: share targets ──────────────────────────────────────────────────────
 @router.get("/targets")
 async def list_targets(user: CurrentUser = Depends(require_vendor)):
@@ -88,6 +118,20 @@ async def list_targets(user: CurrentUser = Depends(require_vendor)):
              "studio_name": smap.get(lnk["studio_id"])} for lnk in links]
 
 
+# ── vendor: preview a projection (no persistence) ──────────────────────────────
+@router.get("/preview")
+async def preview_share(link_id: str, granularity: str,
+                        user: CurrentUser = Depends(require_vendor)):
+    """Project the effective matrix at `granularity` without persisting — drives the share modal
+    preview (and the unset-cell warning, plan §6.7). Same projection path as create."""
+    if granularity not in GRANULARITIES:
+        raise HTTPException(status_code=422, detail=f"granularity must be one of {list(GRANULARITIES)}")
+    await require_vendor_link(link_id, user.vendor_id)
+    snapshot, unset = await _build_snapshot(user.vendor_id, link_id, granularity)
+    return {"snapshot": snapshot, "unset_cells": unset,
+            "profile_count": len(snapshot.get("profiles", []))}
+
+
 # ── vendor: create a share ─────────────────────────────────────────────────────
 class CreateShareBody(BaseModel):
     link_id: str
@@ -105,25 +149,7 @@ async def create_share(body: CreateShareBody, user: CurrentUser = Depends(requir
     link = await require_vendor_link(body.link_id, vendor_id)
     studio_id = link["studio_id"]
 
-    eff_rows, r_steps, r_cfg, r_vendor = await asyncio.gather(
-        resolve_effective_matrix("vendor_id", vendor_id, body.link_id),
-        db_client.get(_url("/rest/v1/workflow_steps"),
-                      params={"vendor_id": f"eq.{vendor_id}", "select": "id,name,craft"}, headers=_headers()),
-        db_client.get(_url("/rest/v1/estimate_config"),
-                      params={"vendor_id": f"eq.{vendor_id}", "select": "variable_fields"}, headers=_headers()),
-        db_client.get(_url("/rest/v1/vendors"),
-                      params={"id": f"eq.{vendor_id}", "select": "id,name,handle"}, headers=_headers()),
-    )
-
-    cfg_rows = r_cfg.json()
-    if not cfg_rows:
-        raise HTTPException(status_code=400, detail="No estimate matrix configured for this vendor")
-    variable_fields = cfg_rows[0]["variable_fields"]
-    step_by_id = {s["id"]: s for s in r_steps.json()}
-    vendor_rows = r_vendor.json()
-    vendor = vendor_rows[0] if vendor_rows else {"id": vendor_id}
-
-    snapshot = project(eff_rows, step_by_id, variable_fields, body.granularity, vendor, body.link_id)
+    snapshot, _ = await _build_snapshot(vendor_id, body.link_id, body.granularity)
 
     expires_at = None
     if body.expires_in_days:

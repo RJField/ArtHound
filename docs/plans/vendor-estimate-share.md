@@ -19,11 +19,18 @@
   inbox/view), registered in `main.py`. Validated on dev: RPC end-to-end (1 series, supersede →
   one-live, `shared`×2/`superseded`×1 logging, cleaned up); projector exposure test (§6.5);
   effective + projector unit tests pass; router imports.
-- **PAUSED HERE (backend complete).** Remaining: **Phase 2 frontend (M3)** — vendor "Share estimates"
-  modal + outbox + revoke on the vendor's studio-connection view (`StudioConnections.jsx`); **Phase 3
-  (M4)** — studio read-only inbox viewer on the vendor-connection view (`VendorConnections.jsx`);
-  and the **manual vendor-login smoke test** of the full chain. API ready: `/api/estimate-shares`
-  (`GET /targets`, `POST ""`, `GET /outbox`, `POST /{id}/revoke`, `GET /inbox`, `POST /{id}/view`).
+- **M3 (Phase 2 frontend) DONE** — `ShareEstimatesModal` (granularity radio + expiry/label + live
+  preview via new `GET /api/estimate-shares/preview` + unset-cell warning, §6.7) and an outbox section
+  with View/Revoke wired into `StudioConnections.jsx`. Shared read-only `EstimateSnapshotView`
+  component renders a snapshot by granularity (expandable breakdown).
+- **M4 (Phase 3) DONE** — studio "Received estimates" inbox section in `VendorConnections.jsx`
+  (`GET /inbox`, read-only `EstimateSnapshotView`, best-effort `POST /{id}/view` on expand).
+- **Backend addition:** `GET /api/estimate-shares/preview?link_id=&granularity=` (read-only project,
+  returns `{snapshot, unset_cells, profile_count}`); `create_share` refactored onto a shared
+  `_build_snapshot` helper. Frontend builds clean; projector + effective-matrix tests pass.
+- **Only remaining:** the **manual vendor-login smoke test** of the full chain (needs a vendor
+  session; can't be done headlessly). API: `/api/estimate-shares` (`GET /targets`, `GET /preview`,
+  `POST ""`, `GET /outbox`, `POST /{id}/revoke`, `GET /inbox`, `POST /{id}/view`).
 
 **Summary:** Generalize the studio-only estimation stack to vendors, let a vendor maintain
 per-studio-link rate variations on top of a base matrix, and let the vendor share a frozen,

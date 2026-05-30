@@ -4,6 +4,7 @@ import { apiFetch } from '../lib/api'
 import { cn } from '../lib/utils'
 import InviteVendorModal from '../components/InviteVendorModal'
 import PayloadTemplateModal from '../components/PayloadTemplateModal'
+import EstimateSnapshotView, { GRANULARITY_LABELS } from '../components/EstimateSnapshotView'
 
 const MAX_RESENDS = 2
 
@@ -118,6 +119,8 @@ export default function VendorConnections() {
   const [links, setLinks]           = useState([])
   const [invites, setInvites]       = useState([])
   const [templates, setTemplates]   = useState([])
+  const [inbox, setInbox]           = useState([])    // estimate shares received from vendors
+  const [expandedShare, setExpandedShare] = useState(null)  // dispatch_id
   const [loading, setLoading]       = useState(true)
 
   const [inviteOpen, setInviteOpen]         = useState(false)
@@ -130,14 +133,16 @@ export default function VendorConnections() {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const [l, inv, tmpl] = await Promise.all([
+      const [l, inv, tmpl, ib] = await Promise.all([
         apiFetch('/api/handshake/links'),
         apiFetch('/api/handshake/invites/sent'),
         apiFetch('/api/payloads/templates'),
+        apiFetch('/api/estimate-shares/inbox').catch(() => []),
       ])
       setLinks(l)
       setInvites(inv)
       setTemplates(tmpl)
+      setInbox(ib)
     } catch (err) {
       toast.error(err.message)
     } finally {
@@ -187,6 +192,16 @@ export default function VendorConnections() {
     } finally {
       setDeletingTemplate(null)
     }
+  }
+
+  function toggleShare(dispatchId) {
+    if (expandedShare === dispatchId) {
+      setExpandedShare(null)
+      return
+    }
+    setExpandedShare(dispatchId)
+    // Best-effort view telemetry — never blocks the UI.
+    apiFetch(`/api/estimate-shares/${dispatchId}/view`, { method: 'POST' }).catch(() => {})
   }
 
   async function cancelInvite(id) {
@@ -265,6 +280,64 @@ export default function VendorConnections() {
               })}
             </div>
           )}
+        </section>
+      )}
+
+      {/* Received estimates */}
+      {!loading && inbox.length > 0 && (
+        <section className="flex flex-col gap-3">
+          <h2 className="text-muted text-xs font-medium uppercase tracking-wider">
+            Received estimates ({inbox.length})
+          </h2>
+          <p className="text-muted text-xs -mt-1">
+            Rate estimates shared by your vendors. These use each vendor's own labels and are read-only.
+          </p>
+          <div className="flex flex-col gap-2">
+            {inbox.map(share => {
+              const expanded = expandedShare === share.dispatch_id
+              const vendor   = share.vendor ?? {}
+              return (
+                <div
+                  key={share.dispatch_id}
+                  className="flex flex-col rounded-lg border border-border bg-surface"
+                >
+                  <div className="flex items-center justify-between gap-4 px-4 py-3">
+                    <div className="flex flex-col gap-0.5 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="text-foreground text-sm font-medium truncate">
+                          {vendor.name ?? 'Unknown Vendor'}
+                        </span>
+                        {vendor.handle && <span className="text-muted text-xs">@{vendor.handle}</span>}
+                        {share.label && <span className="text-muted text-xs truncate">· {share.label}</span>}
+                      </div>
+                      <div className="flex items-center gap-2 text-xs text-muted">
+                        <span>{GRANULARITY_LABELS[share.granularity] ?? share.granularity}</span>
+                        <Dot />
+                        <span>Received {new Date(share.created_at).toLocaleDateString()}</span>
+                        {share.expires_at && (
+                          <>
+                            <Dot />
+                            <span>Expires {new Date(share.expires_at).toLocaleDateString()}</span>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => toggleShare(share.dispatch_id)}
+                      className="px-3 py-1 rounded-md bg-surface-2 text-foreground text-xs hover:bg-surface border border-border transition-colors cursor-pointer shrink-0"
+                    >
+                      {expanded ? 'Hide' : 'View'}
+                    </button>
+                  </div>
+                  {expanded && (
+                    <div className="px-4 pb-4 pt-1 border-t border-border">
+                      <EstimateSnapshotView snapshot={share.snapshot} />
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
         </section>
       )}
 
