@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { toast } from 'sonner'
 import { apiFetch } from '../lib/api'
 import { getSupabase } from '../lib/supabase'
@@ -53,6 +53,22 @@ function StepFormModal({ steps, editStep, onClose, onSaved }) {
   const [craft, setCraft] = useState(editStep?.craft ?? '')
   const [deps, setDeps]   = useState(new Set(editStep?.depends_on.map(d => d.id) ?? []))
   const [busy, setBusy]   = useState(false)
+
+  // Steps that (transitively) depend on the one being edited. Making the edited step depend on any
+  // of them would close a cycle, so those choices are disabled. (Backend rejects it too.)
+  const forbidden = useMemo(() => {
+    const forbid = new Set()
+    if (!editStep) return forbid
+    const byId = Object.fromEntries(steps.map(s => [s.id, s]))
+    const stack = [editStep.id]
+    while (stack.length) {
+      const cur = stack.pop()
+      for (const follower of byId[cur]?.depended_by ?? []) {
+        if (!forbid.has(follower.id)) { forbid.add(follower.id); stack.push(follower.id) }
+      }
+    }
+    return forbid
+  }, [steps, editStep])
 
   function toggleDep(id) {
     setDeps(prev => {
@@ -112,17 +128,26 @@ function StepFormModal({ steps, editStep, onClose, onSaved }) {
         {others.length > 0 && (
           <Field label="Depends on">
             <div className="flex flex-col gap-1 max-h-40 overflow-y-auto">
-              {others.map(s => (
-                <label key={s.id} className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={deps.has(s.id)}
-                    onChange={() => toggleDep(s.id)}
-                    className="accent-accent"
-                  />
-                  <span className="text-foreground text-sm">{s.name}</span>
-                </label>
-              ))}
+              {others.map(s => {
+                const blocked = forbidden.has(s.id)
+                return (
+                  <label
+                    key={s.id}
+                    title={blocked ? 'Would create a circular dependency' : undefined}
+                    className={cn('flex items-center gap-2', blocked ? 'cursor-not-allowed opacity-40' : 'cursor-pointer')}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={deps.has(s.id)}
+                      disabled={blocked}
+                      onChange={() => toggleDep(s.id)}
+                      className="accent-accent"
+                    />
+                    <span className="text-foreground text-sm">{s.name}</span>
+                    {blocked && <span className="text-muted text-xs ml-auto">cycle</span>}
+                  </label>
+                )
+              })}
             </div>
           </Field>
         )}

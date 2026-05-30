@@ -109,8 +109,13 @@ Migrations live in `supabase/migrations/` and are applied in filename order. All
 
 **Work generation:**
 - `generated_work` — ArtHound-generated work snapshots; always filter `deleted_at IS NULL` unless querying history
-- `workflow_steps`, `workflow_step_dependencies` — studio workflow definitions
-- `estimate_matrix`, `estimate_config` — estimation system
+- `workflow_steps`, `workflow_step_dependencies` — workflow definitions. Org-scoped (dual FK `studio_id`/`vendor_id` + generated `owner_key`). Dependency cycles rejected server-side in `routes/workflow_steps.py` via `lib/workflow_graph.py`
+- `estimate_matrix`, `estimate_config` — estimation system. Org-scoped via `owner_key`. `estimate_matrix.link_id` → `studio_vendor_links` carries vendor per-link rate overrides (NULL = base row)
+
+**Vendor estimate sharing** (vendors share frozen rate snapshots with linked studios; reverse of payload dispatch — see `docs/estimate-sharing.md`):
+- `estimate_share_series` — one sharing channel per `(vendor_id, link_id)`
+- `estimate_share_dispatches` — frozen `snapshot` JSONB at a chosen granularity; replace semantics (`superseded_at`), `revoked_at`/`expires_at`; one-live-per-channel partial unique. Deliberately NOT FK'd to `canonical_assets` (rate card is a tier above any asset)
+- `estimate_share_access_log` — append-only (`shared`/`viewed`/`revoked`/`superseded`); service-role writes only
 
 **Payload / vendor dispatch:**
 - `payload_dispatches` — studio-to-vendor asset payloads (token, expiry, revoke state)

@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback } from 'react'
 import { toast } from 'sonner'
 import { apiFetch } from '../lib/api'
 import { cn } from '../lib/utils'
+import ShareEstimatesModal from '../components/ShareEstimatesModal'
+import EstimateSnapshotView, { GRANULARITY_LABELS } from '../components/EstimateSnapshotView'
 
 const REVIEW_MODE_LABELS = {
   none:          'Simple delivery',
@@ -316,20 +318,26 @@ export default function StudioConnections() {
   const [links, setLinks]         = useState([])
   const [invites, setInvites]     = useState([])
   const [templates, setTemplates] = useState({})   // studio_id → template row | null
+  const [outbox, setOutbox]       = useState([])    // current estimate shares (one live per channel)
   const [loading, setLoading]     = useState(true)
 
   const [previewInvite, setPreviewInvite] = useState(null)
   const [cancelTarget, setCancelTarget]   = useState(null)  // { link, studioName }
+  const [shareTarget, setShareTarget]     = useState(null)  // { link_id, studio_name }
+  const [expandedShare, setExpandedShare] = useState(null)  // dispatch_id
+  const [revoking, setRevoking]           = useState(null)  // dispatch_id
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const [l, inv] = await Promise.all([
+      const [l, inv, ob] = await Promise.all([
         apiFetch('/api/handshake/links'),
         apiFetch('/api/handshake/invites/incoming'),
+        apiFetch('/api/estimate-shares/outbox').catch(() => []),
       ])
       setLinks(l)
       setInvites(inv)
+      setOutbox(ob)
 
       // Fetch template status for each active link (best-effort, non-blocking)
       if (l.length > 0) {
@@ -365,6 +373,19 @@ export default function StudioConnections() {
       await load()
     } catch (err) {
       toast.error(err.message)
+    }
+  }
+
+  async function revokeShare(dispatchId) {
+    setRevoking(dispatchId)
+    try {
+      await apiFetch(`/api/estimate-shares/${dispatchId}/revoke`, { method: 'POST' })
+      toast.success('Estimate share revoked')
+      await load()
+    } catch (err) {
+      toast.error(err.message)
+    } finally {
+      setRevoking(null)
     }
   }
 
@@ -450,17 +471,91 @@ export default function StudioConnections() {
                         )}
                       </div>
                     </div>
-                    <button
-                      onClick={() => setCancelTarget({ link, studioName })}
-                      className="px-3 py-1 rounded-md bg-error/10 text-error text-xs hover:bg-error/20 transition-colors cursor-pointer shrink-0"
-                    >
-                      Cancel
-                    </button>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        onClick={() => setShareTarget({ link_id: link.id, studio_name: studioName })}
+                        className="px-3 py-1 rounded-md bg-accent/10 text-accent text-xs hover:bg-accent/20 transition-colors cursor-pointer"
+                      >
+                        Share estimates
+                      </button>
+                      <button
+                        onClick={() => setCancelTarget({ link, studioName })}
+                        className="px-3 py-1 rounded-md bg-error/10 text-error text-xs hover:bg-error/20 transition-colors cursor-pointer"
+                      >
+                        Cancel
+                      </button>
+                    </div>
                   </div>
                 )
               })}
             </div>
           )}
+        </section>
+      )}
+
+      {/* Shared estimates (outbox) */}
+      {!loading && outbox.length > 0 && (
+        <section className="flex flex-col gap-3">
+          <h2 className="text-muted text-xs font-medium uppercase tracking-wider">
+            Shared estimates ({outbox.length})
+          </h2>
+          <div className="flex flex-col gap-2">
+            {outbox.map(share => {
+              const expanded = expandedShare === share.dispatch_id
+              const revoked  = !!share.revoked_at
+              return (
+                <div
+                  key={share.dispatch_id}
+                  className="flex flex-col rounded-lg border border-border bg-surface"
+                >
+                  <div className="flex items-center justify-between gap-4 px-4 py-3">
+                    <div className="flex flex-col gap-0.5 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="text-foreground text-sm font-medium truncate">
+                          {share.studio_name ?? 'Unknown Studio'}
+                        </span>
+                        {share.label && <span className="text-muted text-xs truncate">{share.label}</span>}
+                      </div>
+                      <div className="flex items-center gap-2 text-xs text-muted">
+                        <span>{GRANULARITY_LABELS[share.granularity] ?? share.granularity}</span>
+                        <Dot />
+                        <span>Shared {new Date(share.created_at).toLocaleDateString()}</span>
+                        <Dot />
+                        {revoked
+                          ? <span className="text-error">Revoked</span>
+                          : share.expires_at
+                            ? <span>Expires {new Date(share.expires_at).toLocaleDateString()}</span>
+                            : <span>No expiry</span>
+                        }
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        onClick={() => setExpandedShare(expanded ? null : share.dispatch_id)}
+                        className="px-3 py-1 rounded-md bg-surface-2 text-foreground text-xs hover:bg-surface border border-border transition-colors cursor-pointer"
+                      >
+                        {expanded ? 'Hide' : 'View'}
+                      </button>
+                      {!revoked && (
+                        <button
+                          onClick={() => revokeShare(share.dispatch_id)}
+                          disabled={revoking === share.dispatch_id}
+                          className="px-3 py-1 rounded-md bg-error/10 text-error text-xs hover:bg-error/20 transition-colors cursor-pointer disabled:opacity-40"
+                        >
+                          {revoking === share.dispatch_id ? '…' : 'Revoke'}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  {expanded && (
+                    <div className="px-4 pb-4 pt-1 border-t border-border">
+                      <EstimateSnapshotView snapshot={share.snapshot} />
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
         </section>
       )}
 
@@ -479,6 +574,14 @@ export default function StudioConnections() {
           studioName={cancelTarget.studioName}
           onConfirm={cancelLink}
           onClose={() => setCancelTarget(null)}
+        />
+      )}
+
+      {shareTarget && (
+        <ShareEstimatesModal
+          target={shareTarget}
+          onClose={() => setShareTarget(null)}
+          onShared={() => { setShareTarget(null); load() }}
         />
       )}
     </main>

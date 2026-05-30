@@ -66,6 +66,33 @@ async def require_active_link(studio_id: str, vendor_id: str) -> dict:
     return link
 
 
+async def get_link_for_vendor(link_id: str, vendor_id: str) -> Optional[dict]:
+    """Return the active studio_vendor_links row by id IF it belongs to this vendor, else None."""
+    r = await db_client.get(
+        _url("/rest/v1/studio_vendor_links"),
+        params={
+            "id":        f"eq.{link_id}",
+            "vendor_id": f"eq.{vendor_id}",
+            "status":    "eq.active",
+            "select":    "id,studio_id,vendor_id",
+        },
+        headers=_headers(),
+    )
+    rows = r.json()
+    return rows[0] if rows else None
+
+
+async def require_vendor_link(link_id: str, vendor_id: str) -> dict:
+    """Return the vendor's active link by id, or raise 403. Used to gate per-link override writes."""
+    link = await get_link_for_vendor(link_id, vendor_id)
+    if not link:
+        raise HTTPException(
+            status_code=403,
+            detail="No active link for this vendor.",
+        )
+    return link
+
+
 async def get_ingest_template(vendor_id: str, studio_id: str) -> Optional[dict]:
     """Return the vendor's saved ingest template for a studio, or None."""
     r = await db_client.get(
