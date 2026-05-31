@@ -908,6 +908,24 @@ if desired). **Highest-regression-risk policies to test first:**
 
 This matrix is what lets you *trust* RLS instead of hoping — keep it green in CI.
 
+**STATUS — DONE 2026-05-30 (dev): `scripts/rls_persona_matrix.py`.** A standalone, CI-runnable guard
+(repo convention — no pytest infra) that mints a JWT per persona and hits PostgREST directly, so it
+exercises the live policies regardless of `USE_USER_IDENTITY` (the flag only changes which header the
+*app* sends; the guard always sends a user/anon/system bearer). Personas are DISCOVERED from live data
+(a real studio member + vendor member), so it runs on dev or prod with no hardcoded fixtures; cases with
+no data report SKIP, not FAIL. Default run is READ-ONLY (safe against prod); `RLS_MATRIX_SEED=1` opts in
+to a transient override-row seed (always cleaned up in `finally`) so R1 is exercised even on an
+override-free DB. Coverage: studio/vendor own-only visibility (replicated_assets, asset_reviews,
+payload_dispatches, estimate_matrix); R1 estimate_matrix no-studio-cross-read (base-only + seeded
+override-hidden); R3 recipient-can't-write; R5 is_my_org type-binding; F-table + anon deny-all; system
+identity (#2) reads the system-scoped F-table a user can't; break-glass-unreachable static grep over
+`routes/*`. R2a (zero-membership → no stack-depth) is in the guard; R2b/c (FORCE-set + fn-owner) is a
+catalog assertion not reachable over PostgREST — the guard SKIPs it with the companion SQL in its footer
+(both confirmed live: the 3 membership tables `relforcerowsecurity=false`; predicate-fn owner ==
+membership-table owner == postgres). Result on dev: **15 PASS / 0 FAIL / 3 SKIP** (seeded) — the SKIPs
+are data-shape (no 2nd studio with assets / no multi-org user / catalog R2bc). Multi-org union (H2)
+asserts when such a user exists. Keep this green before every flag flip.
+
 ---
 
 ## 10. Performance notes
