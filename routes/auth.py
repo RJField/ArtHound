@@ -12,7 +12,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from lib.db import db_client, _url, _headers, _anon_headers, _admin_headers
+from lib.db import db_client, _url, _headers, _anon_headers, _admin_headers, _use_user_identity
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -111,24 +111,25 @@ async def signup(body: SignupBody):
         return await _signup_create(body)
 
 
-async def _signup_create(body: SignupBody) -> dict:
-    """Create a new studio or vendor org. Caller becomes the owner."""
-    if not body.org_name or not body.org_name.strip():
-        raise HTTPException(status_code=422, detail="Organisation name is required")
-    if body.role == "vendor" and body.handle is not None:
-        if not _HANDLE_RE.match(body.handle):
-            raise HTTPException(status_code=422, detail="HANDLE_INVALID")
-
-    # ── 1. Create auth user ───────────────────────────────────────────────────
+async def _admin_create_user(
+    email: str, password: str, role: str, user_metadata: Optional[dict] = None
+) -> str:
+    """Create the GoTrue auth user via the Admin API (sanctioned service-role carve-out, §0c — RLS and
+    the system role do not apply to /auth/v1/admin/*). Sets app_metadata.role and, optionally, stashes
+    onboarding intent in user_metadata. Returns the new user id. Raises 422 on a client error (e.g. the
+    email is already registered) and 500 on an auth-service error."""
+    payload: dict = {
+        "email":         email,
+        "password":      password,
+        "app_metadata":  {"role": role},
+        "email_confirm": _AUTO_CONFIRM,
+    }
+    if user_metadata is not None:
+        payload["user_metadata"] = user_metadata
     r = await db_client.post(
         _url("/auth/v1/admin/users"),
         headers=_admin_headers(),
-        json={
-            "email":         body.email,
-            "password":      body.password,
-            "app_metadata":  {"role": body.role},
-            "email_confirm": _AUTO_CONFIRM,
-        },
+        json=payload,
     )
     if r.status_code in (400, 422):
         data = r.json()
@@ -137,8 +138,33 @@ async def _signup_create(body: SignupBody) -> dict:
     if not r.is_success:
         log.error("Admin user create failed %s: %s", r.status_code, r.text[:300])
         raise HTTPException(status_code=500, detail=f"Auth service error ({r.status_code})")
+    return r.json()["id"]
 
-    user_id = r.json()["id"]
+
+async def _signup_create(body: SignupBody) -> dict:
+    """Create a new studio or vendor org. Caller becomes the owner."""
+    if not body.org_name or not body.org_name.strip():
+        raise HTTPException(status_code=422, detail="Organisation name is required")
+    if body.role == "vendor" and body.handle is not None:
+        if not _HANDLE_RE.match(body.handle):
+            raise HTTPException(status_code=422, detail="HANDLE_INVALID")
+
+    if _use_user_identity():
+        # Option C (RLS migration §0c): defer org creation to a post-login onboarding step. Pre-login
+        # there is no user JWT, so org+member inserts cannot run under RLS — instead create only the
+        # auth user and stash the chosen org details in user_metadata. After email-confirm + first login
+        # the frontend reads the stash and calls rpc_create_studio_with_owner / rpc_create_vendor_with_owner
+        # AS the user (auth.uid()-secure). No org/member rows exist until the user completes onboarding.
+        stash: dict = {"intent": "create", "role": body.role, "org_name": body.org_name.strip()}
+        if body.role == "vendor" and body.handle:
+            stash["handle"] = body.handle
+        await _admin_create_user(body.email, body.password, body.role, {"ah_onboarding": stash})
+        await _send_confirmation_email(body.email)
+        return {"ok": True, "email_confirmation_required": not _AUTO_CONFIRM}
+
+    # ── Flag-off (legacy service-role): create the org + owner membership synchronously at signup. ──
+    # ── 1. Create auth user ───────────────────────────────────────────────────
+    user_id = await _admin_create_user(body.email, body.password, body.role)
 
     # ── 2. Create org row ─────────────────────────────────────────────────────
     org_table = "studios" if body.role == "studio" else "vendors"
@@ -186,6 +212,34 @@ async def _signup_join(body: SignupBody) -> dict:
     """
     code = body.invite_code.strip().upper()
 
+    if _use_user_identity():
+        # Option C: validate the code via the anon read-RPC (migration 6 — no service-role read),
+        # confirm the role matches, then create only the auth user with the join intent stashed.
+        # rpc_request_join runs post-login AS the user, inserting the pending request then.
+        rr = await db_client.post(
+            _url("/rest/v1/rpc/rpc_resolve_invite"),
+            headers=_anon_headers(),
+            json={"p_code": code},
+        )
+        rows = rr.json() if rr.is_success else []
+        if not rows:
+            raise HTTPException(status_code=422, detail="INVITE_CODE_INVALID")
+        resolved_type = rows[0]["org_type"]
+        resolved_name = rows[0]["org_name"]
+        if body.role != resolved_type:
+            raise HTTPException(status_code=422, detail="ROLE_ORG_MISMATCH")
+
+        stash = {"intent": "join", "role": resolved_type, "invite_code": code}
+        await _admin_create_user(body.email, body.password, resolved_type, {"ah_onboarding": stash})
+        await _send_confirmation_email(body.email)
+        return {
+            "ok": True,
+            "status": "pending",
+            "org_name": resolved_name,
+            "email_confirmation_required": not _AUTO_CONFIRM,
+        }
+
+    # ── Flag-off (legacy service-role): resolve + create user + pending request synchronously. ──
     # Resolve org from invite code — try studio then vendor.
     org = None
     org_type = None
@@ -217,25 +271,7 @@ async def _signup_join(body: SignupBody) -> dict:
         raise HTTPException(status_code=422, detail="ROLE_ORG_MISMATCH")
 
     # ── Create auth user ──────────────────────────────────────────────────────
-    r = await db_client.post(
-        _url("/auth/v1/admin/users"),
-        headers=_admin_headers(),
-        json={
-            "email":         body.email,
-            "password":      body.password,
-            "app_metadata":  {"role": org_type},
-            "email_confirm": _AUTO_CONFIRM,
-        },
-    )
-    if r.status_code in (400, 422):
-        data = r.json()
-        detail = data.get("msg") or data.get("message") or data.get("error_description") or "Signup failed"
-        raise HTTPException(status_code=422, detail=detail)
-    if not r.is_success:
-        log.error("Admin user create (join) failed %s: %s", r.status_code, r.text[:300])
-        raise HTTPException(status_code=500, detail=f"Auth service error ({r.status_code})")
-
-    user_id = r.json()["id"]
+    user_id = await _admin_create_user(body.email, body.password, org_type)
 
     # ── Insert pending join request ───────────────────────────────────────────
     req_table = "studio_join_requests" if org_type == "studio" else "vendor_join_requests"
@@ -263,9 +299,11 @@ async def _send_confirmation_email(email: str) -> None:
     if _AUTO_CONFIRM:
         return
     frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:5173")
+    # /auth/v1/resend is a public GoTrue endpoint — the anon apikey is the correct credential
+    # (flag-independent: never relies on a bound user token, which doesn't exist pre-confirmation).
     await db_client.post(
         _url("/auth/v1/resend"),
-        headers=_headers(),
+        headers=_anon_headers(),
         json={
             "type":  "signup",
             "email": email,

@@ -785,6 +785,26 @@ direct-from-frontend signed access. Encode owner in the storage path (`/reviews/
 Also audit the **frontend** for any direct `supabase.from()` / `supabase.storage` calls — those will
 start being RLS-subject (the goal), but someone must confirm the new policies satisfy each one.
 
+**STATUS — DONE / VERIFIED 2026-05-30 (dev).** The mandatory metadata gate was already structurally
+present: every byte-serving/upload path performs a user-context (`_headers()`) metadata read before the
+service-role byte I/O. Gate sites (each now carries an explicit `§7 STORAGE GATE` comment so it can't
+silently regress to `_admin_headers`/`_storage_headers`):
+- `attachments.py:get_asset_attachment` → `replicated_assets` read (RLS `ra_sel`, org-scoped).
+- `attachments.py:_authorize_payload_attachment` (serves `get_payload_attachment`) → `payload_dispatches`
+  read (RLS `pd_sel`, dual-party) + app-layer party/revoked/asset-in-payload checks.
+- `reviews.py:serve_attachment` → `_fetch_review` (`ar_sel`) + `review_attachments` read (`rat_sel`).
+- `reviews.py:upload_attachment` (write side) → `_fetch_review` (`ar_sel`) before upload.
+- `lorebot.py` chat/replicate → `_fetch_vendor_dispatch` (`pd_sel`) before `_read_from_storage`; blobs are
+  content-addressed, so the dispatch RLS gate (which is where the caller discovers the hash) is the
+  control. `_read_from_storage` documents this contract.
+All four SELECT policies confirmed live (`ra_sel`/`pd_sel`/`ar_sel`/`rat_sel`). Gate proven live on dev
+with a minted user JWT: vs service-role ground truth, user A sees 161/201 dispatches, 1/4 reviews, 0/3
+review_attachments, 218/247 assets, and an explicit cross-org dispatch read returns `[]` → 404 before any
+byte fetch. **Frontend audit:** no direct `supabase.storage`/`.from()` data access — all bytes proxied
+through the backend (the only `getSupabase()` calls are auth/session-token). `storage.objects` RLS (the
+"Later/optional" direct-signed-access path) intentionally NOT added — nothing reads Storage except the
+gated backend proxy, so it adds no security today.
+
 ---
 
 ## 8. Sequencing, cutover & rollback

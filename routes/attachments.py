@@ -34,6 +34,11 @@ async def _authorize_payload_attachment(
       (b) caller is the vendor on this dispatch, or a studio member of the dispatching studio
       (c) dispatch has not been revoked
       (d) the requested canonical_asset_id is present in payload_data
+
+    §7 STORAGE GATE: this read is the authorization boundary for the payload byte fetch below. It runs
+    as the caller (`_headers()` → user identity post-cutover), so `payload_dispatches.pd_sel` (dual-party
+    RLS) hides any dispatch the caller is not a party to → empty rows → 404, BEFORE any blob is fetched.
+    Keep it user-context: do not switch to `_admin_headers()`/`_storage_headers()` or the gate is lost.
     """
     r = await db_client.get(
         _url("/rest/v1/payload_dispatches"),
@@ -91,6 +96,9 @@ async def get_asset_attachment(
     tool on first view. Subsequent views are served directly from Storage.
     Studio-only. Copy is scoped to explicit user intent (opening the attachment).
     """
+    # §7 STORAGE GATE: user-context read (`_headers()` → user identity post-cutover) scoped to the
+    # caller's org. `replicated_assets.ra_sel` (RLS) plus the explicit owner filter ensure a cross-org
+    # asset is invisible → 404 before any byte is fetched from Storage / the source tool below.
     r = await db_client.get(
         _url("/rest/v1/replicated_assets"),
         params={
@@ -117,6 +125,8 @@ async def get_asset_attachment(
 
     # Fast path: already copied — serve directly from Supabase Storage.
     if content_hash:
+        # Byte fetch stays service-role (§0c carve-out — Storage has no per-row RLS); access was already
+        # authorized by the §7 gate (the org-scoped replicated_assets read above).
         storage_url = _storage_api_url(f"/object/{_BUCKET}/{_storage_object_path(content_hash)}")
         async with httpx.AsyncClient(timeout=60.0) as _sc:
             r_s = await _sc.get(storage_url, headers=_storage_headers())
@@ -256,6 +266,8 @@ async def get_payload_attachment(
     Accessible by the vendor on the dispatch, or by a studio member of the dispatching studio.
     Returns 202 if the attachment copy job has not yet completed.
     """
+    # §7 STORAGE GATE: authorize via a user-context dispatch read BEFORE streaming any blob (below the
+    # byte stream itself is the §0c service-role carve-out).
     dispatch = await _authorize_payload_attachment(dispatch_id, canonical_asset_id, caller)
 
     data: dict = dispatch["payload_data"].get("data") or {}

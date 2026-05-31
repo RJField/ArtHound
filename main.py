@@ -33,6 +33,7 @@ from routes.payload import router as payload_router
 from routes.numbersbot import router as numbersbot_router
 from routes.sync import router as sync_router, webhook_router as sync_webhook_router
 from routes.user import router as user_router
+from routes.onboarding import router as onboarding_router
 from routes.init import router as init_router
 from routes.auth import router as auth_router
 from routes.work import router as work_router
@@ -539,6 +540,9 @@ app.include_router(payload_router,        prefix="/api/payloads")
 app.include_router(numbersbot_router,     prefix="/api/numbersbot",  dependencies=_auth)
 app.include_router(sync_router,           prefix="/api/sync",        dependencies=_auth)
 app.include_router(user_router,           prefix="/api/user")
+# Onboarding routes manage their own auth (get_onboarding_identity — JWT-verified, NO membership
+# requirement, since the user has none yet). NOT behind _auth, which would 403 a member-less caller.
+app.include_router(onboarding_router,     prefix="/api/onboarding")
 app.include_router(init_router,           prefix="/api/init",        dependencies=_auth)
 app.include_router(work_router,           prefix="/api/work",         dependencies=_auth)
 app.include_router(synthetic_router,      prefix="/api/synthetic",    dependencies=_auth)

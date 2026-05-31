@@ -427,6 +427,8 @@ async def upload_attachment(
     file: UploadFile = File(...),
     user: CurrentUser = Depends(get_current_user),
 ):
+    # §7 STORAGE GATE (write side): authorize via a user-context review read (RLS `ar_sel`) BEFORE
+    # uploading any bytes — a caller who can't see the review can't attach to it.
     org_type, org_id = _resolve_org(user)
     review = await _fetch_review(review_id, org_type, org_id)
 
@@ -469,6 +471,10 @@ async def serve_attachment(
     attachment_id: str,
     user: CurrentUser = Depends(get_current_user),
 ):
+    # §7 STORAGE GATE: two user-context reads authorize the byte stream below. `_fetch_review` (RLS
+    # `ar_sel`) hides a review the caller's org can't see; the review_attachments read (RLS `rat_sel`)
+    # hides the attachment row. Either invisible → 404 before any blob is fetched. Both run as the
+    # caller (`_headers()`); the byte stream itself is the §0c service-role carve-out.
     org_type, org_id = _resolve_org(user)
     await _fetch_review(review_id, org_type, org_id)
 
