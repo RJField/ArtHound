@@ -13,11 +13,15 @@ async def _write_access_log(
     owner_type: str, owner_id: str, source_type: str, user_id: str | None
 ) -> None:
     try:
-        await db_client.post(
-            _url("/rest/v1/credential_access_log"),
-            json={"user_id": user_id, "owner_type": owner_type, "owner_id": owner_id, "source_type": source_type},
-            headers=_headers({"Prefer": "return=minimal"}),
-        )
+        # credential_access_log is system-managed (no authenticated write policy); record as the system
+        # identity. Fire-and-forget — credential access must never be blocked by an audit-log failure.
+        from lib.system_auth import system_identity
+        async with system_identity():
+            await db_client.post(
+                _url("/rest/v1/credential_access_log"),
+                json={"user_id": user_id, "owner_type": owner_type, "owner_id": owner_id, "source_type": source_type},
+                headers=_headers({"Prefer": "return=minimal"}),
+            )
     except Exception:
         log.warning("credential_access_log write failed", exc_info=True)
 

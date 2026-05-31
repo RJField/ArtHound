@@ -38,14 +38,19 @@ def _require_platform_admin(user: CurrentUser = Depends(get_current_user)):
 
 
 async def _get_settings() -> dict:
-    r = await db_client.get(
-        _url("/rest/v1/system_settings"),
-        params={
-            "id":     "eq.true",
-            "select": "registration_invite_required,registration_invite_code,updated_at,updated_by",
-        },
-        headers=_headers(),
-    )
+    # system_settings is an F-table (no authenticated read/write policy). The route is already gated to
+    # platform admins; the read/write is performed as the system identity (flag-off: service-role;
+    # flag-on: arthound_system, which migration 15 grants select/insert/update + a sys policy).
+    from lib.system_auth import system_identity
+    async with system_identity():
+        r = await db_client.get(
+            _url("/rest/v1/system_settings"),
+            params={
+                "id":     "eq.true",
+                "select": "registration_invite_required,registration_invite_code,updated_at,updated_by",
+            },
+            headers=_headers(),
+        )
     if not r.is_success or not r.json():
         raise HTTPException(status_code=500, detail="Failed to read system settings")
     return r.json()[0]
@@ -78,12 +83,14 @@ async def patch_system_settings(body: SystemSettingsPatch, user: CurrentUser = D
     payload["updated_by"] = user.id
     # updated_at is handled by the DB trigger
 
-    r = await db_client.patch(
-        _url("/rest/v1/system_settings"),
-        params={"id": "eq.true"},
-        headers=_headers({"Prefer": "return=representation"}),
-        json=payload,
-    )
+    from lib.system_auth import system_identity
+    async with system_identity():
+        r = await db_client.patch(
+            _url("/rest/v1/system_settings"),
+            params={"id": "eq.true"},
+            headers=_headers({"Prefer": "return=representation"}),
+            json=payload,
+        )
     if not r.is_success:
         log.error("System settings update failed: %s", r.text[:300])
         raise HTTPException(status_code=500, detail="Failed to update system settings")
