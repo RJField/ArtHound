@@ -17,6 +17,7 @@ from pydantic import BaseModel
 
 from lib.auth import CurrentUser, require_vendor, require_studio
 from lib.db import db_client, _url, _headers, _use_user_identity
+from lib.org_directory import resolve_counterparty_names
 from lib.estimate.effective import resolve_effective_matrix
 from lib.estimate.projector import project, GRANULARITIES
 from lib.estimate.delivery import get_delivery_strategy
@@ -108,14 +109,9 @@ async def list_targets(user: CurrentUser = Depends(require_vendor)):
     if not links:
         return []
     studio_ids = list({lnk["studio_id"] for lnk in links})
-    rs = await db_client.get(
-        _url("/rest/v1/studios"),
-        params={"id": f"in.({','.join(studio_ids)})", "select": "id,name"},
-        headers=_headers(),
-    )
-    smap = {s["id"]: s.get("name") for s in rs.json()}
+    smap = await resolve_counterparty_names("studio", studio_ids)
     return [{"link_id": lnk["id"], "studio_id": lnk["studio_id"],
-             "studio_name": smap.get(lnk["studio_id"])} for lnk in links]
+             "studio_name": (smap.get(lnk["studio_id"]) or {}).get("name")} for lnk in links]
 
 
 # ── vendor: preview a projection (no persistence) ──────────────────────────────
@@ -220,18 +216,11 @@ async def outbox(user: CurrentUser = Depends(require_vendor)):
     )
     rows = r.json()
     studio_ids = list({row["recipient_studio_id"] for row in rows})
-    smap: dict = {}
-    if studio_ids:
-        rs = await db_client.get(
-            _url("/rest/v1/studios"),
-            params={"id": f"in.({','.join(studio_ids)})", "select": "id,name"},
-            headers=_headers(),
-        )
-        smap = {s["id"]: s.get("name") for s in rs.json()}
+    smap = await resolve_counterparty_names("studio", studio_ids)
     return [{
         "dispatch_id": row["id"],
         "link_id":     row["link_id"],
-        "studio_name": smap.get(row["recipient_studio_id"]),
+        "studio_name": (smap.get(row["recipient_studio_id"]) or {}).get("name"),
         "granularity": (row.get("snapshot") or {}).get("granularity"),
         "label":       (row.get("estimate_share_series") or {}).get("label"),
         "expires_at":  row["expires_at"],
@@ -293,14 +282,7 @@ async def inbox(user: CurrentUser = Depends(require_studio)):
     )
     rows = r.json()
     vendor_ids = list({row["vendor_id"] for row in rows})
-    vmap: dict = {}
-    if vendor_ids:
-        rv = await db_client.get(
-            _url("/rest/v1/vendors"),
-            params={"id": f"in.({','.join(vendor_ids)})", "select": "id,name,handle"},
-            headers=_headers(),
-        )
-        vmap = {v["id"]: v for v in rv.json()}
+    vmap = await resolve_counterparty_names("vendor", vendor_ids)
     return [{
         "dispatch_id": row["id"],
         "vendor":      vmap.get(row["vendor_id"], {"id": row["vendor_id"]}),
