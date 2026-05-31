@@ -185,12 +185,19 @@ async def copy_payload_attachments(dispatch_id: str) -> None:
 
 
 async def enqueue_attachment_copy(dispatch_id: str) -> None:
-    """Insert a pending copy job. Called immediately after a dispatch is created."""
-    r = await db_client.post(
-        _url("/rest/v1/attachment_copy_jobs"),
-        headers=_headers({"Prefer": "return=minimal"}),
-        json={"dispatch_id": dispatch_id},
-    )
+    """Insert a pending copy job. Called immediately after a dispatch is created.
+
+    attachment_copy_jobs is a system-managed queue (Pattern F — denied to users under RLS), so the
+    enqueue runs in SYSTEM identity even though a user's dispatch action triggers it. Flag-off this is
+    a no-op (service-role writes regardless of the bound token); flag-on it binds the arthound_system
+    token so the write satisfies the system policy."""
+    from lib.system_auth import system_identity
+    async with system_identity():
+        r = await db_client.post(
+            _url("/rest/v1/attachment_copy_jobs"),
+            headers=_headers({"Prefer": "return=minimal"}),
+            json={"dispatch_id": dispatch_id},
+        )
     r.raise_for_status()
 
 
