@@ -13,6 +13,7 @@ from pydantic import BaseModel
 
 from lib.auth import CurrentUser, get_current_user, require_studio, require_vendor
 from lib.db import db_client, _url, _headers, _admin_headers, _use_user_identity
+from lib.org_directory import resolve_counterparty_names
 from lib.sync.qualifiers import airtable_write_defaults, airtable_qualifier_gaps, jira_write_defaults
 
 router = APIRouter()
@@ -157,16 +158,10 @@ async def list_vendors(user: CurrentUser = Depends(require_studio)):
     if not vendor_ids:
         return []
 
-    r = await db_client.get(
-        _url("/rest/v1/vendors"),
-        params={
-            "id":     f"in.({','.join(vendor_ids)})",
-            "select": "id,name,handle",
-            "order":  "name.asc",
-        },
-        headers=_headers(),
-    )
-    return r.json()
+    # Flag-on a studio can't read the vendors table directly (v_sel); resolve linked vendors' names
+    # via the link/invite directory (RLS-safe).
+    vendor_map = await resolve_counterparty_names("vendor", vendor_ids)
+    return sorted(vendor_map.values(), key=lambda v: (v.get("name") or "").lower())
 
 
 # ── templates ─────────────────────────────────────────────────────────────────
@@ -388,14 +383,10 @@ class BulkDispatchBody(BaseModel):
 async def dispatch_bulk(body: BulkDispatchBody, user: CurrentUser = Depends(require_studio)):
     studio_id = user.studio_id
 
-    # Verify vendor exists and an active link is in place
-    r_vendor = await db_client.get(
-        _url("/rest/v1/vendors"),
-        params={"id": f"eq.{body.vendor_id}", "select": "id,name"},
-        headers=_headers(),
-    )
-    vendors = r_vendor.json()
-    if not vendors:
+    # Verify vendor exists and an active link is in place. require_active_link is the real gate; the
+    # directory lookup (flag-on RLS-safe) just yields a clean 404 for an unknown/unrelated vendor.
+    vendor_map = await resolve_counterparty_names("vendor", [body.vendor_id])
+    if body.vendor_id not in vendor_map:
         raise HTTPException(status_code=404, detail="Vendor not found")
 
     from lib.handshake import require_active_link

@@ -53,8 +53,14 @@ except Exception:  # noqa: BLE001
 
 # ── env ──────────────────────────────────────────────────────────────────────
 def _load_env() -> None:
-    """Populate os.environ from .env (without overriding anything already set)."""
-    path = os.path.join(_ROOT, ".env")
+    """Populate os.environ from an env file. Default `.env`; set RLS_ENV_FILE to target another project
+    (e.g. RLS_ENV_FILE=.env.prod to run the go/no-go against prod). When RLS_ENV_FILE is given the file's
+    values OVERRIDE the ambient environment (so a stray exported SUPABASE_URL can't silently shadow the
+    target); with the default .env, pre-set env vars win (CI-friendly)."""
+    fname = os.environ.get("RLS_ENV_FILE")
+    override = fname is not None
+    path_name = fname or ".env"
+    path = path_name if os.path.isabs(path_name) else os.path.join(_ROOT, path_name)
     if not os.path.exists(path):
         return
     with open(path) as f:
@@ -63,7 +69,7 @@ def _load_env() -> None:
             if line and not line.startswith("#") and "=" in line:
                 k, v = line.split("=", 1)
                 k = k.strip()
-                if k not in os.environ:
+                if override or k not in os.environ:
                     os.environ[k] = v.strip().strip('"').strip("'")
 
 
@@ -274,6 +280,31 @@ def check_estimate_override_hidden_from_studio():
             client.request("DELETE", "/rest/v1/estimate_matrix", headers=H_SERVICE, params={"id": f"eq.{seeded}"})
 
 
+def check_counterparty_directory():
+    """Migration 14: a linked party CAN resolve the counterparty org's name via rpc_org_directory
+    (safe fields only — NEVER invite_code); an org with no link/invite is absent. Guards the
+    post-cutover 'Unknown Studio/Vendor' + empty-dropdown regression."""
+    name = "rpc_org_directory · linked counterparty name (mig 14)"
+    link = next((l for l in _rows(H_SERVICE, "studio_vendor_links", "studio_id,vendor_id", limit="50")
+                 if _rows(H_SERVICE, "vendor_members", "user_id", vendor_id=f"eq.{l['vendor_id']}", limit="1")), None)
+    if not link:
+        record(name, "SKIP", "no studio<->vendor link with a vendor member")
+        return
+    vuser = _rows(H_SERVICE, "vendor_members", "user_id", vendor_id=f"eq.{link['vendor_id']}", limit="1")[0]["user_id"]
+    h = {**_user_headers(vuser, "vendor"), "Content-Type": "application/json"}
+    r = client.post("/rest/v1/rpc/rpc_org_directory", headers=h, json={"p_org_type": "studio"})
+    rows = r.json() if r.is_success else []
+    linked = next((x for x in rows if x.get("id") == link["studio_id"]), None)
+    leak = any("invite_code" in x for x in rows)
+    related = {l["studio_id"] for l in _rows(H_SERVICE, "studio_vendor_links", "studio_id", vendor_id=f"eq.{link['vendor_id']}", limit="200")}
+    related |= {i["studio_id"] for i in _rows(H_SERVICE, "studio_vendor_invites", "studio_id", vendor_id=f"eq.{link['vendor_id']}", limit="200")}
+    unrelated = next((s["id"] for s in _rows(H_SERVICE, "studios", "id", limit="200") if s["id"] not in related), None)
+    unrelated_absent = unrelated is None or not any(x.get("id") == unrelated for x in rows)
+    ok = bool(linked and linked.get("name")) and not leak and unrelated_absent
+    record(name, "PASS" if ok else "FAIL",
+           f"linked-name-resolves={bool(linked and linked.get('name'))} no-invite_code-leak={not leak} unrelated-absent={unrelated_absent}")
+
+
 def check_recipient_cannot_write(vendor):
     """R3: a vendor recipient UPDATE on payload_dispatches affects 0 rows (write is RPC-only; pd_upd is
     sender-scoped)."""
@@ -386,6 +417,7 @@ def main():
     check_studio_cross_org_deny(studio, other_studio)
     check_vendor(vendor)
     check_estimate_override_hidden_from_studio()
+    check_counterparty_directory()
     check_recipient_cannot_write(vendor)
     check_zero_membership_no_recursion()
     check_force_set_and_owner()
