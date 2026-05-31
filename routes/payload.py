@@ -35,16 +35,21 @@ async def _log(
     detail: Optional[dict] = None,
 ) -> None:
     try:
-        await db_client.post(
-            _url("/rest/v1/payload_access_log"),
-            headers=_headers({"Prefer": "return=minimal"}),
-            json={
-                "dispatch_id": dispatch_id,
-                "event": event,
-                "actor_studio_id": actor_studio_id,
-                "detail": detail,
-            },
-        )
+        # payload_access_log is system-managed (no authenticated write policy); record the audit event
+        # as the system identity (flag-off: service-role; flag-on: arthound_system). The actor stays a
+        # data column. Fire-and-forget: never let an audit-log failure affect the user action.
+        from lib.system_auth import system_identity
+        async with system_identity():
+            await db_client.post(
+                _url("/rest/v1/payload_access_log"),
+                headers=_headers({"Prefer": "return=minimal"}),
+                json={
+                    "dispatch_id": dispatch_id,
+                    "event": event,
+                    "actor_studio_id": actor_studio_id,
+                    "detail": detail,
+                },
+            )
     except Exception as exc:
         log.warning("payload audit log failed (dispatch=%s event=%s): %s", dispatch_id, event, exc)
 

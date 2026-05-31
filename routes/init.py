@@ -590,24 +590,29 @@ async def save_field_mappings(
     )
     r.raise_for_status()
 
-    # Write override events — best-effort; don't fail the save if this errors.
+    # Write override events — best-effort; don't fail the save if this errors. These two tables are
+    # system-managed (sys-only write policies), so the writes run as the system identity (flag-off:
+    # service-role; flag-on: arthound_system).
+    from lib.system_auth import system_identity
     if override_events:
         try:
-            await db_client.post(
-                _url("/rest/v1/field_bucket_override_log"),
-                headers=_headers({"Prefer": "return=minimal"}),
-                json=override_events,
-            )
+            async with system_identity():
+                await db_client.post(
+                    _url("/rest/v1/field_bucket_override_log"),
+                    headers=_headers({"Prefer": "return=minimal"}),
+                    json=override_events,
+                )
         except Exception:
             log.warning("Failed to write bucket override log for %s/%s", owner_type, owner_id)
 
     try:
-        await db_client.patch(
-            _url("/rest/v1/schema_drift_events"),
-            params={"owner_id": f"eq.{owner_id}", "resolved_at": "is.null"},
-            headers=_headers({"Prefer": "return=minimal"}),
-            json={"resolved_at": datetime.now(timezone.utc).isoformat()},
-        )
+        async with system_identity():
+            await db_client.patch(
+                _url("/rest/v1/schema_drift_events"),
+                params={"owner_id": f"eq.{owner_id}", "resolved_at": "is.null"},
+                headers=_headers({"Prefer": "return=minimal"}),
+                json={"resolved_at": datetime.now(timezone.utc).isoformat()},
+            )
     except Exception:
         log.warning("Failed to resolve drift events for %s/%s", owner_type, owner_id)
 
