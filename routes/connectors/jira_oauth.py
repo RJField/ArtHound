@@ -35,6 +35,7 @@ from pydantic import BaseModel
 from lib.auth import CurrentUser, get_current_user
 from lib.crypto import decrypt_credentials, encrypt_credentials
 from lib.db import db_client, _url, _headers
+from lib.system_auth import system_identity
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -139,16 +140,19 @@ async def initiate_jira_oauth(
             "dc_client_id":    body.dc_client_id,
             "dc_client_secret": body.dc_client_secret,
         }
-        await db_client.post(
-            _url("/rest/v1/source_credentials?on_conflict=owner_type,owner_id,source_type"),
-            headers=_headers({"Prefer": "resolution=merge-duplicates,return=minimal"}),
-            json={
-                "owner_type":  owner_type,
-                "owner_id":    owner_id,
-                "source_type": "jira",
-                "credentials": encrypt_credentials(partial_creds),
-            },
-        )
+        # source_credentials is system-managed (Pattern F); the OAuth flow's owner is verified by the
+        # route (auth / signed state), so write under the system identity. Flag-off: no-op (service-role).
+        async with system_identity():
+            await db_client.post(
+                _url("/rest/v1/source_credentials?on_conflict=owner_type,owner_id,source_type"),
+                headers=_headers({"Prefer": "resolution=merge-duplicates,return=minimal"}),
+                json={
+                    "owner_type":  owner_type,
+                    "owner_id":    owner_id,
+                    "source_type": "jira",
+                    "credentials": encrypt_credentials(partial_creds),
+                },
+            )
 
         # DC authorize URL — no audience/scope/prompt, just standard OAuth 2.0
         params = {
@@ -274,16 +278,19 @@ async def jira_oauth_callback(code: str, state: str):
         else:
             raise HTTPException(status_code=400, detail=f"Unknown deployment in state: {deployment}")
 
-    await db_client.post(
-        _url("/rest/v1/source_credentials?on_conflict=owner_type,owner_id,source_type"),
-        headers=_headers({"Prefer": "resolution=merge-duplicates,return=minimal"}),
-        json={
-            "owner_type":  owner_type,
-            "owner_id":    owner_id,
-            "source_type": "jira",
-            "credentials": encrypt_credentials(creds),
-        },
-    )
+    # source_credentials is system-managed (Pattern F); the callback's owner is verified via the signed
+    # state (no user JWT here), so write under the system identity. Flag-off: no-op (service-role).
+    async with system_identity():
+        await db_client.post(
+            _url("/rest/v1/source_credentials?on_conflict=owner_type,owner_id,source_type"),
+            headers=_headers({"Prefer": "resolution=merge-duplicates,return=minimal"}),
+            json={
+                "owner_type":  owner_type,
+                "owner_id":    owner_id,
+                "source_type": "jira",
+                "credentials": encrypt_credentials(creds),
+            },
+        )
 
     return RedirectResponse(url=f"{frontend_base}/init?jira=connected", status_code=302)
 
@@ -380,15 +387,17 @@ async def select_instance(
         raise HTTPException(status_code=400, detail=f"cloud_id {body.cloud_id!r} not in accessible resources")
 
     updated = {**creds, "cloud_id": match["id"], "site_url": match["url"]}
-    await db_client.post(
-        _url("/rest/v1/source_credentials?on_conflict=owner_type,owner_id,source_type"),
-        headers=_headers({"Prefer": "resolution=merge-duplicates,return=minimal"}),
-        json={
-            "owner_type":  owner_type,
-            "owner_id":    owner_id,
-            "source_type": "jira",
-            "credentials": encrypt_credentials(updated),
-        },
-    )
+    # source_credentials is system-managed (Pattern F); owner verified by the route → system identity.
+    async with system_identity():
+        await db_client.post(
+            _url("/rest/v1/source_credentials?on_conflict=owner_type,owner_id,source_type"),
+            headers=_headers({"Prefer": "resolution=merge-duplicates,return=minimal"}),
+            json={
+                "owner_type":  owner_type,
+                "owner_id":    owner_id,
+                "source_type": "jira",
+                "credentials": encrypt_credentials(updated),
+            },
+        )
     log.info("%s %s selected Jira instance %s (%s)", owner_type, owner_id, match["id"], match["url"])
     return {"ok": True, "cloud_id": match["id"], "site_url": match["url"]}

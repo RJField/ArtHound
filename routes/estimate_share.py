@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from lib.auth import CurrentUser, require_vendor, require_studio
-from lib.db import db_client, _url, _headers
+from lib.db import db_client, _url, _headers, _use_user_identity
 from lib.estimate.effective import resolve_effective_matrix
 from lib.estimate.projector import project, GRANULARITIES
 from lib.estimate.delivery import get_delivery_strategy
@@ -158,25 +158,47 @@ async def create_share(body: CreateShareBody, user: CurrentUser = Depends(requir
 
     # Atomic: find-or-create the (vendor, link) series, supersede any live dispatch, insert the new one
     # (logs 'superseded' + 'shared' inside the transaction). uq_esd_one_live is the race backstop.
-    r = await db_client.post(
-        _url("/rest/v1/rpc/create_estimate_share"),
-        json={
-            "p_vendor_id":           vendor_id,
-            "p_link_id":             body.link_id,
-            "p_recipient_studio_id": studio_id,
-            "p_snapshot":            snapshot,
-            "p_label":               body.label,
-            "p_expires_at":          expires_at,
-        },
-        headers=_headers(),
-    )
-    if not r.is_success:
-        raise HTTPException(status_code=500, detail=f"Failed to create share: {r.text}")
-    dispatch = r.json()
-    if isinstance(dispatch, list):
-        dispatch = dispatch[0] if dispatch else None
-    if not dispatch:
-        raise HTTPException(status_code=500, detail="Share creation returned no dispatch")
+    if _use_user_identity():
+        # Flag-on: rpc_freeze_estimate_share (SECURITY DEFINER, vendor-authz via auth.uid()) derives
+        # recipient_studio_id + vendor_id FROM the link (never trusts caller args, plan §6 #5) and
+        # returns the new dispatch id. Direct estimate_share_* writes are denied to users under RLS.
+        r = await db_client.post(
+            _url("/rest/v1/rpc/rpc_freeze_estimate_share"),
+            json={"p_link_id": body.link_id, "p_snapshot": snapshot,
+                  "p_label": body.label, "p_expires_at": expires_at},
+            headers=_headers(),
+        )
+        if not r.is_success:
+            raise HTTPException(status_code=400, detail=f"Failed to create share: {r.text}")
+        dispatch_id = r.json()
+        dr = await db_client.get(
+            _url("/rest/v1/estimate_share_dispatches"),
+            params={"id": f"eq.{dispatch_id}", "select": "*"},
+            headers=_headers(),
+        )
+        drows = dr.json() if dr.is_success else []
+        dispatch = drows[0] if drows else {"id": dispatch_id}
+    else:
+        # Flag-off: legacy SECURITY INVOKER create_estimate_share (service-role).
+        r = await db_client.post(
+            _url("/rest/v1/rpc/create_estimate_share"),
+            json={
+                "p_vendor_id":           vendor_id,
+                "p_link_id":             body.link_id,
+                "p_recipient_studio_id": studio_id,
+                "p_snapshot":            snapshot,
+                "p_label":               body.label,
+                "p_expires_at":          expires_at,
+            },
+            headers=_headers(),
+        )
+        if not r.is_success:
+            raise HTTPException(status_code=500, detail=f"Failed to create share: {r.text}")
+        dispatch = r.json()
+        if isinstance(dispatch, list):
+            dispatch = dispatch[0] if dispatch else None
+        if not dispatch:
+            raise HTTPException(status_code=500, detail="Share creation returned no dispatch")
 
     await get_delivery_strategy(dispatch.get("delivery_mode", "route_inbox")).deliver(dispatch)
     return {"dispatch_id": dispatch["id"], "granularity": body.granularity, "expires_at": expires_at}
@@ -232,13 +254,24 @@ async def revoke_share(dispatch_id: str, user: CurrentUser = Depends(require_ven
         raise HTTPException(status_code=404, detail="Share not found")
     if rows[0]["revoked_at"]:
         raise HTTPException(status_code=409, detail="Already revoked")
-    await db_client.patch(
-        _url("/rest/v1/estimate_share_dispatches"),
-        params={"id": f"eq.{dispatch_id}"},
-        json={"revoked_at": _now_iso()},
-        headers=_headers({"Prefer": "return=minimal"}),
-    )
-    await _log(dispatch_id, "revoked", actor_vendor_id=user.vendor_id)
+    if _use_user_identity():
+        # Flag-on: rpc_revoke_estimate_share (vendor-authz inside) does the revoke + access-log write in
+        # one txn; direct PATCH / log INSERT on estimate_share_* is denied to users under RLS.
+        rr = await db_client.post(
+            _url("/rest/v1/rpc/rpc_revoke_estimate_share"),
+            json={"p_dispatch_id": dispatch_id},
+            headers=_headers(),
+        )
+        if not rr.is_success:
+            raise HTTPException(status_code=400, detail=f"Failed to revoke: {rr.text}")
+    else:
+        await db_client.patch(
+            _url("/rest/v1/estimate_share_dispatches"),
+            params={"id": f"eq.{dispatch_id}"},
+            json={"revoked_at": _now_iso()},
+            headers=_headers({"Prefer": "return=minimal"}),
+        )
+        await _log(dispatch_id, "revoked", actor_vendor_id=user.vendor_id)
     return {"ok": True}
 
 
@@ -292,5 +325,16 @@ async def record_view(dispatch_id: str, user: CurrentUser = Depends(require_stud
     if not rows:
         raise HTTPException(status_code=404, detail="Share not found")
     _assert_valid(rows[0])
-    await _log(dispatch_id, "viewed", actor_studio_id=user.studio_id)
+    if _use_user_identity():
+        # Flag-on: a studio cannot INSERT estimate_share_access_log directly (SELECT-only policy); the
+        # rpc_log_estimate_share_view RPC (recipient-studio authz inside) writes the 'viewed' event.
+        rr = await db_client.post(
+            _url("/rest/v1/rpc/rpc_log_estimate_share_view"),
+            json={"p_dispatch_id": dispatch_id},
+            headers=_headers(),
+        )
+        if not rr.is_success:
+            raise HTTPException(status_code=400, detail=f"Failed to record view: {rr.text}")
+    else:
+        await _log(dispatch_id, "viewed", actor_studio_id=user.studio_id)
     return {"ok": True}

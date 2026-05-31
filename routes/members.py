@@ -27,7 +27,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from lib.auth import CurrentUser, get_current_user, invalidate_member_cache, require_admin
-from lib.db import db_client, _url, _headers
+from lib.db import db_client, _url, _headers, _admin_headers, _anon_headers, _use_user_identity
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -67,7 +67,7 @@ async def _get_user_emails(user_ids: list[str]) -> dict[str, str]:
     if not user_ids:
         return {}
     coros = [
-        db_client.get(_url(f"/auth/v1/admin/users/{uid}"), headers=_headers())
+        db_client.get(_url(f"/auth/v1/admin/users/{uid}"), headers=_admin_headers())
         for uid in user_ids
     ]
     responses = await asyncio.gather(*coros, return_exceptions=True)
@@ -91,19 +91,35 @@ async def _write_audit(
     new_role: Optional[str] = None,
 ) -> None:
     try:
-        await db_client.post(
-            _url("/rest/v1/org_role_audit_log"),
-            headers=_headers({"Prefer": "return=minimal"}),
-            json={
-                "org_type": org_type,
-                "org_id": org_id,
-                "actor_id": actor_id,
-                "action": action,
-                "target_user_id": target_user_id,
-                "old_role": old_role,
-                "new_role": new_role,
-            },
-        )
+        if _use_user_identity():
+            # Flag-on: org_role_audit_log is SELECT-only for users; rpc_write_org_audit (is_org_admin
+            # authz, actor = the caller via auth.uid()) performs the insert. Still best-effort.
+            await db_client.post(
+                _url("/rest/v1/rpc/rpc_write_org_audit"),
+                headers=_headers(),
+                json={
+                    "p_org_type": org_type,
+                    "p_org_id": org_id,
+                    "p_action": action,
+                    "p_target_user_id": target_user_id,
+                    "p_old_role": old_role,
+                    "p_new_role": new_role,
+                },
+            )
+        else:
+            await db_client.post(
+                _url("/rest/v1/org_role_audit_log"),
+                headers=_headers({"Prefer": "return=minimal"}),
+                json={
+                    "org_type": org_type,
+                    "org_id": org_id,
+                    "actor_id": actor_id,
+                    "action": action,
+                    "target_user_id": target_user_id,
+                    "old_role": old_role,
+                    "new_role": new_role,
+                },
+            )
     except Exception:
         log.exception("Failed to write org_role_audit_log entry")
 
@@ -139,23 +155,16 @@ async def resolve_invite_code(code: str, request: Request):
 
     code = code.strip().upper()
 
-    studio_r = await db_client.get(
-        _url("/rest/v1/studios"),
-        params={"invite_code": f"eq.{code}", "select": "id,name"},
-        headers=_headers(),
+    # Public, pre-login: resolve via the anon SECURITY DEFINER RPC (migration 6). The studios/vendors
+    # tables deny anon/non-member reads under RLS; the RPC returns ONLY name+type, never ids.
+    r = await db_client.post(
+        _url("/rest/v1/rpc/rpc_resolve_invite"),
+        headers=_anon_headers(),
+        json={"p_code": code},
     )
-    if studio_r.is_success and studio_r.json():
-        row = studio_r.json()[0]
-        return {"org_name": row["name"], "org_type": "studio"}
-
-    vendor_r = await db_client.get(
-        _url("/rest/v1/vendors"),
-        params={"invite_code": f"eq.{code}", "select": "id,name"},
-        headers=_headers(),
-    )
-    if vendor_r.is_success and vendor_r.json():
-        row = vendor_r.json()[0]
-        return {"org_name": row["name"], "org_type": "vendor"}
+    rows = r.json() if r.is_success else []
+    if rows:
+        return {"org_name": rows[0]["org_name"], "org_type": rows[0]["org_type"]}
 
     raise HTTPException(status_code=404, detail="Invite code not found")
 
@@ -282,26 +291,37 @@ async def accept_join_request(request_id: str, user: CurrentUser = Depends(get_c
         raise HTTPException(status_code=409, detail="Request is no longer pending")
 
     new_user_id = req["user_id"]
-    now = datetime.now(timezone.utc).isoformat()
 
-    # Insert membership row at 'user' role — explicit promotion is a separate action.
-    member_payload = {"user_id": new_user_id, org_fk: org_id, "member_role": "user"}
-    r2 = await db_client.post(
-        _url(f"/rest/v1/{member_table}"),
-        headers=_headers({"Prefer": "return=minimal"}),
-        json=member_payload,
-    )
-    if not r2.is_success:
-        log.error("Member insert failed accepting request %s: %s", request_id, r2.text[:300])
-        raise HTTPException(status_code=500, detail="Failed to create membership")
+    if _use_user_identity():
+        # Flag-on: membership insert + request-status update are user-unwritable under RLS;
+        # rpc_decide_join_request (is_org_admin authz) does both atomically in one txn.
+        rr = await db_client.post(
+            _url("/rest/v1/rpc/rpc_decide_join_request"),
+            headers=_headers(),
+            json={"p_org_type": org_type, "p_request_id": request_id, "p_decision": "approve"},
+        )
+        if not rr.is_success:
+            raise HTTPException(status_code=400, detail=f"Failed to accept request: {rr.text}")
+    else:
+        now = datetime.now(timezone.utc).isoformat()
+        # Insert membership row at 'user' role — explicit promotion is a separate action.
+        member_payload = {"user_id": new_user_id, org_fk: org_id, "member_role": "user"}
+        r2 = await db_client.post(
+            _url(f"/rest/v1/{member_table}"),
+            headers=_headers({"Prefer": "return=minimal"}),
+            json=member_payload,
+        )
+        if not r2.is_success:
+            log.error("Member insert failed accepting request %s: %s", request_id, r2.text[:300])
+            raise HTTPException(status_code=500, detail="Failed to create membership")
 
-    # Mark request accepted.
-    await db_client.patch(
-        _url(f"/rest/v1/{req_table}"),
-        params={"id": f"eq.{request_id}"},
-        headers=_headers({"Prefer": "return=minimal"}),
-        json={"status": "accepted", "resolved_at": now, "resolved_by": user.id},
-    )
+        # Mark request accepted.
+        await db_client.patch(
+            _url(f"/rest/v1/{req_table}"),
+            params={"id": f"eq.{request_id}"},
+            headers=_headers({"Prefer": "return=minimal"}),
+            json={"status": "accepted", "resolved_at": now, "resolved_by": user.id},
+        )
 
     # Invalidate cache so the new member sees access on their next /api/user/me call.
     invalidate_member_cache(new_user_id)
@@ -329,13 +349,24 @@ async def decline_join_request(request_id: str, user: CurrentUser = Depends(get_
         raise HTTPException(status_code=409, detail="Request is no longer pending")
 
     declined_user_id = rows[0]["user_id"]
-    now = datetime.now(timezone.utc).isoformat()
-    await db_client.patch(
-        _url(f"/rest/v1/{req_table}"),
-        params={"id": f"eq.{request_id}"},
-        headers=_headers({"Prefer": "return=minimal"}),
-        json={"status": "declined", "resolved_at": now, "resolved_by": user.id},
-    )
+    if _use_user_identity():
+        # Flag-on: request-status update is user-unwritable under RLS; rpc_decide_join_request (reject)
+        # sets status='declined' (the CHECK constraint's allowed value) under is_org_admin authz.
+        rr = await db_client.post(
+            _url("/rest/v1/rpc/rpc_decide_join_request"),
+            headers=_headers(),
+            json={"p_org_type": org_type, "p_request_id": request_id, "p_decision": "reject"},
+        )
+        if not rr.is_success:
+            raise HTTPException(status_code=400, detail=f"Failed to decline request: {rr.text}")
+    else:
+        now = datetime.now(timezone.utc).isoformat()
+        await db_client.patch(
+            _url(f"/rest/v1/{req_table}"),
+            params={"id": f"eq.{request_id}"},
+            headers=_headers({"Prefer": "return=minimal"}),
+            json={"status": "declined", "resolved_at": now, "resolved_by": user.id},
+        )
     _audit(org_type, org_id, user.id, "member_declined", target_user_id=declined_user_id)
     return {"ok": True}
 
@@ -349,18 +380,29 @@ async def regenerate_invite_code(user: CurrentUser = Depends(get_current_user)):
     org_table = "studios" if org_type == "studio" else "vendors"
 
     new_code = _generate_invite_code()
-    r = await db_client.patch(
-        _url(f"/rest/v1/{org_table}"),
-        params={"id": f"eq.{org_id}"},
-        headers=_headers({"Prefer": "return=representation"}),
-        json={"invite_code": new_code},
-    )
-    if not r.is_success:
-        log.error("Invite code regeneration failed for org %s: %s", org_id, r.text[:300])
-        raise HTTPException(status_code=500, detail="Failed to regenerate invite code")
+    if _use_user_identity():
+        # Flag-on: studios/vendors are write-RPC-only (pattern A); rpc_regenerate_invite_code (is_org_admin
+        # authz) updates ONLY invite_code with the caller-generated code.
+        r = await db_client.post(
+            _url("/rest/v1/rpc/rpc_regenerate_invite_code"),
+            headers=_headers(),
+            json={"p_org_type": org_type, "p_org_id": org_id, "p_code": new_code},
+        )
+        if not r.is_success:
+            raise HTTPException(status_code=400, detail=f"Failed to regenerate invite code: {r.text}")
+    else:
+        r = await db_client.patch(
+            _url(f"/rest/v1/{org_table}"),
+            params={"id": f"eq.{org_id}"},
+            headers=_headers({"Prefer": "return=representation"}),
+            json={"invite_code": new_code},
+        )
+        if not r.is_success:
+            log.error("Invite code regeneration failed for org %s: %s", org_id, r.text[:300])
+            raise HTTPException(status_code=500, detail="Failed to regenerate invite code")
 
     _audit(org_type, org_id, user.id, "invite_code_regenerated")
-    return {"invite_code": r.json()[0]["invite_code"]}
+    return {"invite_code": new_code}
 
 
 # ── Member role management ────────────────────────────────────────────────────
@@ -413,16 +455,25 @@ async def update_member_role(
             raise HTTPException(status_code=422, detail="You are already the owner")
 
         # Atomic transfer via DB function.
-        r2 = await db_client.post(
-            _url("/rest/v1/rpc/transfer_org_ownership"),
-            headers=_headers(),
-            json={
-                "p_org_type":          org_type,
-                "p_org_id":            org_id,
-                "p_current_owner_id":  user.id,
-                "p_new_owner_id":      target_user_id,
-            },
-        )
+        if _use_user_identity():
+            # Flag-on: rpc_transfer_ownership derives the current owner from auth.uid() (no spoofable
+            # arg) and swaps roles atomically; membership writes are otherwise RLS-denied to users.
+            r2 = await db_client.post(
+                _url("/rest/v1/rpc/rpc_transfer_ownership"),
+                headers=_headers(),
+                json={"p_org_type": org_type, "p_org_id": org_id, "p_new_owner": target_user_id},
+            )
+        else:
+            r2 = await db_client.post(
+                _url("/rest/v1/rpc/transfer_org_ownership"),
+                headers=_headers(),
+                json={
+                    "p_org_type":          org_type,
+                    "p_org_id":            org_id,
+                    "p_current_owner_id":  user.id,
+                    "p_new_owner_id":      target_user_id,
+                },
+            )
         if not r2.is_success:
             log.error("Ownership transfer failed: %s", r2.text[:300])
             raise HTTPException(status_code=500, detail="Ownership transfer failed")
@@ -436,14 +487,26 @@ async def update_member_role(
     if current_role == "admin" and user.member_role != "owner":
         raise HTTPException(status_code=403, detail="Only the owner can change admin roles")
 
-    r3 = await db_client.patch(
-        _url(f"/rest/v1/{member_table}"),
-        params={"user_id": f"eq.{target_user_id}", org_fk: f"eq.{org_id}"},
-        headers=_headers({"Prefer": "return=minimal"}),
-        json={"member_role": body.role},
-    )
-    if not r3.is_success:
-        raise HTTPException(status_code=500, detail="Failed to update member role")
+    if _use_user_identity():
+        # Flag-on: membership updates are user-unwritable under RLS; rpc_update_member_role (is_org_admin
+        # authz; refuses 'owner') performs the change.
+        r3 = await db_client.post(
+            _url("/rest/v1/rpc/rpc_update_member_role"),
+            headers=_headers(),
+            json={"p_org_type": org_type, "p_org_id": org_id,
+                  "p_target_user": target_user_id, "p_role": body.role},
+        )
+        if not r3.is_success:
+            raise HTTPException(status_code=400, detail=f"Failed to update member role: {r3.text}")
+    else:
+        r3 = await db_client.patch(
+            _url(f"/rest/v1/{member_table}"),
+            params={"user_id": f"eq.{target_user_id}", org_fk: f"eq.{org_id}"},
+            headers=_headers({"Prefer": "return=minimal"}),
+            json={"member_role": body.role},
+        )
+        if not r3.is_success:
+            raise HTTPException(status_code=500, detail="Failed to update member role")
 
     invalidate_member_cache(target_user_id)
     _audit(org_type, org_id, user.id, "role_changed",
@@ -481,13 +544,24 @@ async def remove_member(
         raise HTTPException(status_code=403, detail="Only the owner can remove admins")
 
     removed_role = rows[0]["member_role"]
-    r2 = await db_client.delete(
-        _url(f"/rest/v1/{member_table}"),
-        params={"user_id": f"eq.{target_user_id}", org_fk: f"eq.{org_id}"},
-        headers=_headers(),
-    )
-    if not r2.is_success:
-        raise HTTPException(status_code=500, detail="Failed to remove member")
+    if _use_user_identity():
+        # Flag-on: membership deletes are user-unwritable under RLS; rpc_remove_member (is_org_admin
+        # authz; refuses to remove an owner) performs the delete.
+        r2 = await db_client.post(
+            _url("/rest/v1/rpc/rpc_remove_member"),
+            headers=_headers(),
+            json={"p_org_type": org_type, "p_org_id": org_id, "p_target_user": target_user_id},
+        )
+        if not r2.is_success:
+            raise HTTPException(status_code=400, detail=f"Failed to remove member: {r2.text}")
+    else:
+        r2 = await db_client.delete(
+            _url(f"/rest/v1/{member_table}"),
+            params={"user_id": f"eq.{target_user_id}", org_fk: f"eq.{org_id}"},
+            headers=_headers(),
+        )
+        if not r2.is_success:
+            raise HTTPException(status_code=500, detail="Failed to remove member")
 
     invalidate_member_cache(target_user_id)
     _audit(org_type, org_id, user.id, "member_removed",
