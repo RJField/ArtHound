@@ -478,9 +478,15 @@ async def dispatch_bulk(body: BulkDispatchBody, user: CurrentUser = Depends(requ
         await _log(dispatch_id, "dispatched", actor_studio_id=studio_id)
         dispatch_ids.append(dispatch_id)
 
+    # Best-effort: the dispatches above already exist, so a copy-enqueue failure must NOT 500 the
+    # request — a 500 makes the studio retry and create duplicate dispatches. Log and move on; the
+    # copy worker can reconcile.
     from lib.attachments import enqueue_attachment_copy
     for did in dispatch_ids:
-        await enqueue_attachment_copy(did)
+        try:
+            await enqueue_attachment_copy(did)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("attachment copy enqueue failed for dispatch %s (dispatch still created): %s", did, exc)
 
     return {"dispatched": len(dispatch_ids), "dispatch_ids": dispatch_ids}
 
