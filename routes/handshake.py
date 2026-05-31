@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 from lib.auth import CurrentUser, get_current_user, require_studio, require_vendor
 from lib.db import db_client, _url, _headers, _use_user_identity
+from lib.org_directory import resolve_counterparty_names
 
 log = logging.getLogger(__name__)
 
@@ -34,6 +35,17 @@ async def search_vendors(q: str, _: CurrentUser = Depends(require_studio)):
     q = q.strip().lstrip('@')
     if not q or len(q) < 2:
         raise HTTPException(status_code=400, detail="Query must be at least 2 characters")
+    if _use_user_identity():
+        # Flag-on: vendors are RLS-scoped to their own org (v_sel), so a studio can't read the global
+        # vendor table directly. rpc_search_vendors (DEFINER) exposes id/name/handle by handle prefix —
+        # vendor handles are discoverable by design (the invite model). No invite_code.
+        r = await db_client.post(
+            _url("/rest/v1/rpc/rpc_search_vendors"),
+            json={"p_query": q},
+            headers=_headers(),
+        )
+        return r.json() if r.is_success else []
+    # Flag-off (legacy service-role): direct handle search.
     r = await db_client.get(
         _url("/rest/v1/vendors"),
         params={
@@ -59,14 +71,8 @@ async def send_invite(body: InviteBody, user: CurrentUser = Depends(require_stud
     if body.review_collaboration_mode not in ("none", "isolated", "collaborative"):
         raise HTTPException(status_code=400, detail="Invalid review_collaboration_mode")
 
-    # Confirm vendor exists
-    r_vendor = await db_client.get(
-        _url("/rest/v1/vendors"),
-        params={"id": f"eq.{body.vendor_id}", "select": "id,name,handle"},
-        headers=_headers(),
-    )
-    if not r_vendor.json():
-        raise HTTPException(status_code=404, detail="Vendor not found")
+    # Vendor existence is enforced by the studio_vendor_invites.vendor_id FK on insert below (flag-on a
+    # studio can't read the global vendors table to pre-check). A bad id surfaces as a 23503 → 404.
 
     # Block if already an active link
     r_link = await db_client.get(
@@ -111,6 +117,12 @@ async def send_invite(body: InviteBody, user: CurrentUser = Depends(require_stud
             "created_by":                 user.id,
         },
     )
+    if not r.is_success and "23503" in r.text:
+        # FK violation (SQLSTATE 23503) = the vendor_id doesn't exist.
+        raise HTTPException(status_code=404, detail="Vendor not found")
+    if not r.is_success or not r.json():
+        log.error("Invite create failed for studio %s vendor %s: %s", user.studio_id, body.vendor_id, r.text[:300])
+        raise HTTPException(status_code=500, detail="Failed to create invite")
     return r.json()[0]
 
 
@@ -197,12 +209,7 @@ async def list_sent_invites(user: CurrentUser = Depends(require_studio)):
         return []
 
     vendor_ids = list({inv["vendor_id"] for inv in invites})
-    r_vendors = await db_client.get(
-        _url("/rest/v1/vendors"),
-        params={"id": f"in.({','.join(vendor_ids)})", "select": "id,name,handle"},
-        headers=_headers(),
-    )
-    vendor_map = {v["id"]: v for v in r_vendors.json()}
+    vendor_map = await resolve_counterparty_names("vendor", vendor_ids)
     for inv in invites:
         v = vendor_map.get(inv["vendor_id"], {})
         inv["vendor_name"]   = v.get("name", "Unknown Vendor")
@@ -228,16 +235,11 @@ async def list_incoming_invites(user: CurrentUser = Depends(require_vendor)):
     if not invites:
         return []
 
-    # Resolve studio names
+    # Resolve studio names (link/invite-authorized directory; RLS-safe, name only)
     studio_ids = list({inv["studio_id"] for inv in invites})
-    r_studios = await db_client.get(
-        _url("/rest/v1/studios"),
-        params={"id": f"in.({','.join(studio_ids)})", "select": "id,name"},
-        headers=_headers(),
-    )
-    studio_map = {s["id"]: s["name"] for s in r_studios.json()}
+    studio_map = await resolve_counterparty_names("studio", studio_ids)
     for inv in invites:
-        inv["studio_name"] = studio_map.get(inv["studio_id"], "Unknown Studio")
+        inv["studio_name"] = studio_map.get(inv["studio_id"], {}).get("name", "Unknown Studio")
     return invites
 
 
@@ -264,22 +266,27 @@ async def preview_invite(invite_id: str, user: CurrentUser = Depends(require_ven
 
     studio_id = invite["studio_id"]
 
-    # Fetch studio name and their current payload templates in parallel
-    r_studio, r_templates = await asyncio.gather(
-        db_client.get(
-            _url("/rest/v1/studios"),
-            params={"id": f"eq.{studio_id}", "select": "id,name"},
+    # Studio name via the link/invite directory (RLS-safe; name only, never invite_code).
+    studio_map = await resolve_counterparty_names("studio", [studio_id])
+    studio_name = studio_map.get(studio_id, {}).get("name", "Unknown Studio")
+
+    # The inviting studio's payload templates. Flag-on a vendor can't read payload_templates (pt_all is
+    # studio-only) → rpc_invite_studio_templates, authorized by this pending invite to the caller's
+    # vendor. Flag-off: legacy direct read.
+    if _use_user_identity():
+        r_templates = await db_client.post(
+            _url("/rest/v1/rpc/rpc_invite_studio_templates"),
+            json={"p_invite_id": invite_id},
             headers=_headers(),
-        ),
-        db_client.get(
+        )
+        templates = r_templates.json() if r_templates.is_success else []
+    else:
+        r_templates = await db_client.get(
             _url("/rest/v1/payload_templates"),
             params={"studio_id": f"eq.{studio_id}", "select": "id,name,field_schema", "order": "name.asc"},
             headers=_headers(),
-        ),
-    )
-
-    studio_rows = r_studio.json()
-    studio_name = studio_rows[0]["name"] if studio_rows else "Unknown Studio"
+        )
+        templates = r_templates.json()
 
     return {
         "invite_id":                  invite_id,
@@ -287,7 +294,7 @@ async def preview_invite(invite_id: str, user: CurrentUser = Depends(require_ven
         "studio_name":                studio_name,
         "review_collaboration_mode":  invite["review_collaboration_mode"],
         "expires_at":                 invite["expires_at"],
-        "payload_templates":          r_templates.json(),
+        "payload_templates":          templates,
     }
 
 
@@ -404,12 +411,7 @@ async def list_links(user: CurrentUser = Depends(get_current_user)):
         if not links:
             return []
         vendor_ids = list({lnk["vendor_id"] for lnk in links})
-        r_vendors = await db_client.get(
-            _url("/rest/v1/vendors"),
-            params={"id": f"in.({','.join(vendor_ids)})", "select": "id,name,handle"},
-            headers=_headers(),
-        )
-        vendor_map = {v["id"]: v for v in r_vendors.json()}
+        vendor_map = await resolve_counterparty_names("vendor", vendor_ids)
         for lnk in links:
             lnk["vendor"] = vendor_map.get(lnk["vendor_id"], {})
         return links
@@ -426,12 +428,7 @@ async def list_links(user: CurrentUser = Depends(get_current_user)):
         if not links:
             return []
         studio_ids = list({lnk["studio_id"] for lnk in links})
-        r_studios = await db_client.get(
-            _url("/rest/v1/studios"),
-            params={"id": f"in.({','.join(studio_ids)})", "select": "id,name"},
-            headers=_headers(),
-        )
-        studio_map = {s["id"]: s for s in r_studios.json()}
+        studio_map = await resolve_counterparty_names("studio", studio_ids)
         for lnk in links:
             lnk["studio"] = studio_map.get(lnk["studio_id"], {})
         return links
