@@ -8,7 +8,7 @@ from jwt import PyJWKClient
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
-from lib.db import db_client, _url, _headers, _user_headers
+from lib.db import db_client, _url, _headers, _user_headers, set_request_token, _use_user_identity
 
 bearer_scheme = HTTPBearer()
 bearer_scheme_optional = HTTPBearer(auto_error=False)
@@ -112,6 +112,32 @@ class PendingUser:
     status: str = "pending"
 
 
+@dataclass
+class OnboardingUser:
+    """Returned by get_current_user_or_pending when the JWT is valid and carries a role, but the user
+    has no membership AND no pending join request — they must still create or join an org.
+
+    Under Option C (RLS migration §0c) this is the normal state for a brand-new account right after
+    email confirmation + first login: signup created only the auth user, deferring org creation to a
+    post-login onboarding step. (Pre-cutover it also catches genuinely stranded accounts, who can now
+    self-serve instead of seeing a dead-end error.) The frontend routes these users to /onboarding."""
+    id: str
+    email: str
+    role: str
+    status: str = "onboarding"
+
+
+@dataclass
+class AuthIdentity:
+    """A JWT-verified identity WITHOUT a membership requirement — for the onboarding endpoints, which
+    run before the user belongs to any org. The token is bound for the request (so flag-on the bootstrap
+    RPCs run AS this user); membership is the caller's to create."""
+    id: str
+    email: str
+    role: str
+    token: str = field(default="")
+
+
 async def _resolve_membership(user_id: str, role: str) -> tuple[Optional[str], Optional[str], Optional[str]]:
     """
     Look up the user's membership row and return (studio_id, vendor_id, member_role).
@@ -125,7 +151,21 @@ async def _resolve_membership(user_id: str, role: str) -> tuple[Optional[str], O
     vendor_id = None
     member_role = None
 
-    if role == "studio":
+    if _use_user_identity():
+        # Post-cutover: resolve via the SECURITY DEFINER RPC (RLS migration §6 #9). The DB — not the
+        # app_metadata.role claim — is the source of truth for which org the user belongs to. The
+        # caller's token is already bound (set_request_token in get_current_user), so the RPC runs as
+        # this user and auth.uid() inside it is their id. `role` is ignored on this path.
+        r = await db_client.post(
+            _url("/rest/v1/rpc/resolve_my_membership"),
+            headers=_headers(),
+        )
+        rows = r.json() if r.is_success else []
+        if rows:
+            studio_id = rows[0].get("studio_id")
+            vendor_id = rows[0].get("vendor_id")
+            member_role = rows[0].get("member_role")
+    elif role == "studio":
         r = await db_client.get(
             _url("/rest/v1/studio_members"),
             params={"select": "studio_id,member_role", "user_id": f"eq.{user_id}"},
@@ -158,6 +198,11 @@ async def get_current_user(
     Used by all protected routes. get_current_user_or_pending is the only exception.
     """
     token = credentials.credentials
+    # Bind the caller's identity for the whole request (RLS migration §4). Dormant pre-cutover
+    # (_headers ignores it while USE_USER_IDENTITY is off); post-cutover every DB call in this
+    # request — including the membership resolution below — runs AS this user. Set before the JWT
+    # is decoded so even the bootstrap read is identity-bound.
+    set_request_token(token)
     payload = _decode_jwt(token)
 
     app_metadata = payload.get("app_metadata") or {}
@@ -191,13 +236,15 @@ async def get_current_user(
 
 async def get_current_user_or_pending(
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
-) -> Union["CurrentUser", "PendingUser"]:
+) -> Union["CurrentUser", "PendingUser", "OnboardingUser"]:
     """
     Lenient dependency used ONLY by GET /api/user/me.
-    Returns CurrentUser for active members, PendingUser for users awaiting approval.
-    Raises 403 for authenticated users with no membership and no pending request.
+    Returns CurrentUser for active members, PendingUser for users awaiting approval, and
+    OnboardingUser for an authenticated user with no membership and no pending request
+    (a brand-new Option C account, or a stranded one — both onboard via create/join).
     """
     token = credentials.credentials
+    set_request_token(token)  # bind identity for the request (RLS migration §4; dormant pre-cutover)
     payload = _decode_jwt(token)
 
     app_metadata = payload.get("app_metadata") or {}
@@ -225,6 +272,28 @@ async def get_current_user_or_pending(
         )
 
     # No membership — check for a pending join request.
+    if _use_user_identity():
+        # Flag-on: a non-member is denied a direct studios/vendors read (st_sel/v_sel), so resolve the
+        # pending request + its org name via the auth.uid()-scoped DEFINER RPC (migration 6). The
+        # caller's token is already bound (set_request_token above), so the RPC runs as this user.
+        pr = await db_client.post(
+            _url("/rest/v1/rpc/rpc_my_pending_org"),
+            headers=_headers(),
+            json={},
+        )
+        rows = pr.json() if pr.is_success else []
+        if not rows:
+            # No membership and no pending request → onboarding (create/join an org), not an error.
+            return OnboardingUser(id=user_id, email=email, role=role)
+        return PendingUser(
+            id=user_id,
+            email=email,
+            role=role,
+            org_name=rows[0].get("org_name") or "",
+            org_type=role,
+        )
+
+    # Flag-off (service-role): direct reads as today.
     req_table = "studio_join_requests" if role == "studio" else "vendor_join_requests"
     org_fk    = "studio_id"             if role == "studio" else "vendor_id"
     org_table = "studios"               if role == "studio" else "vendors"
@@ -241,10 +310,8 @@ async def get_current_user_or_pending(
     )
     rows = r.json() if r.is_success else []
     if not rows:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="No organisation linked to this account",
-        )
+        # No membership and no pending request → onboarding (create/join an org), not an error.
+        return OnboardingUser(id=user_id, email=email, role=role)
 
     org_id = rows[0][org_fk]
     org_r = await db_client.get(
@@ -260,6 +327,35 @@ async def get_current_user_or_pending(
         role=role,
         org_name=org_name,
         org_type=role,
+    )
+
+
+async def get_onboarding_identity(
+    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+) -> "AuthIdentity":
+    """
+    Dependency for the onboarding endpoints (create/join an org). Verifies the JWT and binds the
+    caller's token for the request — but does NOT require (or look up) membership, since the whole
+    point of onboarding is that the user has none yet. The org-creation RPCs / inserts enforce
+    "not already a member"; this dependency only establishes authenticated identity.
+    """
+    token = credentials.credentials
+    set_request_token(token)  # bind identity so flag-on the bootstrap RPCs run AS this user
+    payload = _decode_jwt(token)
+
+    app_metadata = payload.get("app_metadata") or {}
+    role = app_metadata.get("role", "")
+    if role not in ("studio", "vendor"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No valid role assigned to this account",
+        )
+
+    return AuthIdentity(
+        id=payload["sub"],
+        email=payload.get("email", ""),
+        role=role,
+        token=token,
     )
 
 

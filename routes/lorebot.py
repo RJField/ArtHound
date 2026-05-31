@@ -128,6 +128,10 @@ async def _fetch_vendor_dispatch(dispatch_id: str, vendor_id: str) -> dict:
 
 
 async def _read_from_storage(content_hash: str, client: httpx.AsyncClient) -> bytes:
+    # Service-role byte fetch (§0c carve-out). §7 GATE CONTRACT: callers MUST have resolved the
+    # content_hash from a user-context, RLS-gated read first (here, _fetch_vendor_dispatch → pd_sel).
+    # Blobs are content-addressed, so the only access control is "can the caller discover the hash" —
+    # which the dispatch RLS gate enforces. Never call this with a hash from an ungated source.
     url = _storage_api_url(f"/object/{_BUCKET}/{_storage_object_path(content_hash)}")
     r = await client.get(url, headers=_storage_headers())
     r.raise_for_status()

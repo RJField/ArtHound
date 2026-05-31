@@ -8,8 +8,8 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from lib.auth import CurrentUser, PendingUser, get_current_user, get_current_user_or_pending
-from lib.db import db_client, _url, _headers
+from lib.auth import CurrentUser, PendingUser, OnboardingUser, get_current_user, get_current_user_or_pending
+from lib.db import db_client, _url, _headers, _admin_headers
 
 _PLATFORM_ADMIN_EMAILS: set[str] = {
     e.strip().lower()
@@ -38,6 +38,12 @@ async def get_me(user=Depends(get_current_user_or_pending)):
     returns {status: "pending", org_name, org_type} instead of the full profile.
     AuthContext uses this to route pending users to the approval-wait screen.
     """
+    if isinstance(user, OnboardingUser):
+        # Authenticated, valid role, but no org yet → the frontend shows the onboarding flow.
+        # The intent (create/join + stashed org details) lives in the JWT user_metadata, which the
+        # frontend reads from the session directly — no need to echo it here.
+        return {"status": "onboarding", "role": user.role}
+
     if isinstance(user, PendingUser):
         return {
             "status":   "pending",
@@ -285,7 +291,7 @@ async def delete_account(user: CurrentUser = Depends(get_current_user)):
     # ── Auth user (must be last — invalidates all tokens) ────────────────────
     r = await db_client.delete(
         _url(f"/auth/v1/admin/users/{user.id}"),
-        headers=_headers(),
+        headers=_admin_headers(),
     )
     if not r.is_success:
         log.error("Failed to delete auth user %s: %s %s", user.id, r.status_code, r.text[:200])

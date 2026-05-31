@@ -23,7 +23,7 @@ from pydantic import BaseModel
 
 from lib.auth import CurrentUser, get_current_user
 from lib.crypto import decrypt_credentials, encrypt_credentials
-from lib.db import db_client, _url, _headers
+from lib.db import db_client, _url, _headers, _use_user_identity
 from lib.sync.connectors.airtable import AirtableConnector, build_filter_formula
 from lib.sync.init_runner import REQUIRED_SLOTS, run_init_sync
 from lib.sync.normalizer import classify_field, default_mappings_from_schema
@@ -149,17 +149,29 @@ async def save_credentials(
         raise HTTPException(status_code=422, detail=f"Unsupported source_type: {body.source_type}")
 
     encrypted = encrypt_credentials(body.credentials)
-    r = await db_client.post(
-        _url("/rest/v1/source_credentials?on_conflict=owner_type,owner_id,source_type"),
-        headers=_headers({"Prefer": "resolution=merge-duplicates,return=minimal"}),
-        json={
-            "owner_type":  owner_type,
-            "owner_id":    owner_id,
-            "source_type": body.source_type,
-            "credentials": encrypted,
-        },
-    )
-    r.raise_for_status()
+    if _use_user_identity():
+        # Flag-on: source_credentials is system-managed (Pattern F); the user-facing save goes through
+        # rpc_upsert_credential (is_my_org authz → own org only).
+        r = await db_client.post(
+            _url("/rest/v1/rpc/rpc_upsert_credential"),
+            headers=_headers(),
+            json={"p_owner_type": owner_type, "p_owner_id": owner_id,
+                  "p_source_type": body.source_type, "p_credentials": encrypted},
+        )
+        if not r.is_success:
+            raise HTTPException(status_code=400, detail=f"Failed to save credentials: {r.text}")
+    else:
+        r = await db_client.post(
+            _url("/rest/v1/source_credentials?on_conflict=owner_type,owner_id,source_type"),
+            headers=_headers({"Prefer": "resolution=merge-duplicates,return=minimal"}),
+            json={
+                "owner_type":  owner_type,
+                "owner_id":    owner_id,
+                "source_type": body.source_type,
+                "credentials": encrypted,
+            },
+        )
+        r.raise_for_status()
 
     # Invalidate schema cache so next discover reflects new credentials
     await db_client.delete(

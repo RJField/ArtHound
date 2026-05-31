@@ -15,6 +15,7 @@ import VendorConnections from './pages/VendorConnections'
 import StudioConnections from './pages/StudioConnections'
 import AuthCallback from './pages/AuthCallback'
 import PendingApproval from './pages/PendingApproval'
+import Onboarding from './pages/Onboarding'
 import OrgHub from './pages/OrgHub'
 import AdminPanel from './pages/AdminPanel'
 import ScenarioPlanner from './pages/ScenarioPlanner'
@@ -41,13 +42,16 @@ function AuthGuard() {
 }
 
 // Redirect users who haven't completed source init to the wizard.
-// Also intercepts pending users (awaiting org approval) and sends them to /pending.
+// Also intercepts pending users (awaiting org approval → /pending) and member-less users who still
+// need to create or join an org (Option C → /onboarding).
 function InitGuard() {
-  const { session, loading, profile, pendingOrg, profileLoading, profileError, initialized, refreshProfile } = useAuth()
+  const { session, loading, profile, pendingOrg, needsOnboarding, profileLoading, profileError, initialized, refreshProfile } = useAuth()
 
   if (loading || !session) return null
 
   if (pendingOrg) return <Navigate to="/pending" replace />
+
+  if (needsOnboarding) return <Navigate to="/onboarding" replace />
 
   if (!profile) {
     return (
@@ -101,6 +105,8 @@ export default function App() {
             <Route element={<AuthGuard />}>
               {/* Pending approval — shown to users awaiting org admin acceptance */}
               <Route path="/pending" element={<PendingApproval />} />
+              {/* Onboarding — shown to authenticated users with no org yet (create or join) */}
+              <Route path="/onboarding" element={<Onboarding />} />
               {/* Init wizard — shown to studio users before first sync */}
               <Route path="/init" element={<ProjectInit />} />
               {/* Platform admin settings — not gated behind InitGuard */}

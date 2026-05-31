@@ -422,12 +422,21 @@ async def run_sync(
     log_id: if provided, reuses an existing sync_log entry (created by the
     caller before spawning this as a background task) rather than creating a
     new one. Allows callers to return a trackable log_id immediately.
+
+    Identity (RLS migration §4): the actual sync work ALWAYS runs as the SYSTEM identity, regardless of
+    trigger. It writes the system-write-only replicated_* / sync_* / canonical tables (§3), so a
+    user-context sync would be RLS-denied on those writes. The *route* authorizes WHETHER a caller may
+    trigger a sync (and pins owner to the caller's own org); the WORK runs as system. system_identity()
+    is opened HERE — not relying on create_task context inheritance — so a long full-sync re-mints a
+    fresh token at entry and can't outlive it (plan §5/§8e); nesting (poll loop already in system
+    context) is harmless. Dormant pre-cutover: _headers ignores the bound token until USE_USER_IDENTITY=1.
     """
+    from lib.system_auth import system_identity
     lock = _get_sync_lock(owner_type, owner_id)
     if lock.locked():
         log.info("Sync already in progress for %s/%s — skipping duplicate trigger", owner_type, owner_id)
         return {"status": "skipped", "reason": "sync already in progress"}
-    async with lock:
+    async with lock, system_identity():
         return await _run_sync_locked(owner_type, owner_id, source_type, trigger, full, log_id)
 
 

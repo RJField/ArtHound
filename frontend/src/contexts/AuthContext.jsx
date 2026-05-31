@@ -8,6 +8,7 @@ export function AuthProvider({ children }) {
   const [session, setSession]       = useState(undefined) // undefined = loading
   const [profile, setProfile]       = useState(null)      // from /api/user/me (full profile)
   const [pendingOrg, setPendingOrg] = useState(null)      // {org_name, org_type} when awaiting approval
+  const [needsOnboarding, setNeedsOnboarding] = useState(false) // authenticated but no org yet (Option C)
   const [profileLoading, setProfileLoading] = useState(false)
   const [profileError, setProfileError]     = useState(false) // true after all retries exhausted
 
@@ -36,6 +37,7 @@ export function AuthProvider({ children }) {
     if (!session) {
       setProfile(null)
       setPendingOrg(null)
+      setNeedsOnboarding(false)
       setProfileLoading(false)
       setProfileError(false)
       return
@@ -49,9 +51,15 @@ export function AuthProvider({ children }) {
       if (data?.status === 'pending') {
         setPendingOrg({ org_name: data.org_name, org_type: data.org_type })
         setProfile(null)
+        setNeedsOnboarding(false)
+      } else if (data?.status === 'onboarding') {
+        setNeedsOnboarding(true)
+        setProfile(null)
+        setPendingOrg(null)
       } else {
         setProfile(data)
         setPendingOrg(null)
+        setNeedsOnboarding(false)
       }
       setProfileError(false)
       setProfileLoading(false)
@@ -93,9 +101,15 @@ export function AuthProvider({ children }) {
       if (data?.status === 'pending') {
         setPendingOrg({ org_name: data.org_name, org_type: data.org_type })
         setProfile(null)
+        setNeedsOnboarding(false)
+      } else if (data?.status === 'onboarding') {
+        setNeedsOnboarding(true)
+        setProfile(null)
+        setPendingOrg(null)
       } else {
         setProfile(data)
         setPendingOrg(null)
+        setNeedsOnboarding(false)
       }
     } catch {
       setProfileError(true)
@@ -110,10 +124,14 @@ export function AuthProvider({ children }) {
   const isPlatformAdmin = profile?.is_platform_admin === true
   const loading         = session === undefined
   const initialized     = profile?.org?.initialized_at != null
+  // Onboarding intent stashed at signup (Option C). Lives in the JWT user_metadata, so it's read
+  // straight from the session — no backend round-trip. Null for legacy/stranded accounts.
+  const onboardingIntent = session?.user?.user_metadata?.ah_onboarding ?? null
 
   return (
     <AuthContext.Provider value={{
-      session, profile, pendingOrg, profileLoading, profileError,
+      session, profile, pendingOrg, needsOnboarding, onboardingIntent,
+      profileLoading, profileError,
       role, isAdmin, isPlatformAdmin, loading, initialized,
       signOut, refreshProfile,
     }}>
