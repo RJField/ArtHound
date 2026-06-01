@@ -7,7 +7,7 @@ per studio relationship, and share a **frozen, granularity-controlled snapshot**
 with a linked studio. It is the reverse direction of asset payload dispatch: studio→vendor payloads
 send asset data; vendor→studio estimate shares send a rate card.
 
-v1 is **visible-only** on the studio side — the studio can read the snapshot, but it is not yet wired
+v1 is **visible-only** on the studio side, the studio can read the snapshot, but it is not yet wired
 into scenario planning. Full design and decision history live in
 [docs/plans/vendor-estimate-share.md](plans/vendor-estimate-share.md).
 
@@ -19,20 +19,20 @@ into scenario planning. Full design and decision history live in
 originally studio-only. They are now owned by **either** a studio or a vendor via a dual nullable
 foreign key (`studio_id` / `vendor_id`, exactly one set) plus a generated `owner_key`
 (`coalesce(studio_id, vendor_id)`) that is the single uniqueness arbiter. Studio behaviour is
-byte-for-byte unchanged — studio rows keep `studio_id`; vendor rows are new. See
+byte-for-byte unchanged, studio rows keep `studio_id`; vendor rows are new. See
 [Estimation Engine](estimation.md) for the matrix mechanics.
 
 **Authoring prerequisite.** A vendor builds its base matrix through the same OrgHub **Setup** wizard a
-studio uses. The wizard's variable/value discovery (`routes/fields.py` — `/fields`, `/field-values`,
+studio uses. The wizard's variable/value discovery (`routes/fields.py`, `/fields`, `/field-values`,
 `/asset-combinations`) is owner-aware: it reads the **org's own** `source_field_mappings` /
 `replicated_assets`. So a vendor's estimation axes come from the vendor's *own* synced assets, not the
-studio's — a vendor must have a connected, synced source for the wizard to offer any variables. (There
+studio's, a vendor must have a connected, synced source for the wizard to offer any variables. (There
 is deliberately no manual-variable entry path; the eventual studio-side reconciliation of vendor vs.
 studio vocabulary is the deferred Phase 4 work.)
 
 **Base matrix + per-link overrides.** A vendor keeps one **base** matrix (`link_id IS NULL`) and may
 override individual cells for a specific studio link (`link_id` set). The **effective matrix** for a
-link is the base overlaid with that link's overrides — overrides win per `(workflow_step_id,
+link is the base overlaid with that link's overrides, overrides win per `(workflow_step_id,
 variable_values)`. Workflow shape and variable axes stay vendor-global; only the day-count rates
 diverge per studio.
 
@@ -45,15 +45,15 @@ reveal. This is the only thing standing between a vendor's internal workflow and
 | `craft_bucket` | Totals grouped by craft. Step estimates summed within each craft; no step names. |
 | `workflow_step` | Per-step detail, labelled with each workflow step name. |
 
-The projector (`lib/estimate/projector.py`) emits strictly what the granularity permits — it is a pure
+The projector (`lib/estimate/projector.py`) emits strictly what the granularity permits, it is a pure
 function so the exposure rule is unit-tested without a DB (`scripts/test_projector.py`).
 
-**Snapshot.** A share is a frozen, self-describing JSON projection of the effective matrix —
+**Snapshot.** A share is a frozen, self-describing JSON projection of the effective matrix , 
 analogous to a payload dispatch, minus the one-time token and the canonical-asset anchor. Changes to
 the vendor's matrix after sharing do **not** affect what the studio already received.
 
 **Series + replace semantics.** A **series** is the sharing channel for one relationship, keyed on
-`(vendor_id, link_id)` — exactly one channel per studio link. Granularity is a per-share property of
+`(vendor_id, link_id)`, exactly one channel per studio link. Granularity is a per-share property of
 the *dispatch*, not part of the channel key. Re-sharing **replaces** the prior live share regardless of
 granularity, so dialing disclosure *down* (e.g. `workflow_step` → `asset_total`) genuinely reduces what
 the studio can read rather than leaving the detailed share live. At-most-one-live is structural (a
@@ -124,8 +124,8 @@ superseded_at       timestamptz              -- set on re-share (replace semanti
 created_at          timestamptz
 ```
 
-`uq_esd_one_live` — partial unique index on `(series_id) where superseded_at is null and revoked_at is
-null` — makes at-most-one-live structural. **Deliberately not** FK'd to `canonical_assets`: an estimate
+`uq_esd_one_live`, partial unique index on `(series_id) where superseded_at is null and revoked_at is
+null`, makes at-most-one-live structural. **Deliberately not** FK'd to `canonical_assets`: an estimate
 matrix is a rate card keyed on asset profiles, a tier above any single asset (a conscious, commented
 exception to the canonical-asset linkage rule).
 
@@ -177,7 +177,7 @@ All endpoints under `/api/estimate-shares` (JWT-gated).
 | Method | Path | Description |
 |---|---|---|
 | GET  | `/targets` | Active studio links this vendor can share to |
-| GET  | `/preview?link_id=&granularity=` | Project the effective matrix without persisting — drives the share modal preview; returns `{snapshot, unset_cells, profile_count}` |
+| GET  | `/preview?link_id=&granularity=` | Project the effective matrix without persisting, drives the share modal preview; returns `{snapshot, unset_cells, profile_count}` |
 | POST | `` | Create/replace a share: `{link_id, granularity, expires_in_days?, label?}` |
 | GET  | `/outbox` | Vendor's current (non-superseded) shares, one per channel |
 | POST | `/{dispatch_id}/revoke` | Revoke a share |
@@ -217,17 +217,17 @@ revoked or expired share, mirroring payload dispatch.
 
 **Done (dev branch):** org-scoping (Phase 0), per-link overrides (Phase 1), projection + share API
 (Phase 2 backend), vendor share UI (M3), studio inbox viewer (M4). Migrations `20260529000001/002/003`
-applied to dev only — **nothing on prod yet** (prod deploy is a separate gated step). The only open
+applied to dev only, **nothing on prod yet** (prod deploy is a separate gated step). The only open
 v1 item is a manual vendor-login smoke test of the full chain.
 
 **Explicit non-goals for v1** (anti-gold-plating; see the plan for rationale):
-- No semantic/basis discriminator on the estimate number (no "forecast" vs "quote" type) — the number
+- No semantic/basis discriminator on the estimate number (no "forecast" vs "quote" type), the number
   is intentionally semantically open, per-org meaning.
-- No billing semantics — these are coarse scenario-planning estimate boxes.
+- No billing semantics, these are coarse scenario-planning estimate boxes.
 - No user-facing REFRESH (only the series identity + auto-supersede that enable it).
-- No scenario-planner / baseline-promotion consumption — the self-describing snapshot keeps it
+- No scenario-planner / baseline-promotion consumption, the self-describing snapshot keeps it
   consumable later without migration.
 - No `estimate_share_field_mappings` vocabulary reconciliation (the studio sees the vendor's own
   labels) until a studio actually consumes the data.
-- No profile-subset sharing — v1 shares all profiles in the effective matrix.
-- No external token delivery strategy — reserved seam only.
+- No profile-subset sharing, v1 shares all profiles in the effective matrix.
+- No external token delivery strategy, reserved seam only.

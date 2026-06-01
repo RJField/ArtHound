@@ -8,7 +8,7 @@ The platform admin system provides ArtHound operators with system-wide controls 
 
 ## Access
 
-Platform admin access is controlled by the `PLATFORM_ADMIN_EMAILS` environment variable — a comma-separated list of email addresses. Any authenticated user whose email matches an entry in this list has platform admin access. Users not in the list get a 403 on all admin routes.
+Platform admin access is controlled by the `PLATFORM_ADMIN_EMAILS` environment variable, a comma-separated list of email addresses. Any authenticated user whose email matches an entry in this list has platform admin access. Users not in the list get a 403 on all admin routes.
 
 This is separate from org-level roles (`owner`, `admin`, `user`). A platform admin does not need to be a member of any studio or vendor org.
 
@@ -20,12 +20,12 @@ The platform admin panel is at `/admin` in the app and renders `AdminPanel.jsx`.
 
 A single-row `system_settings` table stores global configuration. Platform admins read and update it via:
 
-- `GET /api/admin/settings` — returns current settings
-- `PATCH /api/admin/settings` — update one or more fields
+- `GET /api/admin/settings`, returns current settings
+- `PATCH /api/admin/settings`, update one or more fields
 
 ### `registration_invite_required`
 
-Boolean. When `true`, new users signing up via the public signup form must provide a platform-level invite code (`registration_invite_code`) before their account can be created. This is the global signup gate — distinct from the org-level invite code system (which controls joining an existing org).
+Boolean. When `true`, new users signing up via the public signup form must provide a platform-level invite code (`registration_invite_code`) before their account can be created. This is the global signup gate, distinct from the org-level invite code system (which controls joining an existing org).
 
 When `false`, anyone with the ArtHound URL can create an account.
 
@@ -39,9 +39,9 @@ A string code that new users must enter when `registration_invite_required` is `
 
 `AdminPanel.jsx` presents a simple settings form:
 
-- **Registration gate toggle** — a switch to enable/disable `registration_invite_required`
-- **Invite code field** — a text input for `registration_invite_code`
-- **Save button** — calls `PATCH /api/admin/settings`
+- **Registration gate toggle**: a switch to enable/disable `registration_invite_required`
+- **Invite code field**: a text input for `registration_invite_code`
+- **Save button**: calls `PATCH /api/admin/settings`
 
 Changes take effect immediately on save. There is no cache layer on system settings.
 
@@ -92,14 +92,14 @@ updated_at                   timestamptz
 updated_by                   uuid → auth.users
 ```
 
-The single-row pattern uses a `boolean` PK constrained to `true` — only one row can ever exist. `updated_at` is maintained by a DB trigger.
+The single-row pattern uses a `boolean` PK constrained to `true`, only one row can ever exist. `updated_at` is maintained by a DB trigger.
 
 ---
 
 ## Known Gaps
 
-**No audit log** — settings changes record only `updated_by` and `updated_at`. There is no history of what values were set before a change.
+**No audit log**: settings changes record only `updated_by` and `updated_at`. There is no history of what values were set before a change.
 
-**Email-based access only** — platform admin access cannot be granted via a role or flag in the DB. It requires a deploy-time config change to `PLATFORM_ADMIN_EMAILS`. Adding or removing platform admins requires a redeploy.
+**Email-based access only**: platform admin access cannot be granted via a role or flag in the DB. It requires a deploy-time config change to `PLATFORM_ADMIN_EMAILS`. Adding or removing platform admins requires a redeploy.
 
-**No email notification on admin access** — there is no alert when a platform admin logs in or changes settings.
+**No email notification on admin access**: there is no alert when a platform admin logs in or changes settings.

@@ -2,9 +2,9 @@
 
 _Last updated: 2026-05-11_
 
-ArtHound surfaces attachments (images, video, PDFs, documents) from source tools inline in the UI — viewable in-browser, not just downloadable. The system is designed around two principles:
+ArtHound surfaces attachments (images, video, PDFs, documents) from source tools inline in the UI, viewable in-browser, not just downloadable. The system is designed around two principles:
 
-1. **User-intent-driven copying.** No proactive crawling. A file is copied to ArtHound's storage only when a user explicitly triggers it — either by dispatching an asset to a vendor, or by opening an attachment in the Asset Viewer.
+1. **User-intent-driven copying.** No proactive crawling. A file is copied to ArtHound's storage only when a user explicitly triggers it, either by dispatching an asset to a vendor, or by opening an attachment in the Asset Viewer.
 2. **Content-addressed storage.** Every file is stored at `attachments/sha256/{hex_hash}` in Supabase Storage. Identical files across multiple dispatches or studios share one blob. No path-sanitization issues. Dedup is free.
 
 ---
@@ -17,7 +17,7 @@ ArtHound surfaces attachments (images, video, PDFs, documents) from source tools
 
 The SHA-256 hash is computed over the raw file bytes at copy time. This makes the storage path deterministic and collision-safe. It also means the existence check before upload (`HEAD /object/...`) is sufficient to avoid re-uploading identical content.
 
-**`attachment_refs` table** is the reverse index — every `(content_hash, dispatch_id)` pair is recorded so the purge routine knows which blobs have active dispatch references.
+**`attachment_refs` table** is the reverse index, every `(content_hash, dispatch_id)` pair is recorded so the purge routine knows which blobs have active dispatch references.
 
 ---
 
@@ -27,7 +27,7 @@ The SHA-256 hash is computed over the raw file bytes at copy time. This makes th
 
 When a studio dispatches an asset payload to a vendor, the dispatch endpoint immediately enqueues an `attachment_copy_jobs` row. A background worker drains the queue and downloads each attachment from the source tool, hashes it, uploads to Supabase Storage, and patches `content_hash` back into `payload_dispatches.payload_data` for each attachment item.
 
-This ensures the vendor always sees what was sent at dispatch time — the snapshot is frozen. If the studio later modifies or deletes the source file, the vendor's copy is unaffected.
+This ensures the vendor always sees what was sent at dispatch time, the snapshot is frozen. If the studio later modifies or deletes the source file, the vendor's copy is unaffected.
 
 ### 2. Copy-on-first-view (studio path)
 
@@ -39,7 +39,7 @@ When a studio user opens an attachment in the Asset Viewer, the proxy endpoint:
 
 The user accepts a one-time loading delay for large files. All subsequent views are served from Storage.
 
-If the source record changes (sync detects a different `source_hash`), the entire `meta` is rewritten from source — `content_hash` is lost, and the next view re-copies. This is correct: the file may have changed.
+If the source record changes (sync detects a different `source_hash`), the entire `meta` is rewritten from source, `content_hash` is lost, and the next view re-copies. This is correct: the file may have changed.
 
 ---
 
@@ -57,11 +57,11 @@ If the source record changes (sync detects a different `source_hash`), the entir
 | `created_at` | TIMESTAMPTZ | |
 | `updated_at` | TIMESTAMPTZ | |
 
-**Claim pattern:** Atomic optimistic claim — `PATCH ... WHERE status='pending'`. If another worker already claimed the job, the PATCH touches 0 rows and the job is skipped safely. Supports a single-worker model with no locking required.
+**Claim pattern:** Atomic optimistic claim, `PATCH ... WHERE status='pending'`. If another worker already claimed the job, the PATCH touches 0 rows and the job is skipped safely. Supports a single-worker model with no locking required.
 
 **Retry:** Up to 3 attempts. On exhaustion, status is set to `failed` with `last_error` populated.
 
-**Worker:** `drain_attachment_jobs()` in `lib/attachments.py`, called by `_attachment_drain_loop()` in `main.py` every 30 seconds. This loop runs unconditionally — it does not depend on `SYNC_POLL_INTERVAL_SECONDS`.
+**Worker:** `drain_attachment_jobs()` in `lib/attachments.py`, called by `_attachment_drain_loop()` in `main.py` every 30 seconds. This loop runs unconditionally, it does not depend on `SYNC_POLL_INTERVAL_SECONDS`.
 
 ---
 
@@ -98,12 +98,12 @@ Core logic. All Supabase Storage interaction lives here.
 
 | Function | Purpose |
 |---|---|
-| `_storage_exists(hash, client)` | HEAD check — returns bool |
+| `_storage_exists(hash, client)` | HEAD check, returns bool |
 | `_storage_upload(hash, data, content_type, client)` | POST upload, raises on failure |
 | `_get_studio_source_creds(studio_id, client)` | Fetches and decrypts credentials; refreshes Jira OAuth tokens |
 | `_source_fetch_headers(source_type, creds)` | Returns auth headers for fetching from source |
 | `_find_attachment_items(data)` | Walks `payload_data['data']` and returns `[(field_key, idx, item)]` for all attachment lists |
-| `copy_payload_attachments(dispatch_id)` | Full copy pipeline for one dispatch — downloads, hashes, uploads, patches `payload_data` |
+| `copy_payload_attachments(dispatch_id)` | Full copy pipeline for one dispatch, downloads, hashes, uploads, patches `payload_data` |
 | `enqueue_attachment_copy(dispatch_id)` | Inserts a `pending` job row |
 | `drain_attachment_jobs()` | Claims and processes one pending job per call |
 | `purge_orphaned_attachments()` | Deletes blobs with no active dispatch reference |
@@ -159,8 +159,8 @@ Both are independent `asyncio.Task`s cancelled on shutdown. The drain loop does 
 4. Deletes any blob whose hash is not in the keep-set, in batches of 100
 
 This removes:
-- Studio-side cached copies (no dispatch ref) — re-copied on next view
-- Copies from revoked dispatches — vendor can no longer access them anyway
+- Studio-side cached copies (no dispatch ref), re-copied on next view
+- Copies from revoked dispatches, vendor can no longer access them anyway
 
 Set `PURGE_ATTACHMENTS_INTERVAL_HOURS=0` to disable the nightly loop. The admin button in the Account modal triggers the same routine on demand.
 
@@ -170,7 +170,7 @@ Set `PURGE_ATTACHMENTS_INTERVAL_HOURS=0` to disable the nightly loop. The admin 
 
 Browser `<img src>`, `<video src>`, `<a download>`, and pdf.js internal fetch cannot send custom `Authorization` headers. All proxy endpoints require a Bearer JWT.
 
-**Solution:** The `useMediaUrl(proxyUrl)` hook fetches via `apiFetchRaw` (which injects the JWT), then creates a local blob URL via `URL.createObjectURL()`. All media components receive this blob URL — the browser never makes a credentialed request directly.
+**Solution:** The `useMediaUrl(proxyUrl)` hook fetches via `apiFetchRaw` (which injects the JWT), then creates a local blob URL via `URL.createObjectURL()`. All media components receive this blob URL, the browser never makes a credentialed request directly.
 
 On unmount or `proxyUrl` change, the hook revokes the blob URL to avoid memory leaks.
 
@@ -182,7 +182,7 @@ Browser → useMediaUrl → apiFetchRaw (JWT) → proxy endpoint → Supabase St
           <img src={blobUrl}> / <video src={blobUrl}> / pdf.js(blobUrl)
 ```
 
-A `202` response from the proxy is interpreted as `pending: true` — all viewers show a "still being processed" state rather than an error.
+A `202` response from the proxy is interpreted as `pending: true`, all viewers show a "still being processed" state rather than an error.
 
 ---
 
@@ -195,10 +195,10 @@ const { blobUrl, loading, error, pending } = useMediaUrl(proxyUrl)
 ```
 
 Returns:
-- `blobUrl` — object URL ready for use in `src` attributes or pdf.js
-- `loading` — fetch in progress
-- `error` — fetch failed (non-2xx, non-202)
-- `pending` — server returned 202 (copy job not yet complete)
+- `blobUrl`, object URL ready for use in `src` attributes or pdf.js
+- `loading`, fetch in progress
+- `error`, fetch failed (non-2xx, non-202)
+- `pending`, server returned 202 (copy job not yet complete)
 
 ### `frontend/src/components/media/`
 
@@ -211,7 +211,7 @@ Returns:
 | `VideoViewer.jsx` | `<video controls>`; pending / loading / error states |
 | `PdfViewer.jsx` | pdf.js canvas renderer; page nav and zoom controls; pending / loading / error states |
 | `DocumentCard.jsx` | Fallback for unsupported types; programmatic download via `apiFetchRaw` + blob |
-| `mediaUtils.js` | `resolveMimetype(mimetype, filename)` — extension fallback map; `viewerType()` — returns `'image'` / `'video'` / `'pdf'` / `'document'` |
+| `mediaUtils.js` | `resolveMimetype(mimetype, filename)`, extension fallback map; `viewerType()`, returns `'image'` / `'video'` / `'pdf'` / `'document'` |
 
 **Adding a new media type:** add a viewer component, add the MIME type(s) to `mediaUtils.js`, add one case to `MediaLightbox`.
 
@@ -239,7 +239,7 @@ The Airtable adapter (`lib/connectors/adapters/airtable.py`) deserializes `attac
 
 Because URLs expire, the copy-on-first-view pattern re-fetches from source using live credentials on expiry. The first view after expiry incurs a download delay; subsequent views in the same window are served from Storage.
 
-No auth headers are needed for the download step — pre-signed URLs carry auth in query params.
+No auth headers are needed for the download step, pre-signed URLs carry auth in query params.
 
 ### Jira
 

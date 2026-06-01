@@ -2,19 +2,19 @@
 
 _Last updated: 2026-05-11_
 
-Reviews are ArtHound-native structured feedback records attached to canonical assets. They are not synced to or from any source tool — they exist only in ArtHound's database. Both studios and vendors can create reviews on assets they have access to, and reviews support file attachments stored in Supabase Storage.
+Reviews are ArtHound-native structured feedback records attached to canonical assets. They are not synced to or from any source tool, they exist only in ArtHound's database. Both studios and vendors can create reviews on assets they have access to, and reviews support file attachments stored in Supabase Storage.
 
 ---
 
 ## Concepts
 
-**Review** — a titled, described, status-bearing record attached to a canonical asset. Created by a user of either org type. Has its own lifecycle independent of any source tool record.
+**Review**: a titled, described, status-bearing record attached to a canonical asset. Created by a user of either org type. Has its own lifecycle independent of any source tool record.
 
-**Author org** — the org that created the review, identified by `author_org_type` (`studio` or `vendor`) + `author_org_id`. This pair controls who can edit or delete the review.
+**Author org**: the org that created the review, identified by `author_org_type` (`studio` or `vendor`) + `author_org_id`. This pair controls who can edit or delete the review.
 
-**Status** — a free-text field with conventional values: `pending`, `in_review`, `approved`, `changes_requested`. Not validated by the API — studios and vendors can use any status label.
+**Status**: a free-text field with conventional values: `pending`, `in_review`, `approved`, `changes_requested`. Not validated by the API, studios and vendors can use any status label.
 
-**Review attachment** — a file uploaded directly to a review (distinct from asset attachments that come from the source tool). Stored at `attachments/reviews/{review_id}/{uuid}_{filename}` in Supabase Storage. Only the uploader can delete their own attachments.
+**Review attachment**: a file uploaded directly to a review (distinct from asset attachments that come from the source tool). Stored at `attachments/reviews/{review_id}/{uuid}_{filename}` in Supabase Storage. Only the uploader can delete their own attachments.
 
 ---
 
@@ -97,19 +97,19 @@ Reviews are surfaced in the Asset Viewer's Reviews tab (`frontend/src/components
 
 The tab has two distinct sections:
 
-**Asset Attachments** — a read-only gallery of files that came from the source tool (Airtable/Jira fields), shown at the top as a collapsible section. These use the asset attachment proxy endpoint, not the review attachment endpoint.
+**Asset Attachments**: a read-only gallery of files that came from the source tool (Airtable/Jira fields), shown at the top as a collapsible section. These use the asset attachment proxy endpoint, not the review attachment endpoint.
 
-**Reviews section** — lists all reviews for the asset with a count badge. Includes a collapsible `NewReviewForm` for creating reviews inline.
+**Reviews section**: lists all reviews for the asset with a count badge. Includes a collapsible `NewReviewForm` for creating reviews inline.
 
 ### `ReviewCard`
 
 Each review renders as a collapsible card showing: title, status badge, creator email, creation date, and (when expanded) full description and `ReviewAttachments`.
 
 Status badge colours:
-- `pending` — gray
-- `approved` — green
-- `in_review` — accent (blue)
-- `changes_requested` / `rejected` — red
+- `pending`, gray
+- `approved`, green
+- `in_review`, accent (blue)
+- `changes_requested` / `rejected`, red
 
 ### `ReviewAttachments`
 
@@ -122,16 +122,16 @@ Inline attachment widget within a review card. Supports:
 
 ## Relationship to the Handshake
 
-The studio↔vendor handshake includes a `review_collaboration_mode` field (`none` / `isolated` / `collaborative`) agreed at invite time. Currently only `none` (simple delivery, each org sees only their own reviews) is implemented. `isolated` and `collaborative` modes — where studios share reviews with vendors and/or reviews are jointly visible — are schema-stubbed but not yet built.
+The studio↔vendor handshake includes a `review_collaboration_mode` field (`none` / `isolated` / `collaborative`) agreed at invite time. Currently only `none` (simple delivery, each org sees only their own reviews) is implemented. `isolated` and `collaborative` modes,  modes, where studios share reviews with vendors and/or reviews are jointly visible, are schema-stubbed but not yet built.
 
-See [Handshake — Design Decisions](handshake.md) for the rationale behind setting review mode at invite time.
+See [Handshake, Design Decisions](handshake.md) for the rationale behind setting review mode at invite time.
 
 ---
 
 ## Known Gaps
 
-**Cross-org review visibility** — studios cannot currently share reviews with vendors and vendors cannot see studio reviews on a dispatched asset. The `review_collaboration_mode` flag on the link record provides the intended control surface, but the RLS and UI for sharing are not yet implemented.
+**Cross-org review visibility**: studios cannot currently share reviews with vendors and vendors cannot see studio reviews on a dispatched asset. The `review_collaboration_mode` flag on the link record provides the intended control surface, but the RLS and UI for sharing are not yet implemented.
 
-**Review field visibility customization** — the metadata shown alongside a review in the detail panel is filtered heuristically. There is no per-studio configuration for which asset meta fields appear in the review context.
+**Review field visibility customization**: the metadata shown alongside a review in the detail panel is filtered heuristically. There is no per-studio configuration for which asset meta fields appear in the review context.
 
-**No notification on new review** — reviewers receive no in-app or email notification when a new review is posted on an asset they are watching.
+**No notification on new review**: reviewers receive no in-app or email notification when a new review is posted on an asset they are watching.
