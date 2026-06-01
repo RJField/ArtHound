@@ -173,16 +173,19 @@ async def save_credentials(
         )
         r.raise_for_status()
 
-    # Invalidate schema cache so next discover reflects new credentials
-    await db_client.delete(
-        _url("/rest/v1/source_schema_cache"),
-        params={
-            "owner_type":  f"eq.{owner_type}",
-            "owner_id":    f"eq.{owner_id}",
-            "source_type": f"eq.{body.source_type}",
-        },
-        headers=_headers(),
-    )
+    # Invalidate schema cache so next discover reflects new credentials. source_schema_cache is
+    # system-managed (users SELECT-only); the delete runs as the system identity (mig 16 grants DELETE).
+    from lib.system_auth import system_identity
+    async with system_identity():
+        await db_client.delete(
+            _url("/rest/v1/source_schema_cache"),
+            params={
+                "owner_type":  f"eq.{owner_type}",
+                "owner_id":    f"eq.{owner_id}",
+                "source_type": f"eq.{body.source_type}",
+            },
+            headers=_headers(),
+        )
 
     return {"ok": True, "table_count": table_count, "field_count": field_count}
 
@@ -223,18 +226,21 @@ async def discover_schema(
 
     discovered_at = datetime.now(timezone.utc).isoformat()
 
-    # Cache stores all tables; hierarchy step reads this to build table selectors
-    await db_client.post(
-        _url("/rest/v1/source_schema_cache?on_conflict=owner_type,owner_id,source_type"),
-        headers=_headers({"Prefer": "resolution=merge-duplicates,return=minimal"}),
-        json={
-            "owner_type":    owner_type,
-            "owner_id":      owner_id,
-            "source_type":   source_type,
-            "fields":        tables,
-            "discovered_at": discovered_at,
-        },
-    )
+    # Cache stores all tables; hierarchy step reads this to build table selectors. source_schema_cache
+    # is system-managed; the upsert runs as the system identity (flag-off no-op; flag-on arthound_system).
+    from lib.system_auth import system_identity
+    async with system_identity():
+        await db_client.post(
+            _url("/rest/v1/source_schema_cache?on_conflict=owner_type,owner_id,source_type"),
+            headers=_headers({"Prefer": "resolution=merge-duplicates,return=minimal"}),
+            json={
+                "owner_type":    owner_type,
+                "owner_id":      owner_id,
+                "source_type":   source_type,
+                "fields":        tables,
+                "discovered_at": discovered_at,
+            },
+        )
 
     return {"tables": tables, "discovered_at": discovered_at}
 
@@ -666,17 +672,21 @@ async def start_init(
     await _load_creds(owner_type, owner_id, body.source_type)
     await _check_mappings(owner_type, owner_id, body.source_type)
 
-    r = await db_client.post(
-        _url("/rest/v1/init_jobs"),
-        headers=_headers({"Prefer": "return=representation"}),
-        json={
-            "owner_type":  owner_type,
-            "owner_id":    owner_id,
-            "source_type": body.source_type,
-            "status":      "pending",
-            "is_reset":    False,
-        },
-    )
+    # init_jobs is system-managed (users SELECT-only); create the job as the system identity. The poll
+    # loop picks it up. return=representation needs SELECT, which arthound_system holds.
+    from lib.system_auth import system_identity
+    async with system_identity():
+        r = await db_client.post(
+            _url("/rest/v1/init_jobs"),
+            headers=_headers({"Prefer": "return=representation"}),
+            json={
+                "owner_type":  owner_type,
+                "owner_id":    owner_id,
+                "source_type": body.source_type,
+                "status":      "pending",
+                "is_reset":    False,
+            },
+        )
     r.raise_for_status()
     job_id = r.json()[0]["id"]
 
@@ -856,17 +866,20 @@ async def reset_project(
         headers=_headers({"Prefer": "return=minimal"}),
     )
 
-    r = await db_client.post(
-        _url("/rest/v1/init_jobs"),
-        headers=_headers({"Prefer": "return=representation"}),
-        json={
-            "owner_type":  owner_type,
-            "owner_id":    owner_id,
-            "source_type": body.source_type,
-            "status":      "pending",
-            "is_reset":    True,
-        },
-    )
+    # init_jobs is system-managed (users SELECT-only); create the reset job as the system identity.
+    from lib.system_auth import system_identity
+    async with system_identity():
+        r = await db_client.post(
+            _url("/rest/v1/init_jobs"),
+            headers=_headers({"Prefer": "return=representation"}),
+            json={
+                "owner_type":  owner_type,
+                "owner_id":    owner_id,
+                "source_type": body.source_type,
+                "status":      "pending",
+                "is_reset":    True,
+            },
+        )
     r.raise_for_status()
     job_id = r.json()[0]["id"]
 
