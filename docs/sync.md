@@ -2,7 +2,7 @@
 
 _Last updated: 2026-05-11_
 
-ArtHound replicates source tool data (Airtable, Jira, and future connectors) into Supabase on a continuous basis. All product features read from Supabase — never from the source tool directly. The sync layer is the engine that keeps these two worlds consistent.
+ArtHound replicates source tool data (Airtable, Jira, and future connectors) into Supabase on a continuous basis. All product features read from Supabase, never from the source tool directly. The sync layer is the engine that keeps these two worlds consistent.
 
 ---
 
@@ -21,11 +21,11 @@ Source Tool (Airtable / Jira / …)
    Supabase (replicated_*)     ← all features read from here
 ```
 
-A sync run is triggered in three ways — all three call the same function and are treated identically:
+A sync run is triggered in three ways, all three call the same function and are treated identically:
 
-1. **Login trigger** — `AuthContext.jsx` fires a delta sync when a user authenticates
-2. **Background polling loop** — `main.py` polls on a configurable interval (`SYNC_POLL_INTERVAL_SECONDS`)
-3. **Webhook** — `POST /api/sync/webhook/{source_type}/{owner_type}/{owner_id}` receives a push notification from the source tool
+1. **Login trigger**: `AuthContext.jsx` fires a delta sync when a user authenticates
+2. **Background polling loop**: `main.py` polls on a configurable interval (`SYNC_POLL_INTERVAL_SECONDS`)
+3. **Webhook**: `POST /api/sync/webhook/{source_type}/{owner_type}/{owner_id}` receives a push notification from the source tool
 
 Sync logic is trigger-agnostic by design. The trigger never influences what the sync does.
 
@@ -33,14 +33,14 @@ Sync logic is trigger-agnostic by design. The trigger never influences what the 
 
 ## Sync Phases
 
-A single sync run proceeds through six sequential phases. If any phase fails, the run is marked `error` in `sync_log` and the cursor is not advanced — so the next run retries from the last successful position.
+A single sync run proceeds through six sequential phases. If any phase fails, the run is marked `error` in `sync_log` and the cursor is not advanced, so the next run retries from the last successful position.
 
 ### 1. Init
 
 Loads everything the run will need from Supabase before touching the source tool:
 
 - Studio/vendor credentials (decrypted from `source_credentials` via `lib/source_creds.py`)
-- Entity definitions from `source_entity_definitions` — which source tables are Products, Assets, and Work; linking fields; filters
+- Entity definitions from `source_entity_definitions`, which source tables are Products, Assets, and Work; linking fields; filters
 - Field mappings from `source_field_mappings`
 - Delta cursor from `sync_cursors` (if this is a delta sync)
 - Existing source hashes from `replicated_assets` (for differ)
@@ -58,15 +58,15 @@ Assets    → fetch_entity(asset_table_id, filter, since)
 Work      → fetch_entity(work_table_id, filter, since)
 ```
 
-After fetching, the runner builds a **reference resolver** — a lookup from source record ID → display name, populated from every fetched product, item type, and linked table. This lets asset normalization resolve linked record fields to human-readable names without additional API calls.
+After fetching, the runner builds a **reference resolver**, a lookup from source record ID → display name, populated from every fetched product, item type, and linked table. This lets asset normalization resolve linked record fields to human-readable names without additional API calls.
 
 ### 3. Normalize
 
 Transforms raw source records into ArtHound's canonical shape using `lib/sync/normalizer.py`.
 
-- Products and item types: `normalize_reference()` — extracts name + stores everything else in `meta`
-- Assets: `normalize_asset()` — applies field mappings, resolves links, maps ArtHound slots, computes `source_hash`
-- Work: `normalize_work()` — extracts parent asset link, derives name/status/estimate, stores remainder in `meta`
+- Products and item types: `normalize_reference()`, extracts name + stores everything else in `meta`
+- Assets: `normalize_asset()`, applies field mappings, resolves links, maps ArtHound slots, computes `source_hash`
+- Work: `normalize_work()`, extracts parent asset link, derives name/status/estimate, stores remainder in `meta`
 
 See [Field Normalization](#field-normalization) below for the full slot-mapping model.
 
@@ -91,11 +91,11 @@ Products and item types must exist before assets are written (FK references). As
 
 Each table is upserted in batches of 200 rows using PostgREST `resolution=merge-duplicates`. The writer passes the canonical ID map into `upsert_assets()` so canonical asset IDs are stamped on every replicated row.
 
-**Partial sync debt:** Products, item types, assets, and work are written in sequence with no rollback. The cursor is not advanced on failure, so the next sync retries. But already-written phases from a failed run remain — a failure mid-write leaves the DB in a partially updated state until the next successful full sync.
+**Partial sync debt:** Products, item types, assets, and work are written in sequence with no rollback. The cursor is not advanced on failure, so the next sync retries. But already-written phases from a failed run remain, a failure mid-write leaves the DB in a partially updated state until the next successful full sync.
 
 ### 6. Cleanup (full sync only)
 
-After a full sync, `delete_orphaned_records()` identifies source record IDs that were present in Supabase but absent from the fetch results — these have been deleted from the source tool. For assets and work, orphan deletion only runs on full syncs (delta fetches are incomplete by definition). Products and item types are checked on every sync.
+After a full sync, `delete_orphaned_records()` identifies source record IDs that were present in Supabase but absent from the fetch results, these have been deleted from the source tool. For assets and work, orphan deletion only runs on full syncs (delta fetches are incomplete by definition). Products and item types are checked on every sync.
 
 Deleted assets are hard-deleted from `replicated_assets`. Generated work items linked to deleted assets are soft-deleted (`deleted_at = now()`).
 
@@ -105,7 +105,7 @@ Deleted assets are hard-deleted from `replicated_assets`. Generated work items l
 
 ### Slot mapping
 
-The normalizer maps source field values to ArtHound's named asset slots. Each slot has a list of **aliases** — field name patterns that are recognized as belonging to that slot:
+The normalizer maps source field values to ArtHound's named asset slots. Each slot has a list of **aliases**, field name patterns that are recognized as belonging to that slot:
 
 | Slot | Examples of matched names |
 |---|---|
@@ -121,7 +121,7 @@ The normalizer maps source field values to ArtHound's named asset slots. Each sl
 
 Slot matching is case-insensitive. Only the first match wins. Everything that doesn't match a slot goes into `meta` (the JSONB payload).
 
-Field mappings are persisted in `source_field_mappings` after the first sync and are editable by studios via the field mapping UI. The normalizer always resolves slots through `source_field_mappings` — it never assumes a column name from the source tool.
+Field mappings are persisted in `source_field_mappings` after the first sync and are editable by studios via the field mapping UI. The normalizer always resolves slots through `source_field_mappings`, it never assumes a column name from the source tool.
 
 ### Meta bucket classification
 
@@ -187,7 +187,7 @@ Every asset in ArtHound has a canonical UUID in `canonical_assets`. This is the 
 
 `lib/canonical.py` provides `get_or_create_canonical_ids(source_record_ids, studio_id, source_type)`:
 
-1. Upserts rows into `canonical_assets` on the composite key `(studio_id, source_record_id, source_type)` — safe to call repeatedly
+1. Upserts rows into `canonical_assets` on the composite key `(studio_id, source_record_id, source_type)`, safe to call repeatedly
 2. Queries back the resulting UUIDs
 3. Returns `{source_record_id: canonical_uuid}`
 
@@ -199,7 +199,7 @@ Vendor-created records (ingested from payloads) link via `payload_export_records
 
 ## Delta Sync and Cursors
 
-Cursors are stored in `sync_cursors`, keyed on `(owner_type, owner_id, source_type)`. Each cursor stores `last_synced_at` — an ISO timestamp used as the delta filter passed to the connector.
+Cursors are stored in `sync_cursors`, keyed on `(owner_type, owner_id, source_type)`. Each cursor stores `last_synced_at`, an ISO timestamp used as the delta filter passed to the connector.
 
 After a successful sync run, the cursor is advanced to `now()` (captured at the start of the run, not the end, to avoid gaps). The cursor is only advanced after all phases succeed. On failure, the cursor stays at its previous value, so the next run retries the same window.
 
@@ -219,7 +219,7 @@ The lock is in-process (Python dict), not database-level. Multiple worker proces
 
 `POST /api/sync/webhook/{source_type}/{owner_type}/{owner_id}?secret=<WEBHOOK_SECRET>`
 
-HMAC-verified (Airtable) or signature-verified (Jira). No JWT required — this is a public endpoint callable by the source tool.
+HMAC-verified (Airtable) or signature-verified (Jira). No JWT required, this is a public endpoint callable by the source tool.
 
 Two behaviors:
 
@@ -269,12 +269,12 @@ Studios resolve drift by reviewing and updating their field mappings via `PUT /a
 
 ## Known Gaps
 
-**No Products/item type field mapping** — `source_field_mappings` only covers the Asset entity. Products and item types are normalized with a name-field heuristic (first field in the source schema) and no slot mapping beyond name. Product fields like status, owner, and deadline are never promoted to named slots — they go into `meta` only.
+**No Products/item type field mapping**: `source_field_mappings` only covers the Asset entity. Products and item types are normalized with a name-field heuristic (first field in the source schema) and no slot mapping beyond name. Product fields like status, owner, and deadline are never promoted to named slots, they go into `meta` only.
 
-**Partial sync write has no rollback** — see Phase 5 above. The cursor protects against re-running, but a mid-run failure leaves DB state partially updated until the next full sync succeeds.
+**Partial sync write has no rollback**: see Phase 5 above. The cursor protects against re-running, but a mid-run failure leaves DB state partially updated until the next full sync succeeds.
 
-**Work delta sync is incomplete** — work item fetches are included in delta syncs, but work orphan deletion only runs on full syncs. Deleted work items in the source tool may persist in `replicated_work` until the next full sync.
+**Work delta sync is incomplete**: work item fetches are included in delta syncs, but work orphan deletion only runs on full syncs. Deleted work items in the source tool may persist in `replicated_work` until the next full sync.
 
-**Single-process lock** — concurrency protection is in-process only. Multiple worker processes require a distributed lock.
+**Single-process lock**: concurrency protection is in-process only. Multiple worker processes require a distributed lock.
 
-**`sync_log` retention** — a nightly trim function keeps 100 rows per owner. Log history older than that is deleted permanently.
+**`sync_log` retention**, a nightly trim function keeps 100 rows per owner. Log history older than that is deleted permanently.

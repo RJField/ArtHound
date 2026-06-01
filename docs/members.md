@@ -8,20 +8,20 @@ ArtHound organisations (studios and vendors) are multi-user. The member manageme
 
 ## Concepts
 
-**Org** — a studio or vendor record. Every user belongs to exactly one org at a time.
+**Org**: a studio or vendor record. Every user belongs to exactly one org at a time.
 
-**Member role** — three tiers per org:
-- `owner` — full control; can transfer ownership, promote/demote admins, remove any member
-- `admin` — can approve/decline join requests, manage `user`-role members, regenerate the invite code
-- `user` — read access to the org hub; cannot take management actions
+**Member role**: three tiers per org:
+- `owner`, full control; can transfer ownership, promote/demote admins, remove any member
+- `admin`, can approve/decline join requests, manage `user`-role members, regenerate the invite code
+- `user`, read access to the org hub; cannot take management actions
 
 Every org has exactly one owner at all times.
 
-**Invite code** — an 8-character alphanumeric code (A–Z, 0–9) stored on the org record. Sharing this code allows new users to request membership. Codes are unique globally. Admins can regenerate the code at any time; the old code immediately stops working.
+**Invite code**: an 8-character alphanumeric code (A-Z, 0-9) stored on the org record. Sharing this code allows new users to request membership. Codes are unique globally. Admins can regenerate the code at any time; the old code immediately stops working.
 
-**Join request** — created when a user signs up with a valid invite code. The user's account exists but they have no membership row until an admin approves. While pending, the user sees a holding screen and cannot access the product.
+**Join request**: created when a user signs up with a valid invite code. The user's account exists but they have no membership row until an admin approves. While pending, the user sees a holding screen and cannot access the product.
 
-**Membership cache** — the auth layer (`lib/auth.py`) caches each user's resolved role and membership for 60 seconds. Changes (approval, role change, removal) are reflected within that window.
+**Membership cache**: the auth layer (`lib/auth.py`) caches each user's resolved role and membership for 60 seconds. Changes (approval, role change, removal) are reflected within that window.
 
 ---
 
@@ -29,18 +29,18 @@ Every org has exactly one owner at all times.
 
 There are two paths through the signup modal.
 
-### Path 1 — Create a new org (no invite code)
+### Path 1: Create a new org (no invite code)
 
 1. User selects org type (studio or vendor), provides org name, email, and password
 2. Backend (`POST /api/auth/signup`): creates the Supabase auth user, creates the org row, inserts a `studio_members` / `vendor_members` row with `member_role = owner`, stamps `invite_code` on the org
-3. User is immediately active — no approval step
+3. User is immediately active, no approval step
 
-### Path 2 — Join an existing org (invite code)
+### Path 2: Join an existing org (invite code)
 
 1. User obtains an invite code from an existing org member
 2. Enters the code in the signup modal; `GET /api/invite-code/{code}/resolve` previews the org name and type before committing
 3. Provides email and password
-4. Backend: creates the auth user, inserts a `studio_join_requests` / `vendor_join_requests` row (`status = pending`) — **no membership row yet**
+4. Backend: creates the auth user, inserts a `studio_join_requests` / `vendor_join_requests` row (`status = pending`), **no membership row yet**
 5. User lands on the `PendingApproval` page and cannot proceed
 6. An org admin approves the request via the org hub → membership row inserted as `user` role
 7. Within 60 seconds (cache TTL), the user's next page load resolves their membership and they gain access
@@ -109,11 +109,11 @@ The hub UI (`frontend/src/pages/OrgHub.jsx`) surfaces:
 
 ### Change a member's role
 
-`PATCH /api/org/members/{user_id}/role` — body: `{role: "owner" | "admin" | "user"}`
+`PATCH /api/org/members/{user_id}/role`, body: `{role: "owner" | "admin" | "user"}`
 
 Permission rules:
 - Admin or owner can promote/demote between `user` and `admin`
-- Only the owner can promote someone to `owner` (this triggers an ownership transfer — see below)
+- Only the owner can promote someone to `owner` (this triggers an ownership transfer, see below)
 - No one can directly demote the current owner; ownership must be transferred first
 
 ### Remove a member
@@ -150,7 +150,7 @@ status: pending | accepted | declined
 created_at, resolved_at, resolved_by
 ```
 
-Partial unique index on `(org_id, user_id) WHERE status = 'pending'` — one live request per user per org.
+Partial unique index on `(org_id, user_id) WHERE status = 'pending'`, one live request per user per org.
 
 ---
 
@@ -175,8 +175,8 @@ All endpoints require JWT auth unless noted. Studio and vendor routes are symmet
 
 ## Known Gaps
 
-**No email notification on join request** — when a user requests membership, admins receive no notification. They must check the org hub manually. An email or in-app notification on new join requests is a planned improvement (see notification system TODO).
+**No email notification on join request**: when a user requests membership, admins receive no notification. They must check the org hub manually. An email or in-app notification on new join requests is a planned improvement (see notification system TODO).
 
-**No self-service role request** — users cannot request a role upgrade; only admins/owners can change roles.
+**No self-service role request**: users cannot request a role upgrade; only admins/owners can change roles.
 
-**60-second cache lag** — removed or demoted members retain their access level for up to 60 seconds. This is intentional for performance but means revocation is not instantaneous.
+**60-second cache lag**: removed or demoted members retain their access level for up to 60 seconds. This is intentional for performance but means revocation is not instantaneous.

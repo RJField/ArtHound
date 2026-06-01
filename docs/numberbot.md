@@ -2,7 +2,7 @@
 
 _Last updated: 2026-05-11_
 
-NumberBot is ArtHound's production-data AI assistant, powered by Claude Haiku. It answers questions about a studio's or vendor's asset inventory, work estimates, and review state — grounded strictly in live ArtHound data. It refuses questions outside its defined scope.
+NumberBot is ArtHound's production-data AI assistant, powered by Claude Haiku. It answers questions about a studio's or vendor's asset inventory, work estimates, and review state, grounded strictly in live ArtHound data. It refuses questions outside its defined scope.
 
 ---
 
@@ -24,17 +24,17 @@ Before each conversation turn, NumberBot fetches live context in parallel from A
 
 | Context | Source |
 |---|---|
-| Asset inventory | `replicated_assets` — name, item type, product, status, priority, raw fields |
-| Field mappings | `source_field_mappings` — slot assignments and field labels |
-| Source work | `replicated_work` — synced work items with status and estimates |
-| Generated work | `generated_work` — ArtHound-generated snapshots (deleted_at IS NULL) |
-| Asset reviews | `asset_reviews` — review titles and statuses for the org |
+| Asset inventory | `replicated_assets`, name, item type, product, status, priority, raw fields |
+| Field mappings | `source_field_mappings`, slot assignments and field labels |
+| Source work | `replicated_work`, synced work items with status and estimates |
+| Generated work | `generated_work`, ArtHound-generated snapshots (deleted_at IS NULL) |
+| Asset reviews | `asset_reviews`, review titles and statuses for the org |
 
 From the asset and field data, NumberBot builds an ASCII context table showing:
 - Asset breakdown by product, item type, and status
 - Field mapping reference (slot → source field name)
 - Work list with estimate values
-- Filtered meta keywords (milestone, date, team, phase, due, target, delivery — these are included when present to help with scheduling questions)
+- Filtered meta keywords (milestone, date, team, phase, due, target, delivery, these are included when present to help with scheduling questions)
 
 This context is passed to the model as a system prompt with [prompt caching](https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching) enabled (`cache_control: {type: "ephemeral"}`), reducing latency and cost on follow-up turns within the same session.
 
@@ -49,7 +49,7 @@ NumberBot operates under strict scope rules enforced in its system prompt:
 3. Do not answer general knowledge, business advice, or coding questions
 4. If asked something outside scope, state clearly that it can only discuss production data and decline to answer
 
-If a user asks "What's the best rigging approach for a character with 80,000 polys?" — NumberBot declines and redirects to production data queries.
+If a user asks "What's the best rigging approach for a character with 80,000 polys?", NumberBot declines and redirects to production data queries.
 
 ---
 
@@ -78,16 +78,16 @@ The route prepends the live context as a system message before passing the conve
 
 The context block (asset inventory, field mappings, work and review data) is marked with `cache_control: {type: "ephemeral"}`. Anthropic's prompt cache has a 5-minute TTL. Subsequent turns in the same session within that window reuse the cached context, making follow-up questions significantly faster and cheaper.
 
-The cache is keyed on the exact content of the context block. If the underlying data changes (e.g., a sync runs between turns), the context will differ and the cache will miss — this is correct behaviour, as the user should see fresh data.
+The cache is keyed on the exact content of the context block. If the underlying data changes (e.g., a sync runs between turns), the context will differ and the cache will miss, this is correct behaviour, as the user should see fresh data.
 
 ---
 
 ## Known Gaps
 
-**`source_entity_definitions` not injected** — NumberBot's context does not include the studio's P→A→W hierarchy definition. Questions about which source table maps to which ArtHound entity cannot be answered accurately.
+**`source_entity_definitions` not injected**, NumberBot's context does not include the studio's P→A→W hierarchy definition. Questions about which source table maps to which ArtHound entity cannot be answered accurately.
 
-**No pagination on context fetch** — the context fetch loads all assets and work items for the org. For large studios (thousands of assets), this context block may grow very large, increasing latency and potentially hitting model context limits.
+**No pagination on context fetch**: the context fetch loads all assets and work items for the org. For large studios (thousands of assets), this context block may grow very large, increasing latency and potentially hitting model context limits.
 
-**Session context is per-request** — NumberBot has no persistent conversation memory beyond what the client sends in the `messages` array. The client is responsible for maintaining conversation history across turns.
+**Session context is per-request**: NumberBot has no persistent conversation memory beyond what the client sends in the `messages` array. The client is responsible for maintaining conversation history across turns.
 
-**Vendor access is limited** — vendors only see assets they have received via dispatches. The context fetch is scoped accordingly, but this means vendor NumberBot sessions have materially less data to work with than studio sessions.
+**Vendor access is limited**: vendors only see assets they have received via dispatches. The context fetch is scoped accordingly, but this means vendor NumberBot sessions have materially less data to work with than studio sessions.
