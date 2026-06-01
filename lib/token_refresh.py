@@ -45,7 +45,11 @@ async def get_jira_token(
     if it expires within _REFRESH_BUFFER_MINUTES.
     Raises RuntimeError if credentials are missing or refresh fails.
     """
-    async with _get_lock(owner_type, owner_id):
+    # source_credentials is system-managed (Pattern F, deny-all to users). get_jira_token runs in BOTH
+    # the system poll-sync AND user routes (attachment view, schedule write-back), so the credential
+    # READ here — like the refresh WRITE below — must run under the system identity, else a user-context
+    # read returns 0 rows under flag-on → spurious "must reconnect". Flag-off this is a no-op.
+    async with _get_lock(owner_type, owner_id), system_identity():
         r = await db_client.get(
             _url("/rest/v1/source_credentials"),
             params={

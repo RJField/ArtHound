@@ -490,40 +490,44 @@ async def update_asset_name(
         raise HTTPException(status_code=404, detail="Asset not found")
     source_type = r.json()[0]["source_type"]
 
-    # Parallel: credentials + entity definition + field mappings
-    creds_r, entity_r, mappings_r = await asyncio.gather(
-        db_client.get(
-            _url("/rest/v1/source_credentials"),
-            params={
-                "owner_type":  f"eq.{owner_type}",
-                "owner_id":    f"eq.{owner_id}",
-                "source_type": f"eq.{source_type}",
-                "select":      "credentials",
-            },
-            headers=_headers(),
-        ),
-        db_client.get(
-            _url("/rest/v1/source_entity_definitions"),
-            params={
-                "owner_type":  f"eq.{owner_type}",
-                "owner_id":    f"eq.{owner_id}",
-                "source_type": f"eq.{source_type}",
-                "entity_type": "eq.asset",
-                "select":      "table_id",
-            },
-            headers=_headers(),
-        ),
-        db_client.get(
-            _url("/rest/v1/source_field_mappings"),
-            params={
-                "owner_type":  f"eq.{owner_type}",
-                "owner_id":    f"eq.{owner_id}",
-                "source_type": f"eq.{source_type}",
-                "select":      "mappings",
-            },
-            headers=_headers(),
-        ),
-    )
+    # Parallel: credentials + entity definition + field mappings. source_credentials is an F-table
+    # (deny-all to users); the entity-def + mappings have user SELECT policies but are this studio's own
+    # org, so running the whole gather as the system identity is correct and keeps it a single batch.
+    from lib.system_auth import system_identity
+    async with system_identity():
+        creds_r, entity_r, mappings_r = await asyncio.gather(
+            db_client.get(
+                _url("/rest/v1/source_credentials"),
+                params={
+                    "owner_type":  f"eq.{owner_type}",
+                    "owner_id":    f"eq.{owner_id}",
+                    "source_type": f"eq.{source_type}",
+                    "select":      "credentials",
+                },
+                headers=_headers(),
+            ),
+            db_client.get(
+                _url("/rest/v1/source_entity_definitions"),
+                params={
+                    "owner_type":  f"eq.{owner_type}",
+                    "owner_id":    f"eq.{owner_id}",
+                    "source_type": f"eq.{source_type}",
+                    "entity_type": "eq.asset",
+                    "select":      "table_id",
+                },
+                headers=_headers(),
+            ),
+            db_client.get(
+                _url("/rest/v1/source_field_mappings"),
+                params={
+                    "owner_type":  f"eq.{owner_type}",
+                    "owner_id":    f"eq.{owner_id}",
+                    "source_type": f"eq.{source_type}",
+                    "select":      "mappings",
+                },
+                headers=_headers(),
+            ),
+        )
 
     creds_rows = creds_r.json()
     if not creds_rows:

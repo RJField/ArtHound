@@ -53,15 +53,19 @@ async def _get_studio_source_creds(
     studio_id: str, client: httpx.AsyncClient
 ) -> tuple[str, dict]:
     """Returns (source_type, creds_dict), with token refresh for Jira."""
-    r = await db_client.get(
-        _url("/rest/v1/source_credentials"),
-        params={
-            "owner_type": "eq.studio",
-            "owner_id": f"eq.{studio_id}",
-            "select": "source_type,credentials",
-        },
-        headers=_headers(),
-    )
+    # source_credentials is an F-table (deny-all to users); read it as the system identity even though
+    # a user request (attachment view) triggers this. Flag-off: service-role; flag-on: arthound_system.
+    from lib.system_auth import system_identity
+    async with system_identity():
+        r = await db_client.get(
+            _url("/rest/v1/source_credentials"),
+            params={
+                "owner_type": "eq.studio",
+                "owner_id": f"eq.{studio_id}",
+                "select": "source_type,credentials",
+            },
+            headers=_headers(),
+        )
     rows = r.json()
     if not rows:
         raise ValueError(f"No source credentials for studio {studio_id}")

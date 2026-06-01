@@ -35,16 +35,20 @@ def log_credential_access(
 
 async def get_studio_airtable_creds(studio_id: str, user_id: str | None = None) -> tuple[str, str]:
     """Return (api_token, base_id) for the given studio from source_credentials."""
-    r = await db_client.get(
-        _url("/rest/v1/source_credentials"),
-        params={
-            "owner_type":  "eq.studio",
-            "owner_id":    f"eq.{studio_id}",
-            "source_type": "eq.airtable",
-            "select":      "credentials",
-        },
-        headers=_headers(),
-    )
+    # source_credentials is an F-table (deny-all to users); read as the system identity even when a
+    # user request triggers this. Flag-off: service-role; flag-on: arthound_system.
+    from lib.system_auth import system_identity
+    async with system_identity():
+        r = await db_client.get(
+            _url("/rest/v1/source_credentials"),
+            params={
+                "owner_type":  "eq.studio",
+                "owner_id":    f"eq.{studio_id}",
+                "source_type": "eq.airtable",
+                "select":      "credentials",
+            },
+            headers=_headers(),
+        )
     rows = r.json()
     if not rows:
         raise HTTPException(status_code=400, detail="No Airtable credentials found for this studio")

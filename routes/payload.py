@@ -1306,15 +1306,18 @@ async def retry_canonical(dispatch_id: str, user: CurrentUser = Depends(require_
 # ── internal: build a connector for a vendor's connected source tool ──────────
 
 async def _get_vendor_connector(vendor_id: str, client: httpx.AsyncClient):
-    r = await db_client.get(
-        _url("/rest/v1/source_credentials"),
-        params={
-            "owner_type": "eq.vendor",
-            "owner_id": f"eq.{vendor_id}",
-            "select": "source_type,credentials",
-        },
-        headers=_headers(),
-    )
+    # source_credentials is an F-table (deny-all to users); read as the system identity.
+    from lib.system_auth import system_identity
+    async with system_identity():
+        r = await db_client.get(
+            _url("/rest/v1/source_credentials"),
+            params={
+                "owner_type": "eq.vendor",
+                "owner_id": f"eq.{vendor_id}",
+                "select": "source_type,credentials",
+            },
+            headers=_headers(),
+        )
     rows = r.json()
     if not rows:
         raise HTTPException(
