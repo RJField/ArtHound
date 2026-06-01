@@ -71,12 +71,15 @@ async def _write_work_snapshots(result: dict) -> dict[str, str]:
 # ── Source write-back helpers ─────────────────────────────────────────────────
 
 async def _get_studio_source_type(studio_id: str) -> str | None:
-    r = await db_client.get(
-        _url("/rest/v1/source_credentials"),
-        params={"owner_type": "eq.studio", "owner_id": f"eq.{studio_id}",
-                "select": "source_type", "limit": "1"},
-        headers=_headers(),
-    )
+    # source_credentials is an F-table (deny-all to users); read as the system identity.
+    from lib.system_auth import system_identity
+    async with system_identity():
+        r = await db_client.get(
+            _url("/rest/v1/source_credentials"),
+            params={"owner_type": "eq.studio", "owner_id": f"eq.{studio_id}",
+                    "select": "source_type", "limit": "1"},
+            headers=_headers(),
+        )
     rows = r.json() if r.is_success else []
     return rows[0]["source_type"] if rows else None
 
