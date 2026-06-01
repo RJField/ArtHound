@@ -247,16 +247,20 @@ async def _replicate_studio_asset(canonical_asset_id: str, studio_id: str) -> No
             except Exception as exc:
                 log.warning("lorebot: copy failed %s[%d]: %s", field_key, idx, exc)
 
-        await db_client.patch(
-            _url("/rest/v1/replicated_assets"),
-            params={
-                "canonical_asset_id": f"eq.{canonical_asset_id}",
-                "owner_type": "eq.studio",
-                "owner_id": f"eq.{studio_id}",
-            },
-            headers=_headers({"Prefer": "return=minimal"}),
-            json={"meta": updated_meta},
-        )
+        # replicated_assets is system-write-only (synced truth); cache the copied content_hashes back as
+        # the system identity (flag-off: service-role; flag-on: arthound_system).
+        from lib.system_auth import system_identity
+        async with system_identity():
+            await db_client.patch(
+                _url("/rest/v1/replicated_assets"),
+                params={
+                    "canonical_asset_id": f"eq.{canonical_asset_id}",
+                    "owner_type": "eq.studio",
+                    "owner_id": f"eq.{studio_id}",
+                },
+                headers=_headers({"Prefer": "return=minimal"}),
+                json={"meta": updated_meta},
+            )
 
 
 # ── routes ────────────────────────────────────────────────────────────────────
