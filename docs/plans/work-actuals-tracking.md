@@ -1,4 +1,4 @@
-# Work Actuals Tracking — Implementation Plan
+# Work Actuals Tracking, Implementation Plan
 
 **Status:** Plan only. No feature code, no migrations applied.
 
@@ -14,13 +14,13 @@
 
 The write-back path (`routes/schedule.py` → `_write_back_to_source`) stores the created source record ID back into `generated_work.source_record_id` for both Jira and Airtable. This is the only correlation token between the plan side and the live work side. It is per-item, not a batch token.
 
-**Consequence for per-craft reconciliation:** There is no shared discriminator between the two tables at the row level beyond `canonical_asset_id` + the recovered `source_record_id`. A join on `(canonical_asset_id, source_record_id)` works when write-back succeeded and the source record was not cloned or restructured. For work that was created outside ArtHound, or where the source record ID was not stamped (write-back failure, pre-write-back data), there is no direct key — only fuzzy matching (name similarity, date overlap, estimate proximity) is available. This drives the m:n reconciliation design.
+**Consequence for per-craft reconciliation:** There is no shared discriminator between the two tables at the row level beyond `canonical_asset_id` + the recovered `source_record_id`. A join on `(canonical_asset_id, source_record_id)` works when write-back succeeded and the source record was not cloned or restructured. For work that was created outside ArtHound, or where the source record ID was not stamped (write-back failure, pre-write-back data), there is no direct key, only fuzzy matching (name similarity, date overlap, estimate proximity) is available. This drives the m:n reconciliation design.
 
 ### 1.2 Sync strategy for replicated_work
 
-`writer.py` upserts on `(owner_type, owner_id, source_type, source_record_id)` — the natural key. It is **in-place upsert, not truncate-and-rebuild**. Orphan deletion runs only on full sync and only for IDs not present in the fetched set.
+`writer.py` upserts on `(owner_type, owner_id, source_type, source_record_id)`, the natural key. It is **in-place upsert, not truncate-and-rebuild**. Orphan deletion runs only on full sync and only for IDs not present in the fetched set.
 
-Implication: `replicated_work` rows have stable physical identity as long as the source record ID does not change. A `canonical_work` layer is still necessary — not because rows churn, but because:
+Implication: `replicated_work` rows have stable physical identity as long as the source record ID does not change. A `canonical_work` layer is still necessary, not because rows churn, but because:
 - `canonical_work` must survive source migrations (Jira → ShotGrid) where source record IDs will differ
 - The changelog and reconciliation tables are durable ArtHound-owned satellites; FKing them directly to `replicated_work` would break on any source credential reset, orphan deletion, or full-resync that drops rows
 - The upsert-stable guarantee is contingent on no source migration; `canonical_work` provides the migration-proof layer
@@ -29,7 +29,7 @@ Implication: `replicated_work` rows have stable physical identity as long as the
 
 ### 1.3 The differ
 
-`lib/sync/differ.py` is intentionally thin: it compares `source_hash` (SHA-256 of `record.fields` JSON) and returns the records-to-upsert list. **Zero field-level diffing; no delta events are emitted.** The differ has no output channel for field-level transitions — it only answers "has anything changed?" The changelog must be built on top of it by:
+`lib/sync/differ.py` is intentionally thin: it compares `source_hash` (SHA-256 of `record.fields` JSON) and returns the records-to-upsert list. **Zero field-level diffing; no delta events are emitted.** The differ has no output channel for field-level transitions, it only answers "has anything changed?" The changelog must be built on top of it by:
 
 1. Querying the current row's values before the upsert
 2. Diffing old vs new at the field level after a hash change is detected
@@ -53,7 +53,7 @@ When `_write_back_to_source` succeeds, it stores the created source record ID ba
 - Not stamped if write-back fails (partial failure is silently swallowed)
 - The reverse: the next sync of that source record will land in `replicated_work` with the same `source_record_id`
 
-This is a genuine correlation bridge. The join `generated_work.source_record_id = replicated_work.source_record_id` (within the same studio scope) is the high-confidence match method. Reconciliation should treat this as `match_method = 'source_id'`, `confidence = 1.0`. All other methods (name, date, estimate proximity) are fuzzy and carry lower confidence. No additional correlation token is needed — but the reconciliation system must handle the case where `source_record_id` on `generated_work` is null (write-back not attempted or failed).
+This is a genuine correlation bridge. The join `generated_work.source_record_id = replicated_work.source_record_id` (within the same studio scope) is the high-confidence match method. Reconciliation should treat this as `match_method = 'source_id'`, `confidence = 1.0`. All other methods (name, date, estimate proximity) are fuzzy and carry lower confidence. No additional correlation token is needed, but the reconciliation system must handle the case where `source_record_id` on `generated_work` is null (write-back not attempted or failed).
 
 ### 1.6 source_field_mappings structure
 
@@ -70,15 +70,15 @@ One row per `(owner_type, owner_id, source_type)`. The `mappings` column is a JS
   "ingest_suppressed":    false
 }
 ```
-The razor config must reuse this field catalog. A studio selecting an "actuals" field should pick from the fields already classified in their `source_field_mappings`. The razor config is a separate table that references `(owner_type, owner_id, source_type, source_field_id)` — not embedded in `source_field_mappings` — because it carries additional metadata (razor type, unit, conversion factor) that does not belong in the field catalog.
+The razor config must reuse this field catalog. A studio selecting an "actuals" field should pick from the fields already classified in their `source_field_mappings`. The razor config is a separate table that references `(owner_type, owner_id, source_type, source_field_id)`, not embedded in `source_field_mappings`, because it carries additional metadata (razor type, unit, conversion factor) that does not belong in the field catalog.
 
 ### 1.7 Consumers of work-level data
 
 - `routes/numbersbot.py`: reads `replicated_work` (name, status, estimate) and `generated_work` (work_name, craft, estimate_days, start_date, end_date). Consumes both tables in context-building. Adding an actuals column to `replicated_work` and summary rollup fields to a future route would slot naturally into the existing parallel-fetch pattern.
-- `routes/schedule.py`: writes `generated_work`, does source write-back, has `/reconcile-work` endpoint (soft-deletes orphaned snapshots). The existing reconcile logic does a set-difference on source_record_id — it does not update any actuals. The reconciliation table (plan-vs-actual) is a new concept not present here.
+- `routes/schedule.py`: writes `generated_work`, does source write-back, has `/reconcile-work` endpoint (soft-deletes orphaned snapshots). The existing reconcile logic does a set-difference on source_record_id, it does not update any actuals. The reconciliation table (plan-vs-actual) is a new concept not present here.
 - `routes/reviews.py`: does not read `replicated_work` or `generated_work`. Not affected.
 - `routes/assets.py`: does not read `replicated_work` directly. Not affected.
-- A canonical_work layer would be a new join target for the above — no existing route queries a canonical_work table. The impact is additive, not breaking.
+- A canonical_work layer would be a new join target for the above, no existing route queries a canonical_work table. The impact is additive, not breaking.
 
 ### 1.8 canonical_assets shape reference
 
@@ -91,11 +91,11 @@ source_type      text NOT NULL
 created_at       timestamptz
 UNIQUE (studio_id, source_record_id, source_type)
 ```
-The `studio_id` (not `owner_type`/`owner_id`) is used here because canonical identity is always studio-owned — vendors access canonical assets via dispatches, never by direct ownership. `canonical_work` should mirror this: keyed on `(studio_id, source_record_id, source_type)` with `studio_id` not `owner_type/owner_id`, since work tracking is a studio-side concern and vendors access it (if at all) through the dispatch/payload model.
+The `studio_id` (not `owner_type`/`owner_id`) is used here because canonical identity is always studio-owned, vendors access canonical assets via dispatches, never by direct ownership. `canonical_work` should mirror this: keyed on `(studio_id, source_record_id, source_type)` with `studio_id` not `owner_type/owner_id`, since work tracking is a studio-side concern and vendors access it (if at all) through the dispatch/payload model.
 
 ### 1.9 canonical_products dependency
 
-No genuine dependency found. The actuals system links `canonical_work → canonical_asset → studio` and that chain is sufficient. Products appear in `replicated_assets.product` (a denormalized string) and in `replicated_products`, but neither the changelog, the reconciliation table, nor the actuals razor requires a stable product identity. Tier 0 rollups are by craft (from `generated_work.craft`) or by canonical asset. Product-level rollups can be computed as `SUM group by replicated_assets.product` — no canonical_products needed. **No canonical_products required. Constraint holds.**
+No genuine dependency found. The actuals system links `canonical_work → canonical_asset → studio` and that chain is sufficient. Products appear in `replicated_assets.product` (a denormalized string) and in `replicated_products`, but neither the changelog, the reconciliation table, nor the actuals razor requires a stable product identity. Tier 0 rollups are by craft (from `generated_work.craft`) or by canonical asset. Product-level rollups can be computed as `SUM group by replicated_assets.product`, no canonical_products needed. **No canonical_products required. Constraint holds.**
 
 ---
 
@@ -103,7 +103,7 @@ No genuine dependency found. The actuals system links `canonical_work → canoni
 
 ### 2.1 canonical_work: yes, deferred to Tier 1
 
-**Recommendation:** Build `canonical_work` in Tier 1, not Tier 0. Tier 0 reads are aggregate rollups from `generated_work` and `replicated_work` directly — no durable satellite is written, so canonical_work is not needed. Tier 1 writes the changelog and reconciliation rows, which require the stable FK anchor.
+**Recommendation:** Build `canonical_work` in Tier 1, not Tier 0. Tier 0 reads are aggregate rollups from `generated_work` and `replicated_work` directly, no durable satellite is written, so canonical_work is not needed. Tier 1 writes the changelog and reconciliation rows, which require the stable FK anchor.
 
 **Shape:** Mirror `canonical_assets` exactly:
 ```
@@ -114,11 +114,11 @@ source_type      text NOT NULL
 created_at       timestamptz
 UNIQUE (studio_id, source_record_id, source_type)
 ```
-Do not add `owner_type/owner_id` — canonical identity is studio-scoped by definition.
+Do not add `owner_type/owner_id`, canonical identity is studio-scoped by definition.
 
 **Trade-off:** Delaying canonical_work means Tier 0 actuals are unlinked snapshots (no history). Acceptable: Tier 0 is explicitly "baseline rollup / final-state parsing only." The moment a studio opts into Tier 1, the canonicalization backfill run establishes stable IDs for existing `replicated_work` rows.
 
-**Deciding question:** Does any Tier 0 feature write a satellite that must survive source migration? No — Tier 0 is read-only. Decision is safe.
+**Deciding question:** Does any Tier 0 feature write a satellite that must survive source migration? No, Tier 0 is read-only. Decision is safe.
 
 ### 2.2 Changelog shape
 
@@ -132,13 +132,13 @@ field_name         text NOT NULL
 old_value          text
 new_value          text
 ```
-Field values stored as text (coerced from any source type). Structured values (JSON arrays, select objects) serialized to canonical JSON string before storing — consistent comparison, no type ambiguity.
+Field values stored as text (coerced from any source type). Structured values (JSON arrays, select objects) serialized to canonical JSON string before storing, consistent comparison, no type ambiguity.
 
 **Trade-off:** Text storage of all values is lossy for numeric precision. Alternative: JSONB `old_value`/`new_value`. JSONB is better if downstream queries need to compare numeric deltas (estimate drift). Prefer JSONB.
 
 **Forward-instrument only:** No pre-onboarding backfill. First sync after Tier 1 activation writes the initial snapshot as a single `(field, null, new_value)` event per field, not a state diff. This is a known limitation: first-seen is not first-changed.
 
-**Index:** `(canonical_work_id, observed_at DESC)` — covers "show me the history of this work item" queries.
+**Index:** `(canonical_work_id, observed_at DESC)`, covers "show me the history of this work item" queries.
 
 ### 2.3 Reconciliation m:n model
 
@@ -155,7 +155,7 @@ notes                text           -- for manual matches
 ```
 `generated_work_id` is nullable to allow historical actuals (work that completed before ArtHound was adopted, or work created directly in the source without a generated plan).
 
-**Trade-off:** Allowing null `generated_work_id` means the table is not a true m:n bridge for every row. Alternative: a sentinel `generated_work` row for "no plan." Null is cleaner — the "no plan side" state is an intentional domain concept, not an error.
+**Trade-off:** Allowing null `generated_work_id` means the table is not a true m:n bridge for every row. Alternative: a sentinel `generated_work` row for "no plan." Null is cleaner, the "no plan side" state is an intentional domain concept, not an error.
 
 **contribution_ratio:** Required for split work (one plan item matched to N actual items, each representing a portion of the estimate). The sum of `contribution_ratio` for all actuals linked to one `generated_work_id` must equal 1.0 (enforced by application logic, not DB constraint, because it spans rows).
 
@@ -164,20 +164,20 @@ notes                text           -- for manual matches
 **Recommendation:** Typed enum with coercion to a canonical actual-unit set. No free-form config.
 
 Canonical actual types:
-- `elapsed_total` — wall-clock time from work item creation to close (or synced_at of terminal status). Available immediately from existing data if status transition is captured. No studio field required.
-- `elapsed_active` — wall-clock time from first "in-progress" status to first "done" status. Requires changelog (Tier 1) to detect the transition timestamps.
-- `logged_effort` — sum of a studio-defined numeric field (e.g. "Logged Days", "Actual Hours"). Requires studio to configure the field and declare the unit.
-- `active_effort` — same as logged_effort but semantically represents effort excluding wait/blocked time (studio declares the distinction).
-- `declared_custom` — studio-defined numeric field with explicit label and unit. Functionally identical to logged_effort but allows studios to name it meaningfully (e.g. "render frames" for technical work).
+- `elapsed_total`, wall-clock time from work item creation to close (or synced_at of terminal status). Available immediately from existing data if status transition is captured. No studio field required.
+- `elapsed_active`, wall-clock time from first "in-progress" status to first "done" status. Requires changelog (Tier 1) to detect the transition timestamps.
+- `logged_effort`, sum of a studio-defined numeric field (e.g. "Logged Days", "Actual Hours"). Requires studio to configure the field and declare the unit.
+- `active_effort`, same as logged_effort but semantically represents effort excluding wait/blocked time (studio declares the distinction).
+- `declared_custom`, studio-defined numeric field with explicit label and unit. Functionally identical to logged_effort but allows studios to name it meaningfully (e.g. "render frames" for technical work).
 
 The razor config row declares which type is active, which source field drives it (for logged/active/declared types), and the declared unit (days, hours, frames, or a studio-defined string).
 
-**Reuse of normalizer/alias machinery:** The razor config references a `source_field_id` from the studio's `source_field_mappings`. The normalizer already classifies and names these fields. Razor config lookup is `WHERE owner_type = $1 AND owner_id = $2 AND source_type = $3` — same pattern as field mappings, different table.
+**Reuse of normalizer/alias machinery:** The razor config references a `source_field_id` from the studio's `source_field_mappings`. The normalizer already classifies and names these fields. Razor config lookup is `WHERE owner_type = $1 AND owner_id = $2 AND source_type = $3`, same pattern as field mappings, different table.
 
 ### 2.5 Commensurability guardrail
 
 **Non-negotiable.** Variance delta (`actual - estimate`) is only computed when:
-1. `estimate` is in `estimate_days` (the generated_work unit — days) AND
+1. `estimate` is in `estimate_days` (the generated_work unit, days) AND
 2. The razor's declared unit is also days, OR
 3. An explicit `conversion_to_days` factor is stored in the razor config row
 
@@ -261,7 +261,7 @@ alter table replicated_work
   -- unit declared in actuals_razor_config.declared_unit — not stored per-row.
 ```
 
-No backfill needed — starts NULL. No column fallback required. Safe to drop if Tier 0 is rolled back (no downstream FK).
+No backfill needed, starts NULL. No column fallback required. Safe to drop if Tier 0 is rolled back (no downstream FK).
 
 ### 3.4 M-03: canonical_work (Tier 1)
 
@@ -284,7 +284,7 @@ create policy "cw_studio" on canonical_work for all using (
 );
 ```
 
-No RLS for vendor read — vendors access via dispatch model, not direct table access. If vendor actuals tracking is required in a future iteration, add a separate join through `payload_dispatches`.
+No RLS for vendor read, vendors access via dispatch model, not direct table access. If vendor actuals tracking is required in a future iteration, add a separate join through `payload_dispatches`.
 
 ### 3.5 M-04: replicated_work.canonical_work_id (expand phase, Tier 1)
 
@@ -361,7 +361,7 @@ create policy "wc_studio" on work_changelog for select using (
 -- Insert is service-role only (sync pipeline writes via service role key).
 ```
 
-Retention: no automatic trim initially. Add a nightly retention policy (similar to sync_log) once volume is observed — estimated at ~20 change events per active work item per quarter.
+Retention: no automatic trim initially. Add a nightly retention policy (similar to sync_log) once volume is observed, estimated at ~20 change events per active work item per quarter.
 
 ### 3.8 M-07: work_reconciliation (Tier 1)
 
@@ -410,13 +410,13 @@ alter table replicated_work
 
 ### 4.1 lib/sync/normalizer.py
 
-**Tier 0 — actual_value extraction:**
+**Tier 0, actual_value extraction:**
 - Add `_WORK_ACTUAL_ALIASES` list (similar to `_WORK_ESTIMATE_ALIASES`) as a fallback for studios without razor config.
 - Add optional `razor_config: dict | None` parameter to `normalize_work()`.
 - When `razor_config` is provided and has `source_field_id`, extract and coerce the value from `record.fields` into the returned dict as `"actual_value"`.
 - When `razor_config` is absent, `actual_value` is omitted from the output.
 
-**Tier 1 — no normalizer changes needed.** Changelog diffing operates on the serialized row, not on the raw record.
+**Tier 1, no normalizer changes needed.** Changelog diffing operates on the serialized row, not on the raw record.
 
 ### 4.2 lib/sync/writer.py
 
@@ -426,7 +426,7 @@ alter table replicated_work
 **Tier 1:**
 - Add `canonical_work_id` to the `upsert_work` row dict.
 - Add `upsert_canonical_work(studio_id, source_type, records)` function: batch-upserts `canonical_work` rows and returns `{source_record_id: canonical_work_id}` map (same pattern as `get_or_create_canonical_ids` in `lib/canonical.py`).
-- No changes to `load_existing_hashes` — it already operates on `replicated_work` columns.
+- No changes to `load_existing_hashes`, it already operates on `replicated_work` columns.
 
 ### 4.3 New: lib/sync/changelog.py (Tier 1)
 
@@ -465,7 +465,7 @@ Implementation sketch:
 
 ### 4.5 New: lib/sync/reconciliation.py (Tier 1)
 
-Module to run the reconciliation pass. Called explicitly (not on every sync — reconciliation is an async background job, not a sync-blocking step).
+Module to run the reconciliation pass. Called explicitly (not on every sync, reconciliation is an async background job, not a sync-blocking step).
 
 Logic:
 1. Fetch active `generated_work` rows with a `source_record_id` for the studio.
@@ -477,8 +477,8 @@ Logic:
 
 New router at `/api/actuals`:
 
-- `GET /rollup?studioId=&product=&craft=` — aggregate rollup: sum of `generated_work.estimate_days` vs sum of `replicated_work.actual_value`, grouped by craft. No canonical_work required. Returns commensurability status per group.
-- `GET /asset/{canonical_asset_id}` — per-asset actuals summary. Tier 0: flat comparison of estimate sum vs actual_value sum per craft. Tier 1: reconciliation-linked comparison with confidence and match_method exposed.
+- `GET /rollup?studioId=&product=&craft=`, aggregate rollup: sum of `generated_work.estimate_days` vs sum of `replicated_work.actual_value`, grouped by craft. No canonical_work required. Returns commensurability status per group.
+- `GET /asset/{canonical_asset_id}`, per-asset actuals summary. Tier 0: flat comparison of estimate sum vs actual_value sum per craft. Tier 1: reconciliation-linked comparison with confidence and match_method exposed.
 
 Commensurability check is applied in every response that computes variance. If `razor_config` is absent or `conversion_to_days` is null and `declared_unit != 'days'`, the variance field is `null` and `unit_mismatch` is `true`.
 
@@ -490,20 +490,20 @@ Commensurability check is applied in every response that computes variance. If `
 
 - Extend `_parallel_fetch` to include a query for `actuals_razor_config` when `owner_type == 'studio'`.
 - Extend the context block to include actuals rollup data (estimate vs actual by craft) when a razor is configured.
-- Note: commensurability check applies here too — do not synthesize a numeric variance unless units are confirmed compatible.
+- Note: commensurability check applies here too, do not synthesize a numeric variance unless units are confirmed compatible.
 
 ### 4.9 Unchanged
 
-- `lib/sync/differ.py` — no changes; remains a pure source-hash comparison
-- `lib/sync/connectors/airtable.py`, `lib/sync/connectors/jira.py` — no connector-level changes for Tier 0 or Tier 1; the actual_value field is just another numeric in the existing sync pipeline
-- `routes/assets.py`, `routes/reviews.py` — not affected
-- `lib/canonical.py` — not modified; `canonical_work` uses the same upsert-and-return pattern but implemented separately in `writer.py` to keep the canonical module asset-only
+- `lib/sync/differ.py`, no changes; remains a pure source-hash comparison
+- `lib/sync/connectors/airtable.py`, `lib/sync/connectors/jira.py`, no connector-level changes for Tier 0 or Tier 1; the actual_value field is just another numeric in the existing sync pipeline
+- `routes/assets.py`, `routes/reviews.py`, not affected
+- `lib/canonical.py`, not modified; `canonical_work` uses the same upsert-and-return pattern but implemented separately in `writer.py` to keep the canonical module asset-only
 
 ---
 
 ## 5. Tier 0 vs Tier 1 Split
 
-### Tier 0 — Independently shippable
+### Tier 0, Independently shippable
 
 **What it includes:**
 - M-01: `actuals_razor_config` table
@@ -511,7 +511,7 @@ Commensurability check is applied in every response that computes variance. If `
 - Razor config API: read/write for studio to declare their actuals field and unit
 - Normalizer change: extract `actual_value` when razor is configured
 - Writer change: write `actual_value` to `replicated_work`
-- `routes/actuals.py` — `/rollup` endpoint; per-asset summary (final-state reading only)
+- `routes/actuals.py`, `/rollup` endpoint; per-asset summary (final-state reading only)
 - Commensurability guardrail in the read path
 - NumberBot context extension (actuals summary, units-checked)
 
@@ -519,9 +519,9 @@ Commensurability check is applied in every response that computes variance. If `
 
 **What Tier 0 delivers:** A studio can declare "actual days = field X" and immediately see aggregate plan-vs-actual rollups by craft, as long as their source tool carries a numeric actuals field. No onboarding beyond mapping one field.
 
-**Historical data in Tier 0:** The final-state reading is correct for closed work items — `replicated_work.actual_value` at the time of query reflects the source tool's current value. If a studio has been logging actuals in Airtable for a year, those values appear immediately after the next sync. No reconstruction needed.
+**Historical data in Tier 0:** The final-state reading is correct for closed work items, `replicated_work.actual_value` at the time of query reflects the source tool's current value. If a studio has been logging actuals in Airtable for a year, those values appear immediately after the next sync. No reconstruction needed.
 
-### Tier 1 — Opt-in, gates per studio
+### Tier 1, Opt-in, gates per studio
 
 **What it includes, in dependency order:**
 1. M-03: `canonical_work` table
@@ -529,18 +529,18 @@ Commensurability check is applied in every response that computes variance. If `
 3. M-05: Backfill script (run per-studio on opt-in)
 4. M-06: `work_changelog` table
 5. M-07: `work_reconciliation` table
-6. `lib/sync/changelog.py` — field-delta capture in sync pipeline
-7. `lib/sync/reconciliation.py` — reconciliation pass
-8. M-08: NOT NULL constraint (IRREVERSIBLE — after verification)
+6. `lib/sync/changelog.py`, field-delta capture in sync pipeline
+7. `lib/sync/reconciliation.py`, reconciliation pass
+8. M-08: NOT NULL constraint (IRREVERSIBLE, after verification)
 9. Actuals route extension: reconciliation-linked per-asset detail
-10. UI (deferred — not in this plan scope)
+10. UI (deferred, not in this plan scope)
 
 **Tier 1 activation gate per studio:**
 - Studio has had at least one full sync with Tier 0 (razor configured, `actual_value` populated)
 - M-05 backfill returns 0 nulls for the studio
 - Studio explicitly opts in via a settings action (prevents accidental activation)
 
-**Tier 1 delivers:** Live flywheel — estimate vs actual tracked through time, transitions captured, plan-vs-actual reconciled by source_id match (high confidence) and name-fuzzy (medium confidence). Enables cycle-time analysis (`elapsed_active` razor requires changelog to detect status transitions).
+**Tier 1 delivers:** Live flywheel, estimate vs actual tracked through time, transitions captured, plan-vs-actual reconciled by source_id match (high confidence) and name-fuzzy (medium confidence). Enables cycle-time analysis (`elapsed_active` razor requires changelog to detect status transitions).
 
 ---
 
@@ -548,11 +548,11 @@ Commensurability check is applied in every response that computes variance. If `
 
 ### 6.1 Sync-interval aliasing
 
-The sync cursor is a timestamp; delta syncs fetch records modified after the last sync. If a work item is created, updated, and set to a terminal status within a single sync interval, the changelog will only see the final state, not the intermediate transitions. The probability is low for multi-day work but non-zero for short-turnaround items (bug fixes, quick tasks). The charter is "forward instrument only" — this is a known and accepted limitation. Document it in the UI as "transitions observed since ArtHound was activated."
+The sync cursor is a timestamp; delta syncs fetch records modified after the last sync. If a work item is created, updated, and set to a terminal status within a single sync interval, the changelog will only see the final state, not the intermediate transitions. The probability is low for multi-day work but non-zero for short-turnaround items (bug fixes, quick tasks). The charter is "forward instrument only", this is a known and accepted limitation. Document it in the UI as "transitions observed since ArtHound was activated."
 
 ### 6.2 Within-interval reversals
 
-Related to 6.1: a status that advances and then reverts within one sync interval is invisible. The changelog will record the net change (or no change if it ended back at the prior value — the hash would match). The commensurability guardrail does not help here; this is a fundamental limitation of polling-based CDC. Mitigations: (a) webhook-triggered incremental syncs reduce the interval; (b) accept the limitation and document it.
+Related to 6.1: a status that advances and then reverts within one sync interval is invisible. The changelog will record the net change (or no change if it ended back at the prior value, the hash would match). The commensurability guardrail does not help here; this is a fundamental limitation of polling-based CDC. Mitigations: (a) webhook-triggered incremental syncs reduce the interval; (b) accept the limitation and document it.
 
 ### 6.3 Split/merge/disappearance handling
 
@@ -560,9 +560,9 @@ Related to 6.1: a status that advances and then reverts within one sync interval
 
 **Merge:** Two source records become one. One canonical_work will be linked in the reconciliation table; the other will have no further synced updates (eventual orphan). The orphan-detection logic in `/reconcile-work` (soft-delete of generated_work snapshots) should be extended to flag canonical_work rows whose source_record_id no longer exists in replicated_work.
 
-**Disappearance:** A work item is deleted from the source tool. `delete_orphaned_records` in `writer.py` removes the `replicated_work` row on the next full sync. `canonical_work` is not deleted (it carries the durable history). The FK from `replicated_work.canonical_work_id` to `canonical_work(id)` uses no cascade — canonical_work rows survive replica deletion by design. The changelog and reconciliation rows survive via their own FK to canonical_work.
+**Disappearance:** A work item is deleted from the source tool. `delete_orphaned_records` in `writer.py` removes the `replicated_work` row on the next full sync. `canonical_work` is not deleted (it carries the durable history). The FK from `replicated_work.canonical_work_id` to `canonical_work(id)` uses no cascade, canonical_work rows survive replica deletion by design. The changelog and reconciliation rows survive via their own FK to canonical_work.
 
-**Disappearance policy decision (open):** Should canonical_work rows be soft-deleted when the source record disappears? Recommend: add a `deleted_at` column to `canonical_work` (defaulting NULL, populated when source record is no longer present) mirroring the generated_work pattern. Exact policy — how long to retain, how to surface in UI — is deferred.
+**Disappearance policy decision (open):** Should canonical_work rows be soft-deleted when the source record disappears? Recommend: add a `deleted_at` column to `canonical_work` (defaulting NULL, populated when source record is no longer present) mirroring the generated_work pattern. Exact policy,  (defaulting NULL, populated when source record is no longer present) mirroring the generated_work pattern. Exact policy, how long to retain, how to surface in UI, is deferred.
 
 ### 6.4 Historical vs native divergence
 
@@ -575,52 +575,52 @@ Changing the razor type changes what the numbers mean:
 - `logged_effort` → measures resource consumption; variance = "how much effort vs how much we estimated"
 - `elapsed_active` → measures cycle time excluding wait; variance = "active work duration vs estimate"
 
-These are different production signals and should not share generic "variance" labels in the UI. The read path must return `razor_type` alongside every actuals value so the frontend can render razor-appropriate labels. UI copy for each razor type needs to be defined (deferred to UX phase). The plan should not bake in "estimate accuracy" as the universal framing — it is only correct for effort razors.
+These are different production signals and should not share generic "variance" labels in the UI. The read path must return `razor_type` alongside every actuals value so the frontend can render razor-appropriate labels. UI copy for each razor type needs to be defined (deferred to UX phase). The plan should not bake in "estimate accuracy" as the universal framing, it is only correct for effort razors.
 
 ---
 
 ## 7. Sequenced Milestones
 
-**M0 — Razor config infrastructure (1–2 days, Tier 0 foundation)**
+**M0, Razor config infrastructure (1-2 days, Tier 0 foundation)**
 - Migration M-01: `actuals_razor_config` table
 - API endpoint: `GET/POST /api/actuals/config` (studio reads and writes their razor)
 - Config validation: check that declared `source_field_id` exists in the studio's `source_field_mappings`
 - No sync changes yet; this is config-only
 - Reviewable: migration + two route handlers + Pydantic model
 
-**M1 — Actual value extraction in sync pipeline (1–2 days, Tier 0)**
+**M1, Actual value extraction in sync pipeline (1-2 days, Tier 0)**
 - Migration M-02: `replicated_work.actual_value`
 - Normalizer change: `normalize_work()` accepts `razor_config`, extracts value from field
 - Writer change: write `actual_value` when present
 - Runner change: load razor config per studio at sync start, pass to normalize_work
 - Reviewable: diff on normalizer.py + writer.py + runner.py, verifiable with a manual sync
 
-**M2 — Actuals read path + commensurability guardrail (1–2 days, Tier 0 complete)**
+**M2, Actuals read path + commensurability guardrail (1-2 days, Tier 0 complete)**
 - `routes/actuals.py`: `/rollup` and `/asset/{id}` endpoints
 - Commensurability check: unit comparison, `conversion_to_days` path, null-variance response
 - NumberBot context extension
 - Reviewable: routes + guardrail unit tests (commensurability logic should be isolated and testable without DB)
 
-**M3 — canonical_work layer (1 day, Tier 1 foundation)**
-- Migrations M-03 and M-04 (expand phase only — no NOT NULL yet)
+**M3, canonical_work layer (1 day, Tier 1 foundation)**
+- Migrations M-03 and M-04 (expand phase only, no NOT NULL yet)
 - `upsert_canonical_work` in writer.py
 - Backfill script (M-05) for testing on dev environment
 - Reviewable: migrations + writer diff
 
-**M4 — Changelog capture (2–3 days, Tier 1)**
+**M4, Changelog capture (2-3 days, Tier 1)**
 - `lib/sync/changelog.py`
 - Runner integration: pre-fetch current values, call changelog after upsert
 - Migration M-06
 - Reviewable: changelog.py unit tests (diff logic isolated), integration test confirming events are written on a hash change
 
-**M5 — Reconciliation (2–3 days, Tier 1)**
+**M5, Reconciliation (2-3 days, Tier 1)**
 - `lib/sync/reconciliation.py`
 - Migration M-07
 - Schedule.py: trigger reconciliation pass from `/reconcile-work`
 - Actuals route extension: per-asset reconciliation-linked detail
 - Reviewable: reconciliation unit tests for source_id and name-fuzzy match paths
 
-**M6 — Tier 1 hardening + verification gate (1 day)**
+**M6, Tier 1 hardening + verification gate (1 day)**
 - Run M-05 backfill on staging with production data snapshot
 - Confirm verification queries return 0
 - Confirm work_changelog populated after a sync
@@ -628,7 +628,7 @@ These are different production signals and should not share generic "variance" l
 - After confirmation: migration M-08 (NOT NULL constraint, IRREVERSIBLE)
 - Reviewable: data verification report, migration file
 
-**M7 — UI (deferred, not in this plan)**
+**M7, UI (deferred, not in this plan)**
 - Actuals dashboard components
 - Per-asset estimate-vs-actual panel in Asset Viewer (WorkTab)
 - Razor config UI in Settings
@@ -636,4 +636,4 @@ These are different production signals and should not share generic "variance" l
 
 ---
 
-*Total backend estimate: M0–M6 ≈ 9–13 engineering days. Tier 0 (M0–M2) ≈ 4–6 days. Tier 1 (M3–M6) ≈ 5–7 days. Each milestone is independently reviewable and deployable.*
+*Total backend estimate: M0-M6 ≈ 9-13 engineering days. Tier 0 (M0-M2) ≈ 4-6 days. Tier 1 (M3-M6) ≈ 5-7 days. Each milestone is independently reviewable and deployable.*

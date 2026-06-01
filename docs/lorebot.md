@@ -2,7 +2,7 @@
 
 _Last updated: 2026-05-14_
 
-LoreBot is a document-reading AI assistant built into ArtHound. Given an asset or a vendor dispatch, it reads the attachments from Supabase Storage — PDFs, text files, images — and answers questions about their content using Claude Haiku.
+LoreBot is a document-reading AI assistant built into ArtHound. Given an asset or a vendor dispatch, it reads the attachments from Supabase Storage, LoreBot is a document-reading AI assistant built into ArtHound. Given an asset or a vendor dispatch, it reads the attachments from Supabase Storage, PDFs, text files, images, and answers questions about their content using Claude Haiku.
 
 **This is a proof-of-concept feature.** It is clearly marked as such in the UI and backend. Do not use it with confidential or sensitive data.
 
@@ -16,13 +16,13 @@ LoreBot allows studios and vendors to have a conversation about the files attach
 - Cross-referencing information across multiple attached files
 - Answering questions about concept art direction from image files
 
-It reads attachment content directly from Supabase Storage (the content-addressed layer used by the rest of the attachment pipeline). It never calls out to the original source tool during a chat session — it works from the stored copy.
+It reads attachment content directly from Supabase Storage (the content-addressed layer used by the rest of the attachment pipeline). It never calls out to the original source tool during a chat session, it works from the stored copy.
 
 ---
 
 ## Prerequisites
 
-Attachments must have been copied to Supabase Storage before LoreBot can read them. LoreBot includes a **replication step** — if uncopied attachments are detected, the chat endpoint returns `{needs_replication: true, uncopied: [...]}` instead of an answer. The frontend must call `POST /api/lorebot/replicate` first, then retry the chat.
+Attachments must have been copied to Supabase Storage before LoreBot can read them. LoreBot includes a **replication step**, if uncopied attachments are detected, the chat endpoint returns `{needs_replication: true, uncopied: [...]}` instead of an answer. The frontend must call `POST /api/lorebot/replicate` first, then retry the chat.
 
 ---
 
@@ -30,8 +30,8 @@ Attachments must have been copied to Supabase Storage before LoreBot can read th
 
 Available to both studio and vendor users.
 
-- **Studio users** — can chat about any asset in their own org's `replicated_assets`
-- **Vendor users** — can chat about dispatches received from studios (non-revoked only)
+- **Studio users**: can chat about any asset in their own org's `replicated_assets`
+- **Vendor users**: can chat about dispatches received from studios (non-revoked only)
 
 The correct context (asset vs. dispatch) is specified in the request body via `asset_id` or `dispatch_id`.
 
@@ -76,7 +76,7 @@ LoreBot is instructed to:
 
 ## Replication
 
-`POST /api/lorebot/replicate` triggers synchronous attachment copying for an asset or dispatch — the same underlying pipeline as the rest of the attachment system, but called on-demand rather than on-dispatch or on-first-view.
+`POST /api/lorebot/replicate` triggers synchronous attachment copying for an asset or dispatch, the same underlying pipeline as the rest of the attachment system, but called on-demand rather than on-dispatch or on-first-view.
 
 For studio assets, `_replicate_studio_asset()` walks the asset's `meta` dict, identifies uncopied attachment items (those without a `content_hash`), downloads each from the source tool (Airtable/Jira), hashes and uploads to Supabase Storage, then patches `content_hash` back into `replicated_assets.meta`. Expired Airtable URLs are refreshed by fetching the single record directly before re-attempting the download.
 
@@ -115,7 +115,7 @@ Returns a list of items with attachments for the calling user:
 { "dispatch_id": "dispatch-uuid" }
 ```
 
-Returns `{"status": "done"}` on success. Runs synchronously — may be slow for assets with many large attachments.
+Returns `{"status": "done"}` on success. Runs synchronously, may be slow for assets with many large attachments.
 
 ### `POST /api/lorebot/chat`
 
@@ -155,14 +155,14 @@ Returns one of:
 
 ## Known Gaps
 
-**PoC status** — LoreBot is explicitly a proof of concept. It has not been through a production security review. Do not use with confidential pre-release IP.
+**PoC status**: LoreBot is explicitly a proof of concept. It has not been through a production security review. Do not use with confidential pre-release IP.
 
-**No multi-turn context beyond what the client sends** — like NumberBot, LoreBot has no persistent memory. The client must send the full message history each turn.
+**No multi-turn context beyond what the client sends**: like NumberBot, LoreBot has no persistent memory. The client must send the full message history each turn.
 
-**Image limit** — only the first 4 images are passed to the model. Additional images are listed in the system prompt but their visual content is not available to the model.
+**Image limit**: only the first 4 images are passed to the model. Additional images are listed in the system prompt but their visual content is not available to the model.
 
-**PDF text extraction quality** — `pypdf` works well for digitally-produced PDFs but fails on scanned/image-based PDFs. OCR is not available.
+**PDF text extraction quality**: `pypdf` works well for digitally-produced PDFs but fails on scanned/image-based PDFs. OCR is not available.
 
-**No streaming** — responses are returned as a single JSON payload, not streamed. Long answers from complex documents may have noticeable latency.
+**No streaming**: responses are returned as a single JSON payload, not streamed. Long answers from complex documents may have noticeable latency.
 
-**Replication is synchronous and slow** — `POST /replicate` blocks until all attachments are copied. For assets with many large files, this can time out at the HTTP layer before completing.
+**Replication is synchronous and slow**: `POST /replicate` blocks until all attachments are copied. For assets with many large files, this can time out at the HTTP layer before completing.

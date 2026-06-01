@@ -1,26 +1,57 @@
 # ArtHound
 
-ArtHound is a canonical production data layer for game studios. It replicates source tool data (Airtable, Jira, and future connectors) into a central Supabase database, then all product features — estimation, scheduling, vendor dispatch, reviews — read from that database rather than from the source tools directly. Studios connect their existing pipelines; ArtHound becomes the stable cross-tool identity and coordination layer sitting on top.
+ArtHound is a canonical production data layer for game studios. It replicates source tool data (Airtable, Jira, and future connectors) into a central Supabase database, then all product features (estimation, scheduling, vendor dispatch, reviews) read from that database rather than from the source tools directly. Studios connect their existing pipelines, and ArtHound becomes the stable cross-tool identity and coordination layer sitting on top.
 
-The core conceptual model is **PAW — Product, Asset, Work**. Every piece of data belongs to one of these three tiers, and every record in the system links back to a canonical asset that acts as the stable thread connecting internal production data, vendor deliveries, reviews, and generated work into a single coherent record.
+The core conceptual model is **PAW: Product, Asset, Work**. Every piece of data belongs to one of these three tiers, and every record in the system links back to a canonical asset that acts as the stable thread connecting internal production data, vendor deliveries, reviews, and generated work into a single coherent record.
 
 ---
 
 ## Architecture Overview
 
 ```
-Source Tool (Airtable / Jira / …)
-        │
-   Sync Layer (lib/sync/)        ← replicates on login, webhook, and polling
-        │
-   Supabase (replicated_*)       ← all features read from here
-        │
-   FastAPI (routes/)             ← API layer
-        │
-   React SPA (frontend/)         ← UI
+Source Tool (Airtable / Jira / ...)
+        |
+   Sync Layer (lib/sync/)        <- replicates on login, webhook, and polling
+        |
+   Supabase (replicated_*)       <- all features read from here
+        |
+   FastAPI (routes/)             <- API layer
+        |
+   React SPA (frontend/)         <- UI
 ```
 
 Studios onboard by connecting their source tool through an init wizard, defining their P→A→W hierarchy, and mapping source fields to ArtHound's schema. Once that first sync runs, all product features are available without touching the source tool again.
+
+---
+
+## Security Architecture
+
+ArtHound holds unreleased game IP for multiple studios and vendors in one database, so tenant isolation is the central security property. Isolation is enforced in Postgres itself through Row-Level Security (RLS), not only in application code, so a missing filter in a route handler cannot leak one org's data to another.
+
+### Four runtime identities
+
+Every database call runs as exactly one of four identities. The service-role key, which bypasses RLS, is kept out of all request paths.
+
+1. **User** (anon key + the caller's Supabase JWT). The default for request handlers. RLS policies scope every read and write to the user's own org. The request's token is bound to a `ContextVar` for the duration of the request, so every query made while serving it runs as that user.
+2. **System** (`arthound_system`, a narrow Postgres role). Background jobs (sync, polling, the attachment copy worker, token refresh, log trimming) run here via `system_identity()`. It is least-privilege and scoped by its own policies, not god-mode. The token is a short-lived JWT minted with the `arthound_system` role claim, which PostgREST maps to the Postgres role.
+3. **RPC** (`SECURITY DEFINER` functions owned by `arthound_rpc`). Cross-org writes that no single org's RLS could authorize (accepting a link invite, ingesting a payload, freezing a shared estimate) go through these functions. Authorization lives inside the function body and is keyed on `auth.uid()`, never on a value the caller passes in.
+4. **service_role** (migrations, plus two structural carve-outs). Reserved for schema migrations and break-glass. The two sanctioned exceptions are the GoTrue Admin API (user creation and email lookups, which are not PostgREST tables) and Storage byte serving (authorized by a user-context metadata check before any byte is fetched).
+
+The cutover from the old service-role-everywhere model to RLS is controlled by a single runtime flag, `USE_USER_IDENTITY`, read per request. With the flag off, `_headers()` returns service-role headers and behavior is identical to the pre-RLS app. With it on, `_headers()` returns the bound user or system token and fails closed if no identity is present, rather than silently falling back to service-role. Because the flag is a runtime value and not a deploy, the cutover and its rollback are instant and independent of code releases.
+
+### Predicate functions and tenancy patterns
+
+Membership is resolved through a small set of `SECURITY DEFINER`, `STABLE`, `SET search_path = ''` helper functions (`current_studio_ids()`, `current_vendor_ids()`, `is_my_org()`, `is_org_admin()`, `is_link_party()`). Policies call these helpers instead of querying membership tables directly, which removes the need to grant users any direct read on the membership tables and keeps the Postgres role identity, not a spoofable JWT claim, as the source of truth.
+
+Roughly fifty tables are covered by six tenancy patterns: owner-record, single-org, polymorphic (`owner_type` + `owner_id`), dual-party (studio and vendor both see a shared row, but only the owner writes it), grant-based, and system-only (deny-all to users, written only by the system role or an RPC). FORCE RLS is applied broadly, with a deliberate exemption for the three membership tables the predicate functions read, to avoid a recursion where a policy consults a helper that is itself subject to the same policy.
+
+### Storage and the byte layer
+
+Supabase Storage is a separate service with its own access control, so the table-level cutover does not by itself secure attachment bytes. Every byte-serving and upload path first performs a user-context metadata read (of `replicated_assets`, `payload_dispatches`, or `review_attachments`) that RLS scopes to the caller's org. If that row is invisible to the caller the request returns 404 before any byte is fetched. The byte transfer itself stays service-role, since access was already authorized.
+
+### Test guard
+
+`scripts/rls_persona_matrix.py` is a standalone correctness guard that mints a JWT per persona and asserts the row-visibility contract for every tenancy-critical table by hitting PostgREST directly, so it exercises the live policies regardless of the application flag. It checks own-org visibility for studios and vendors, cross-org denial, the link-authorized counterparty read, the system identity, anon deny-all, and that no route imports the break-glass path. Keep it green before any policy change ships. The full design and migration history live in [docs/plans/rls-migration.md](docs/plans/rls-migration.md).
 
 ---
 
@@ -28,23 +59,23 @@ Studios onboard by connecting their source tool through an init wizard, defining
 
 ### [Sync Layer](docs/sync.md)
 
-The sync layer is the most important architectural component. It runs continuously — triggered on login, by a polling loop, and by source tool webhooks — and keeps the Supabase `replicated_*` tables current. A sync run proceeds through six phases: init (load credentials and mappings), fetch (pull raw records from the source tool), normalize (map source fields to ArtHound slots), diff (detect changes by source hash), write (batch upsert to Supabase), and cleanup (delete orphaned records). Two connectors are currently implemented — Airtable and Jira Cloud/Data Center — against a shared `BaseConnector` interface. Delta syncs use per-owner cursors so only changed records are written on subsequent runs.
+The sync layer is the most important architectural component. It runs continuously, triggered on login, by a polling loop, and by source tool webhooks, and keeps the Supabase `replicated_*` tables current. A sync run proceeds through six phases: init (load credentials and mappings), fetch (pull raw records from the source tool), normalize (map source fields to ArtHound slots), diff (detect changes by source hash), write (batch upsert to Supabase), and cleanup (delete orphaned records). Two connectors are currently implemented, Airtable and Jira Cloud/Data Center, against a shared `BaseConnector` interface. Delta syncs use per-owner cursors so only changed records are written on subsequent runs.
 
 ### [Studio Onboarding](docs/onboarding.md)
 
-A gated five-step wizard that connects a studio's source tool and runs the first full sync. Steps in order: validate and encrypt source credentials, fetch and cache the full source schema, define the P→A→W hierarchy (which source tables are Products, Assets, and Work, and how they link), map source fields to ArtHound slots and classify them by display tier, then start the background init job. Each step gates the next. A polling endpoint reports job progress so the UI can show live status.
+A gated five-step wizard that connects a studio's source tool and runs the first full sync. Steps in order: validate and encrypt source credentials, fetch and cache the full source schema, define the P→A→W hierarchy (which source tables are Products, Assets, and Work, and how they link), map source fields to ArtHound slots and classify them by display tier, then start the background init job. Each step gates the next. A polling endpoint reports job progress so the UI can show live status. New accounts create their org through a post-login onboarding step rather than at signup, so org creation runs under the new account's own identity.
 
 ### [Asset Viewer](docs/asset-viewer.md)
 
-The central UI surface. A three-panel layout — filterable asset list on the left, tabbed detail panel on the right. Tabs: Details (slot fields + meta fields grouped by display tier, with a "Show more" collapse for secondary-tier fields), Work (source work vs ArtHound-generated work, with a Gantt timeline view), Reviews, Attachments, and Bugs. Column visibility in the list panel is persisted in localStorage. Field display tier (primary / secondary / hidden) is configured per studio in the field mapping UI and drives both the list columns and the detail panel. Schema drift — changes to the source tool's field schema — surfaces as a banner and badge prompting the studio to review their mappings.
+The central UI surface: a three-panel layout with a filterable asset list on the left and a tabbed detail panel on the right. Tabs are Details (slot fields plus meta fields grouped by display tier, with a "Show more" collapse for secondary-tier fields), Work (source work vs ArtHound-generated work, with a Gantt timeline view), Reviews, Attachments, and Bugs. Column visibility in the list panel is persisted in localStorage. Field display tier (primary, secondary, hidden) is configured per studio in the field mapping UI and drives both the list columns and the detail panel. Schema drift, meaning changes to the source tool's field schema, surfaces as a banner and badge prompting the studio to review their mappings.
 
 ### [Estimation Engine](docs/estimation.md)
 
-An organisation defines a library of **workflow steps** (production tasks with optional craft labels and dependency edges), then chooses **variable fields** from their source schema (e.g., "Asset Type", "Complexity"). The system enumerates all unique combinations of those field values across synced assets and builds an estimate matrix: one cell per (workflow step × variable combination), each holding a day count. The matrix is filled via an inline spreadsheet UI. When the scheduler generates work for an asset, it resolves the asset's variable values against this matrix to produce step-level estimates. Dependency edges between steps are validated server-side so a circular dependency can never be saved. The stack is org-scoped — owned by either a studio or a vendor.
+An organisation defines a library of **workflow steps** (production tasks with optional craft labels and dependency edges), then chooses **variable fields** from their source schema (for example "Asset Type" or "Complexity"). The system enumerates all unique combinations of those field values across synced assets and builds an estimate matrix: one cell per (workflow step x variable combination), each holding a day count. The matrix is filled via an inline spreadsheet UI. When the scheduler generates work for an asset, it resolves the asset's variable values against this matrix to produce step-level estimates. Dependency edges between steps are validated server-side so a circular dependency can never be saved. The stack is org-scoped, owned by either a studio or a vendor.
 
 ### [Vendor Estimate Sharing](docs/estimate-sharing.md)
 
-Vendors maintain their own estimation matrix, optionally vary their rates per studio relationship (a base matrix overlaid with per-link overrides), and share a **frozen, granularity-controlled snapshot** with a linked studio — the reverse direction of asset payload dispatch. At share time the vendor chooses how much process detail to expose (asset total, by craft, or per workflow step); the projector enforces that boundary so internal process detail never leaks beyond the chosen level. Re-sharing replaces the prior share in that channel, so dialing disclosure down genuinely reduces what the studio can see. Delivery is a route-scoped inbox with revoke, optional expiry, and an append-only access log. v1 is visible-only on the studio side — not yet wired into scenario planning.
+Vendors maintain their own estimation matrix, optionally vary their rates per studio relationship (a base matrix overlaid with per-link overrides), and share a **frozen, granularity-controlled snapshot** with a linked studio, the reverse direction of asset payload dispatch. At share time the vendor chooses how much process detail to expose (asset total, by craft, or per workflow step), and the projector enforces that boundary so internal process detail never leaks beyond the chosen level. Re-sharing replaces the prior share in that channel, so dialing disclosure down genuinely reduces what the studio can see. Delivery is a route-scoped inbox with revoke, optional expiry, and an append-only access log. v1 is visible-only on the studio side and not yet wired into scenario planning.
 
 ### [Schedule and Generated Work](docs/schedule.md)
 
@@ -52,35 +83,35 @@ The scheduler generates work snapshots from the estimate matrix and writes them 
 
 ### [NumberBot](docs/numberbot.md)
 
-An in-app AI assistant powered by Claude Haiku. Before each turn it fetches live context — asset inventory, field mappings, source work, generated work, and reviews — builds an ASCII summary, and passes it to the model with prompt caching enabled. Scope is strictly limited to production data questions: the assistant refuses general knowledge, business advice, and anything not grounded in the fetched context. Works for both studio and vendor sessions; vendor context is scoped to dispatched assets only.
+An in-app AI assistant powered by Claude Haiku. Before each turn it fetches live context (asset inventory, field mappings, source work, generated work, and reviews), builds an ASCII summary, and passes it to the model with prompt caching enabled. Scope is strictly limited to production data questions: the assistant refuses general knowledge, business advice, and anything not grounded in the fetched context. It works for both studio and vendor sessions; vendor context is scoped to dispatched assets only.
 
-### [Studio↔Vendor Handshake](docs/handshake.md)
+### [Studio/Vendor Handshake](docs/handshake.md)
 
-The prerequisite gate for payload dispatch. Studios send invites to vendors by searching their unique handle; vendors preview the studio's payload templates and accept, triggering the creation of an active link and an optional field mapping setup step. Either party can cancel a link, which immediately revokes all outstanding (non-ingested) dispatches and writes a full audit trail. The `review_collaboration_mode` set at invite time (`none` / `isolated` / `collaborative`) controls review visibility between orgs; currently only `none` is live.
+The prerequisite gate for payload dispatch. Studios send invites to vendors by searching their unique handle; vendors preview the studio's payload templates and accept, triggering the creation of an active link and an optional field mapping setup step. Either party can cancel a link, which immediately revokes all outstanding (non-ingested) dispatches and writes a full audit trail. The `review_collaboration_mode` set at invite time (`none`, `isolated`, `collaborative`) controls review visibility between orgs; currently only `none` is live.
 
 ### [Asset Payload Dispatch](docs/payload.md)
 
-Studios dispatch frozen snapshots of asset data to connected vendors. Each dispatch is immutable after creation — changes to the studio's source data do not affect what the vendor sees. Vendors map payload fields to their own source tool schema and ingest, creating a real Jira issue or Airtable record in their own tool. ArtHound writes a canonical link (`payload_export_records`) back to the studio's asset on successful ingest, making the vendor's record permanently traceable. Dispatches can be revoked by the studio at any time; an expiry window is set at dispatch time. An append-only audit log tracks every access event for both parties.
+Studios dispatch frozen snapshots of asset data to connected vendors. Each dispatch is immutable after creation, so changes to the studio's source data do not affect what the vendor sees. Vendors map payload fields to their own source tool schema and ingest, creating a real Jira issue or Airtable record in their own tool. ArtHound writes a canonical link (`payload_export_records`) back to the studio's asset on successful ingest, making the vendor's record permanently traceable. Dispatches can be revoked by the studio at any time, and an expiry window is set at dispatch time. An append-only audit log tracks every access event for both parties.
 
 ### [Attachment Architecture](docs/attachments.md)
 
-Attachments from source tools (images, video, PDFs, documents) are surfaced inline in the UI via a content-addressed storage layer in Supabase Storage. Two copy triggers: **copy-on-dispatch** (attachments are downloaded and stored when a studio dispatches an asset to a vendor, freezing the snapshot) and **copy-on-first-view** (studio attachments are copied on the first time a user opens them in the Asset Viewer). Every blob is stored at `attachments/sha256/{hex_hash}`, making deduplication free and paths collision-safe. A background drain loop processes the copy job queue every 30 seconds; a nightly purge removes orphaned blobs. Browser media components (`<img>`, `<video>`, pdf.js) receive blob URLs created from authenticated proxy responses, since browsers cannot send JWT headers in media element requests.
+Attachments from source tools (images, video, PDFs, documents) are surfaced inline in the UI via a content-addressed storage layer in Supabase Storage. There are two copy triggers: **copy-on-dispatch** (attachments are downloaded and stored when a studio dispatches an asset to a vendor, freezing the snapshot) and **copy-on-first-view** (studio attachments are copied the first time a user opens them in the Asset Viewer). Every blob is stored at `attachments/sha256/{hex_hash}`, making deduplication free and paths collision-safe. A background drain loop processes the copy job queue every 30 seconds, and a nightly purge removes orphaned blobs. Browser media components (`<img>`, `<video>`, pdf.js) receive blob URLs created from authenticated proxy responses, since browsers cannot send JWT headers in media element requests.
 
 ### [Asset Reviews](docs/reviews.md)
 
-ArtHound-native structured feedback records attached to canonical assets. Not synced to or from any source tool — they exist only in ArtHound's database. Both studios and vendors can create reviews on assets they have access to (studios on their own assets; vendors on dispatched assets). Reviews support file attachments stored in Supabase Storage, independent of the source-tool attachment pipeline. The `review_collaboration_mode` on the studio↔vendor link is intended to control cross-org review visibility; that feature is not yet implemented.
+ArtHound-native structured feedback records attached to canonical assets. They are not synced to or from any source tool and exist only in ArtHound's database. Both studios and vendors can create reviews on assets they have access to (studios on their own assets, vendors on dispatched assets). Reviews support file attachments stored in Supabase Storage, independent of the source-tool attachment pipeline. The `review_collaboration_mode` on the studio-vendor link is intended to control cross-org review visibility; that feature is not yet implemented.
 
 ### [Member Management and Org Hub](docs/members.md)
 
-Studios and vendors are multi-user organisations with three membership tiers: `owner`, `admin`, and `user`. New members join via an 8-character invite code; they land in a pending state until an org admin approves their join request. The org hub shows the full member list with inline role management, the current invite code (with regeneration), and pending join requests. Ownership transfer is atomic via a Postgres RPC — there is always exactly one owner. A 15-second membership cache means role changes propagate within 15 seconds.
+Studios and vendors are multi-user organisations with three membership tiers: `owner`, `admin`, and `user`. New members join via an 8-character invite code and land in a pending state until an org admin approves their join request. The org hub shows the full member list with inline role management, the current invite code (with regeneration), and pending join requests. Ownership transfer is atomic via a Postgres RPC, so there is always exactly one owner. A 15-second membership cache means role changes propagate within 15 seconds.
 
 ### [Scenario Planner](docs/scenario.md)
 
-Studios model hypothetical production schedules — "when can we ship?" or "what can we complete by date X?" — without touching their source tool. A Claude Haiku scoping conversation gathers planning parameters (release cadence, asset counts by classification, optional per-craft concurrency caps), then a generation engine writes an ephemeral product/asset/work plan to session-scoped tables. Two engines are available: a deterministic rule-based engine (no AI, fully reproducible, grounded entirely in the studio's estimate matrix and workflow graph) and a Claude Sonnet multi-pass engine. Both support `earliest_ship` (schedule forward, derive completion date) and `target_date` (schedule backward, flag infeasibility) modes. The rule-based engine uses a DAG-aware, asset-at-a-time scheduler with dependency-respecting date placement, a two-pass capped scheduler (forward cap-push + backward pullback for uncapped steps), and a cadence scheduling path that derives sprint release dates from actual asset completions. Post-generation, Haiku answers questions about the plan in a discussion chat. Export to CSV and Write to Source are deferred.
+Studios model hypothetical production schedules ("when can we ship?" or "what can we complete by date X?") without touching their source tool. A Claude Haiku scoping conversation gathers planning parameters (release cadence, asset counts by classification, optional per-craft concurrency caps), then a generation engine writes an ephemeral product/asset/work plan to session-scoped tables. Two engines are available: a deterministic rule-based engine (no AI, fully reproducible, grounded entirely in the studio's estimate matrix and workflow graph) and a Claude Sonnet multi-pass engine. Both support `earliest_ship` (schedule forward, derive completion date) and `target_date` (schedule backward, flag infeasibility) modes. The rule-based engine uses a DAG-aware, asset-at-a-time scheduler with dependency-respecting date placement, a two-pass capped scheduler (forward cap-push plus backward pullback for uncapped steps), and a cadence scheduling path that derives sprint release dates from actual asset completions. After generation, Haiku answers questions about the plan in a discussion chat. Export to CSV and Write to Source are deferred.
 
 ### [LoreBot](docs/lorebot.md)
 
-A proof-of-concept document-reading assistant. Given a canonical asset (studio) or a dispatch (vendor), LoreBot reads the attached files from Supabase Storage — PDFs, text, images — and answers questions about their content using Claude Haiku with vision. PDFs are extracted via `pypdf`; up to four images are passed as base64 vision blocks. Attachments must be copied to Storage before chat begins; a replication endpoint triggers the copy synchronously. Prompt caching is applied to the attachment context. Explicitly marked PoC — not for use with confidential data.
+A proof-of-concept document-reading assistant. Given a canonical asset (studio) or a dispatch (vendor), LoreBot reads the attached files from Supabase Storage (PDFs, text, images) and answers questions about their content using Claude Haiku with vision. PDFs are extracted via `pypdf`, and up to four images are passed as base64 vision blocks. Attachments must be copied to Storage before chat begins; a replication endpoint triggers the copy synchronously. Prompt caching is applied to the attachment context. Explicitly marked PoC, not for use with confidential data.
 
 ### [Synthetic Data Generator](docs/synthetic.md)
 
@@ -88,7 +119,7 @@ An admin-only tool for populating an Airtable base with realistic-looking test d
 
 ### [Platform Admin](docs/admin.md)
 
-System-wide controls for ArtHound operators. Access is restricted to email addresses in the `PLATFORM_ADMIN_EMAILS` environment variable. Currently controls the registration gate: `registration_invite_required` (boolean) and `registration_invite_code` (the platform-wide code new users must enter). A simple admin panel UI at `/admin` exposes these settings.
+System-wide controls for ArtHound operators. Access is restricted to email addresses in the `PLATFORM_ADMIN_EMAILS` environment variable. It currently controls the registration gate: `registration_invite_required` (boolean) and `registration_invite_code` (the platform-wide code new users must enter). A simple admin panel UI at `/admin` exposes these settings.
 
 ---
 
@@ -101,7 +132,7 @@ uvicorn main:app --reload --port 8000
 
 **Frontend** (from `frontend/`):
 ```bash
-npm run dev        # Vite dev server on :5173, proxies /api → localhost:8000
+npm run dev        # Vite dev server on :5173, proxies /api to localhost:8000
 npm run build      # Outputs to frontend/dist/ (served by FastAPI in prod)
 ```
 
@@ -109,4 +140,4 @@ Both servers must run simultaneously in development.
 
 ## Database
 
-Migrations live in `supabase/migrations/` and are applied in filename order via `supabase db push`. Never apply schema changes through the Supabase dashboard.
+Migrations live in `supabase/migrations/` and are applied in filename order. Apply them explicitly and review the diff before running against production; never blind-push to prod, and never apply schema changes through the Supabase dashboard.

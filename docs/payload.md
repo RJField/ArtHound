@@ -2,7 +2,7 @@
 
 _Last updated: 2026-05-11_
 
-The payload system is the mechanism by which studios share asset data with vendors inside ArtHound. A studio selects one or more canonical assets, chooses which fields to expose, and dispatches a frozen snapshot to a specific vendor. The vendor maps those fields to their own source tool's schema and ingests — creating a real record in their Jira or Airtable — while ArtHound writes a permanent canonical link so the asset's journey through the vendor is traceable for the life of the production.
+The payload system is the mechanism by which studios share asset data with vendors inside ArtHound. A studio selects one or more canonical assets, chooses which fields to expose, and dispatches a frozen snapshot to a specific vendor. The vendor maps those fields to their own source tool's schema and ingests, The payload system is the mechanism by which studios share asset data with vendors inside ArtHound. A studio selects one or more canonical assets, chooses which fields to expose, and dispatches a frozen snapshot to a specific vendor. The vendor maps those fields to their own source tool's schema and ingests, creating a real record in their Jira or Airtable, while ArtHound writes a permanent canonical link so the asset's journey through the vendor is traceable for the life of the production.
 
 This is not a read-access grant. The vendor never touches the studio's source tool. The studio controls exactly what fields are shared, when access expires, and can revoke at any time.
 
@@ -10,23 +10,23 @@ This is not a read-access grant. The vendor never touches the studio's source to
 
 ## Concepts
 
-**Template** — a reusable studio-defined list of which asset fields to include in a dispatch. Each template entry carries `{key, label, type}`. Templates are optional; an untemplatised dispatch includes all fields from the asset's `meta` blob. Studios manage templates from the payload settings panel.
+**Template**: a reusable studio-defined list of which asset fields to include in a dispatch. Each template entry carries `{key, label, type}`. Templates are optional; an untemplatised dispatch includes all fields from the asset's `meta` blob. Studios manage templates from the payload settings panel.
 
-**Dispatch** — one row in `payload_dispatches` per dispatched asset. Holds a frozen `payload_data` JSONB blob (`{asset_global_id, schema, data, dispatched_at}`), a SHA-256 token hash, an expiry timestamp, and the `recipient_vendor_id`. Created atomically at dispatch time; never mutated after creation.
+**Dispatch**: one row in `payload_dispatches` per dispatched asset. Holds a frozen `payload_data` JSONB blob (`{asset_global_id, schema, data, dispatched_at}`), a SHA-256 token hash, an expiry timestamp, and the `recipient_vendor_id`. Created atomically at dispatch time; never mutated after creation.
 
-**Snapshot** — the frozen copy of the asset's field data at the moment of dispatch. Changes to the studio's source tool after dispatch do not affect what the vendor sees. This is intentional: the studio controls the version the vendor works from.
+**Snapshot**: the frozen copy of the asset's field data at the moment of dispatch. Changes to the studio's source tool after dispatch do not affect what the vendor sees. This is intentional: the studio controls the version the vendor works from.
 
-**Field mapping** — the vendor's saved translation of payload field keys to their own source tool field keys. Stored in `payload_field_mappings`. Keyed on `(dispatch_id, recipient_vendor_id)`; one row per dispatch per vendor.
+**Field mapping**: the vendor's saved translation of payload field keys to their own source tool field keys. Stored in `payload_field_mappings`. Keyed on `(dispatch_id, recipient_vendor_id)`; one row per dispatch per vendor.
 
-**Ingest** — the act of creating a real record in the vendor's source tool from the payload data and writing a canonical link back to ArtHound. Terminal success state: `ingested_at IS NOT NULL`. Terminal failure state: `failed_at IS NOT NULL` (retryable).
+**Ingest**: the act of creating a real record in the vendor's source tool from the payload data and writing a canonical link back to ArtHound. Terminal success state: `ingested_at IS NOT NULL`. Terminal failure state: `failed_at IS NOT NULL` (retryable).
 
-**Canonical link** — two rows written atomically on successful ingest: a `payload_export_records` row linking the vendor's new source record to the studio's canonical asset, and a `replicated_assets` stub so the record is immediately queryable via ArtHound.
+**Canonical link**: two rows written atomically on successful ingest: a `payload_export_records` row linking the vendor's new source record to the studio's canonical asset, and a `replicated_assets` stub so the record is immediately queryable via ArtHound.
 
-**Ingest template** — a vendor's saved default field mapping for payloads from a specific studio. Auto-saved after each successful ingest. Keyed on `vendor_id + studio_id`, not on the dispatch, so it persists across multiple dispatch cycles.
+**Ingest template**: a vendor's saved default field mapping for payloads from a specific studio. Auto-saved after each successful ingest. Keyed on `vendor_id + studio_id`, not on the dispatch, so it persists across multiple dispatch cycles.
 
-**Drift** — a mismatch between the vendor's saved ingest template and the current payload's field schema (new fields added, old fields removed by the studio since the template was last saved). Surfaced to the vendor as a resolution step before the mapping UI is shown.
+**Drift**: a mismatch between the vendor's saved ingest template and the current payload's field schema (new fields added, old fields removed by the studio since the template was last saved). Surfaced to the vendor as a resolution step before the mapping UI is shown.
 
-**Revocation** — a studio action that immediately blocks all future vendor access to a dispatch. The vendor's already-created source tool record is not deleted (ArtHound does not own the vendor's Jira or Airtable), but no further canonical lookups can be performed against the revoked dispatch.
+**Revocation**: a studio action that immediately blocks all future vendor access to a dispatch. The vendor's already-created source tool record is not deleted (ArtHound does not own the vendor's Jira or Airtable), but no further canonical lookups can be performed against the revoked dispatch.
 
 ---
 
@@ -60,7 +60,7 @@ attachment_copy_jobs (pending)
       └── INSERT attachment_refs(content_hash, dispatch_id)
 ```
 
-Blobs are deduplicated across dispatches by content hash. The same attachment shared across multiple dispatch cycles is stored once. Vendors access attachments via signed Supabase Storage URLs — they never connect to the studio's original Airtable or Jira environment.
+Blobs are deduplicated across dispatches by content hash. The same attachment shared across multiple dispatch cycles is stored once. Vendors access attachments via signed Supabase Storage URLs, they never connect to the studio's original Airtable or Jira environment.
 
 ### Vendor side
 
@@ -125,7 +125,7 @@ The one-time plaintext token is returned to the studio at dispatch time and neve
 
 ### Row Level Security
 
-All payload tables have RLS enabled. Writes to `payload_access_log` are blocked at the policy level — only the service-role `_log()` helper can write audit rows.
+All payload tables have RLS enabled. Writes to `payload_access_log` are blocked at the policy level, only the service-role `_log()` helper can write audit rows.
 
 | Table | Studio | Vendor |
 |---|---|---|
@@ -139,7 +139,7 @@ All payload tables have RLS enabled. Writes to `payload_access_log` are blocked 
 ### Cross-tenant isolation
 
 - The studio never sees the vendor's internal source tool schema or mapping choices
-- The vendor never sees the studio's Supabase data — only the frozen `payload_data` blob
+- The vendor never sees the studio's Supabase data, only the frozen `payload_data` blob
 - Attachments travel through ArtHound Storage with signed URLs; the vendor has zero connection to the studio's original Airtable or Jira environment
 - Data never crosses org boundaries without an active `studio_vendor_links` record
 
@@ -172,20 +172,20 @@ Vendors can review the payload field data inline in the ingest UI before committ
 
 Attachments are viewable via signed Supabase Storage URLs once the copy job completes. A PDF viewer (`pdf.js`) handles PDF attachments; images are displayed inline. Video attachments are not currently supported for inline playback.
 
-There is no read-only "preview" mode that lets a vendor see the full asset record before entering the mapping flow — data is visible only in the context of the mapping table itself.
+There is no read-only "preview" mode that lets a vendor see the full asset record before entering the mapping flow, data is visible only in the context of the mapping table itself.
 
 ---
 
 ## Known Gaps
 
-**Attachment lifecycle** — blob purge on revocation or expiry is not enforced. Revoking a dispatch blocks API access but the bytes may remain in Storage until a manual purge. Stale copy handling and per-studio quotas are an open design item.
+**Attachment lifecycle**: blob purge on revocation or expiry is not enforced. Revoking a dispatch blocks API access but the bytes may remain in Storage until a manual purge. Stale copy handling and per-studio quotas are an open design item.
 
-**No per-asset failure detail on bulk dispatch** — if one asset in a bulk dispatch fails during snapshot creation, the rest succeed silently. The response returns only the count and IDs of successful dispatches.
+**No per-asset failure detail on bulk dispatch**: if one asset in a bulk dispatch fails during snapshot creation, the rest succeed silently. The response returns only the count and IDs of successful dispatches.
 
-**No pre-dispatch preview** — studios can build templates using a sample of 20 recent assets but there is no "preview what the vendor will see" confirmation step before a bulk dispatch is sent. A mis-configured template has no recovery path short of revocation.
+**No pre-dispatch preview**: studios can build templates using a sample of 20 recent assets but there is no "preview what the vendor will see" confirmation step before a bulk dispatch is sent. A mis-configured template has no recovery path short of revocation.
 
-**No re-dispatch diff** — if a studio re-dispatches an asset after a major revision, the vendor sees a new payload with no indication of what changed since the prior dispatch.
+**No re-dispatch diff**: if a studio re-dispatches an asset after a major revision, the vendor sees a new payload with no indication of what changed since the prior dispatch.
 
-**`payload_access_log` has no `actor_vendor_id`** — vendor-side events (viewed, mapped, ingested) are logged without a vendor actor reference. Forensic tracing on the vendor side of the audit trail is limited to the dispatch ID.
+**`payload_access_log` has no `actor_vendor_id`**, vendor-side events (viewed, mapped, ingested) are logged without a vendor actor reference. Forensic tracing on the vendor side of the audit trail is limited to the dispatch ID.
 
-**Vendor-to-studio payload direction** — the current system is strictly one-way (studio → vendor). Symmetric vendor → studio payloads (durations, deliverables) are a planned future capability.
+**Vendor-to-studio payload direction**: the current system is strictly one-way (studio → vendor). Symmetric vendor → studio payloads (durations, deliverables) are a planned future capability.

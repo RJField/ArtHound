@@ -2,15 +2,15 @@
 
 _Last updated: 2026-05-11_
 
-The scheduler generates work snapshots for assets based on their estimate matrix values and writes those snapshots back to the studio's source tool (Jira or Airtable). Generated work is ArtHound's layer on top of source work — it provides structured, estimate-grounded task records that can be reconciled against what the source tool actually contains.
+The scheduler generates work snapshots for assets based on their estimate matrix values and writes those snapshots back to the studio's source tool (Jira or Airtable). Generated work is ArtHound's layer on top of source work, it provides structured, estimate-grounded task records that can be reconciled against what the source tool actually contains.
 
 ---
 
 ## Core Distinction: Source Work vs Generated Work
 
-**Source work** (`replicated_work`) — synced copies of work items that already exist in the source tool. ArtHound reads these but does not own them.
+**Source work** (`replicated_work`), synced copies of work items that already exist in the source tool. ArtHound reads these but does not own them.
 
-**Generated work** (`generated_work`) — snapshots created by ArtHound's scheduler, representing the recommended task breakdown for an asset. ArtHound owns these. They are written to the source tool on generation, but the source tool is the operational system of record after that point.
+**Generated work** (`generated_work`), snapshots created by ArtHound's scheduler, representing the recommended task breakdown for an asset. ArtHound owns these. They are written to the source tool on generation, but the source tool is the operational system of record after that point.
 
 Generated work is always filtered by `deleted_at IS NULL` in normal queries. Soft deletion is used so historical snapshots are preserved for variance analysis.
 
@@ -36,7 +36,7 @@ POST /api/schedule/generate-bulk     ← multiple assets, parallel
 For each workflow step, `create_record(table_id, fields, qualifier_defaults)` is called with:
 - Task name, craft, estimate, start/end dates
 - Link field resolving the record back to the source asset (via `rel_field_id` from `source_entity_definitions`)
-- `qualifier_defaults` merged in to satisfy PAW qualifier fields (see [Sync Layer — Qualifiers](sync.md))
+- `qualifier_defaults` merged in to satisfy PAW qualifier fields (see [Sync Layer, Qualifiers](sync.md))
 
 ### Write-back: Jira
 
@@ -119,10 +119,10 @@ All endpoints are under `/api/schedule`. Studio-only.
 
 ## Known Gaps
 
-**Jira sub-task linking** — sub-task creation requires `parent.key` from the parent Jira issue. This is not always available when generating, so sub-tasks are created as regular issues and linked instead.
+**Jira sub-task linking**: sub-task creation requires `parent.key` from the parent Jira issue. This is not always available when generating, so sub-tasks are created as regular issues and linked instead.
 
-**Missing `_jira_key` warning not surfaced** — if an asset's Jira key is unavailable at generation time, the write-back proceeds but the issue link step fails silently. The UI receives a success count without knowing which items failed to link.
+**Missing `_jira_key` warning not surfaced**, if an asset's Jira key is unavailable at generation time, the write-back proceeds but the issue link step fails silently. The UI receives a success count without knowing which items failed to link.
 
-**No per-item failure detail on bulk** — `POST /generate-bulk` returns an aggregate success/failure count, not a per-asset breakdown. If three out of ten assets fail source write-back, the studio cannot see which three without checking the source tool.
+**No per-item failure detail on bulk**: `POST /generate-bulk` returns an aggregate success/failure count, not a per-asset breakdown. If three out of ten assets fail source write-back, the studio cannot see which three without checking the source tool.
 
-**Source write-back is fire-and-forget** — if the source tool write-back fails (network error, rate limit), the `generated_work` snapshot has already been written. The snapshot exists in ArtHound with no corresponding source record. No retry or cleanup is performed automatically.
+**Source write-back is fire-and-forget**: if the source tool write-back fails (network error, rate limit), the `generated_work` snapshot has already been written. The snapshot exists in ArtHound with no corresponding source record. No retry or cleanup is performed automatically.
