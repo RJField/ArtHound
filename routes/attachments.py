@@ -148,16 +148,20 @@ async def get_asset_attachment(
         # Clear the stale hash so the next view also re-downloads from source.
         cleaned = list(field_data)
         cleaned[idx] = {k: v for k, v in item.items() if k != "content_hash"}
-        await db_client.patch(
-            _url("/rest/v1/replicated_assets"),
-            params={
-                "canonical_asset_id": f"eq.{canonical_asset_id}",
-                "owner_type": "eq.studio",
-                "owner_id": f"eq.{caller.studio_id}",
-            },
-            headers=_headers({"Prefer": "return=minimal"}),
-            json={"meta": {**meta, field_key: cleaned}},
-        )
+        # replicated_assets is system-write-only (synced truth); the content-hash cache write-back runs
+        # as the system identity (flag-off: service-role; flag-on: arthound_system).
+        from lib.system_auth import system_identity
+        async with system_identity():
+            await db_client.patch(
+                _url("/rest/v1/replicated_assets"),
+                params={
+                    "canonical_asset_id": f"eq.{canonical_asset_id}",
+                    "owner_type": "eq.studio",
+                    "owner_id": f"eq.{caller.studio_id}",
+                },
+                headers=_headers({"Prefer": "return=minimal"}),
+                json={"meta": {**meta, field_key: cleaned}},
+            )
         # Fall through to first-view path to re-download from source.
 
     # First-view: download from source, copy to Storage, patch meta, return bytes.
@@ -230,16 +234,20 @@ async def get_asset_attachment(
     # Patch content_hash and resolved mimetype back so subsequent views hit the fast path.
     updated_field = list(field_data)
     updated_field[idx] = {**item, "content_hash": content_hash, "mimetype": resolved_type}
-    await db_client.patch(
-        _url("/rest/v1/replicated_assets"),
-        params={
-            "canonical_asset_id": f"eq.{canonical_asset_id}",
-            "owner_type": "eq.studio",
-            "owner_id": f"eq.{caller.studio_id}",
-        },
-        headers=_headers({"Prefer": "return=minimal"}),
-        json={"meta": {**meta, field_key: updated_field}},
-    )
+    # replicated_assets is system-write-only (synced truth); cache the content_hash back as the system
+    # identity so subsequent views hit the fast path (flag-off: service-role; flag-on: arthound_system).
+    from lib.system_auth import system_identity
+    async with system_identity():
+        await db_client.patch(
+            _url("/rest/v1/replicated_assets"),
+            params={
+                "canonical_asset_id": f"eq.{canonical_asset_id}",
+                "owner_type": "eq.studio",
+                "owner_id": f"eq.{caller.studio_id}",
+            },
+            headers=_headers({"Prefer": "return=minimal"}),
+            json={"meta": {**meta, field_key: updated_field}},
+        )
 
     return Response(
         content=file_bytes,
