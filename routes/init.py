@@ -48,16 +48,19 @@ def _owner(user: CurrentUser) -> tuple[str, str]:
 
 
 async def _load_creds(owner_type: str, owner_id: str, source_type: str) -> dict:
-    r = await db_client.get(
-        _url("/rest/v1/source_credentials"),
-        params={
-            "owner_type":  f"eq.{owner_type}",
-            "owner_id":    f"eq.{owner_id}",
-            "source_type": f"eq.{source_type}",
-            "select":      "credentials",
-        },
-        headers=_headers(),
-    )
+    # source_credentials is an F-table (deny-all to users); read as the system identity.
+    from lib.system_auth import system_identity
+    async with system_identity():
+        r = await db_client.get(
+            _url("/rest/v1/source_credentials"),
+            params={
+                "owner_type":  f"eq.{owner_type}",
+                "owner_id":    f"eq.{owner_id}",
+                "source_type": f"eq.{source_type}",
+                "select":      "credentials",
+            },
+            headers=_headers(),
+        )
     rows = r.json()
     if not rows:
         raise HTTPException(status_code=422, detail="No credentials stored — complete step 1 first")
