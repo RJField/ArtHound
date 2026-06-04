@@ -8,6 +8,16 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <!-- Umami analytics — only loads on the production host (keeps localhost/preview out of stats) -->
+    <script>
+      if (location.hostname === "app.arthound.io") {
+        var s = document.createElement("script");
+        s.defer = true;
+        s.src = "https://analytics.arthound.io/script.js";
+        s.setAttribute("data-website-id", "71177915-1f1e-4776-b9fd-3409a244f34c");
+        document.head.appendChild(s);
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>
