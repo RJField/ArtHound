@@ -121,6 +121,10 @@ An admin-only tool for populating an Airtable base with realistic-looking test d
 
 System-wide controls for ArtHound operators. Access is restricted to email addresses in the `PLATFORM_ADMIN_EMAILS` environment variable. It currently controls the registration gate: `registration_invite_required` (boolean) and `registration_invite_code` (the platform-wide code new users must enter). A simple admin panel UI at `/admin` exposes these settings.
 
+### [Web Analytics](docs/analytics.md)
+
+Real visitor traffic to both public surfaces, the landing page (`arthound.io`) and the app (`app.arthound.io`), is measured with a self-hosted, cookieless Umami instance at `analytics.arthound.io`. Tracking is client-side only, so the FastAPI backend is not in the data path and the separately deployed static landing page is measured the same way as the app, through one dashboard. Umami runs on Railway with its own dedicated Postgres and Valkey, kept separate from the Supabase production database so analytics data never shares a store with client production data. Each site injects the tracker from a small inline guard that only fires on the real production host, so local and preview traffic never pollute the stats, and no raw IP is ever stored: Umami derives a daily visitor hash and discards the address. Because the tracker is JavaScript and Umami also filters known bot user-agents, the dashboard reflects real human visitors rather than raw requests.
+
 ---
 
 ## Dev Setup
