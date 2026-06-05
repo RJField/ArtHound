@@ -6,7 +6,6 @@ import Topbar from './components/Topbar'
 import Login from './pages/Login'
 import StudioHome from './pages/StudioHome'
 import VendorHome from './pages/VendorHome'
-import Shares from './pages/Shares'
 import VendorInbox from './pages/VendorInbox'
 import Reviews from './pages/Reviews'
 import Assets from './pages/Assets'
@@ -117,7 +116,6 @@ export default function App() {
                 <Route path="/home"        element={<StudioHome />} />
                 <Route path="/vendor-home" element={<VendorHome />} />
                 <Route path="/assets"      element={<Assets />} />
-                <Route path="/shares"      element={<Shares />} />
                 <Route path="/estimates"   element={<Navigate to="/org?tab=estimates" replace />} />
                 <Route path="/workflows"   element={<Navigate to="/org?tab=workflows" replace />} />
                 <Route path="/reviews"     element={<Reviews />} />
