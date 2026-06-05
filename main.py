@@ -466,8 +466,10 @@ async def lifespan(app: FastAPI):
         if _use_user_identity():
             raise RuntimeError(
                 "USE_USER_IDENTITY=1 but the system token was rejected by PostgREST — refusing to "
-                "start (background jobs would deny-all). Check SUPABASE_JWT_SECRET and the "
-                "arthound_system role + grants (migration 20260530000002)."
+                "start (background jobs would deny-all). Check the system-token signer "
+                "(ARTHOUND_SYSTEM_SIGNING_JWK — its standby key must be live in the project JWKS — "
+                "or the SUPABASE_JWT_SECRET fallback) and the arthound_system role + grants "
+                "(migration 20260530000002)."
             )
         log.warning("System token not yet accepted by PostgREST — non-blocking pre-cutover. "
                     "Resolve before flipping USE_USER_IDENTITY=1.")
