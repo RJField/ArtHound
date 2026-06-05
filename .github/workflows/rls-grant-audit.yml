@@ -1,0 +1,59 @@
+name: RLS grant audit
+
+# Catalog guard for the RLS privileged roles (arthound_system / arthound_rpc). Asserts the LIVE DB's
+# table grants + RLS-policy presence match what supabase/migrations declares. Catches the drift class
+# where a grant was added to an already-applied migration file and so never reached dev/prod (which
+# broke vendor payload ingest: arthound_rpc missing INSERT on payload_export_records).
+#
+# SETUP: add two repo secrets with the Supabase *pooler* connection strings (Dashboard → Project →
+# Connect → "Connection pooling" / Session pooler; the legacy direct db.<ref>.supabase.co host is
+# retired on IPv4 and won't resolve from GitHub runners):
+#   DEV_DATABASE_URL  = postgresql://postgres.<ref>:<pw>@aws-0-<region>.pooler.supabase.com:5432/postgres
+#   PROD_DATABASE_URL = postgresql://postgres.<ref>:<pw>@aws-0-<region>.pooler.supabase.com:5432/postgres
+# Until they're set, only the offline parser sanity step runs (the workflow stays green / non-blocking).
+
+on:
+  schedule:
+    - cron: '17 6 * * *'        # daily — drift is a deploy-state fact, so check even with no commits
+  workflow_dispatch: {}
+  pull_request:
+    paths:
+      - 'supabase/migrations/**'
+      - 'scripts/rls_grant_audit.py'
+      - '.github/workflows/rls-grant-audit.yml'
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    env:
+      DEV_DATABASE_URL: ${{ secrets.DEV_DATABASE_URL }}
+      PROD_DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install psycopg2-binary
+
+      # Always (incl. PRs, no secrets): the migrations must parse into a sane expected matrix.
+      # Catches a broken parser or a malformed grant statement before it can mask real drift.
+      - name: Parse migrations (offline)
+        run: python scripts/rls_grant_audit.py --print-expected
+
+      # Live drift checks: NOT on PRs (a PR isn't deployed, so "live drift" is meaningless there and
+      # would block unrelated PRs on pre-existing drift). Run on schedule / manual / push-to-main.
+      - name: Audit dev DB
+        if: github.event_name != 'pull_request' && env.DEV_DATABASE_URL != ''
+        env:
+          DATABASE_URL: ${{ secrets.DEV_DATABASE_URL }}
+        run: python scripts/rls_grant_audit.py
+
+      - name: Audit prod DB
+        if: github.event_name != 'pull_request' && env.PROD_DATABASE_URL != ''
+        env:
+          DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
+        run: python scripts/rls_grant_audit.py
+
+      - name: Notice if live audit was skipped for lack of secrets
+        if: github.event_name != 'pull_request' && env.DEV_DATABASE_URL == '' && env.PROD_DATABASE_URL == ''
+        run: echo "::warning::No DEV_DATABASE_URL/PROD_DATABASE_URL secrets set — only the offline parse ran. Add the Supabase pooler connection strings as repo secrets to enable live drift detection."

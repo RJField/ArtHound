@@ -294,7 +294,22 @@ async def sync_single_asset(
     Re-sync one asset record without triggering a full sync.
     Pulls fresh data from the source tool, normalizes it, and upserts into replicated_assets.
     Used for targeted refresh (e.g. 410 attachment URL expiry recovery).
+
+    Triggered by a user request (the attachment 410-refresh path) but does SYSTEM DB work — reads the
+    source_credentials F-table (deny-all to users) and upserts replicated_*. Open the system identity
+    here, mirroring run_sync; nesting inside an existing system context (e.g. the poll loop) is harmless.
     """
+    from lib.system_auth import system_identity
+    async with system_identity():
+        return await _sync_single_asset_impl(owner_type, owner_id, source_record_id, source_type)
+
+
+async def _sync_single_asset_impl(
+    owner_type: str,
+    owner_id: str,
+    source_record_id: str,
+    source_type: str = "airtable",
+) -> dict:
     try:
         creds = await _get_credentials(owner_type, owner_id, source_type)
         if not creds:
