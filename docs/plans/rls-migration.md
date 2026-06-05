@@ -93,6 +93,20 @@ upgrade path.**
   end-to-end on dev** (create role → grant → tiny system-only policy → mint token → confirm PostgREST
   `SET ROLE`s and a system read works) **before any tenancy migration.**
 
+**UPDATE (2026-06-05): option (a) EXECUTED on DEV (hardening item #1). HS256 → ES256 swap done.**
+The deprecation-watch's upgrade path is now the live signer on dev. An ES256 P-256 key
+(`supabase gen signing-key --algorithm ES256`, kid `fb73f484-…`) was imported as a **standby** JWT
+signing key into the dev project (`kwrlqqnzcnpjqvesygxo`) JWKS — published for verification, signs nothing
+(never Rotated, so GoTrue keeps signing user tokens with the current key `2493ba8b-…`). The minter
+(`lib/system_auth.py:_mint()`) signs with it (private JWK in env `ARTHOUND_SYSTEM_SIGNING_JWK`, `kid`
+header) when the var is set, else falls back to the legacy HS256-over-`SUPABASE_JWT_SECRET` path (unset the
+var + restart = instant rollback; both verify during Supabase's dual-verification window). `aud` stays
+`authenticated` (changing it = §0b#3, separate). Verified on dev: JWKS shows both kids; ES256 token
+accepted by PostgREST; `SET ROLE arthound_system` confirmed (system read returns rows, anon 0); live server
+boots clean under `USE_USER_IDENTITY=1` (proves the startup-probe gate passed on ES256); HS256 fallback
+still accepted. CLI-version worry was moot — *generate* works on v2.98.1; *import* is dashboard-side. **PROD
+still pending** (separate standby key into `rhzlmkalwpmjufruacky` + Railway secret + deploy + re-verify).
+
 ### 0d. Identity model, END-TO-END VALIDATED ON DEV 2026-05-29 (reversible probe, fully torn down)
 
 A scoped probe (`_rls_probe` table + `_rls_probe_current_studio_ids()` SECURITY DEFINER fn + a temporary
@@ -618,9 +632,11 @@ anon+user-token):**
 - `lib/db.py`, `_token_ctx` ContextVar + `set/reset/current_token`; `_headers()` branches on
   `_use_user_identity()` (off → service-role; on → anon + context token, **fail closed**, no silent
   fallback). `_user_headers` kept only so the auth import doesn't break.
-- `lib/system_auth.py`, mints `role=arthound_system` HS256/`SUPABASE_JWT_SECRET` tokens (1h TTL, re-mint
-  at 50%, `jti` logged); `system_identity()` CM; `system_token_accepted()` live probe (startup go/no-go +
-  §0a HS256-deprecation watch).
+- `lib/system_auth.py`, mints `role=arthound_system` tokens (1h TTL, re-mint at 50%, `jti` logged);
+  `system_identity()` CM; `system_token_accepted()` live probe (startup go/no-go + §0a deprecation watch).
+  **Signer = ES256 standby key on dev (2026-06-05, §0a UPDATE)**: signs with `ARTHOUND_SYSTEM_SIGNING_JWK`
+  (private JWK + `kid` header) when set, else legacy HS256/`SUPABASE_JWT_SECRET` fallback (= rollback).
+  Prod still on HS256 until the prod standby key is imported.
 - `lib/db_breakglass.py`, isolated `service_role_headers()` gated by `ALLOW_SERVICE_ROLE=1`, never
   imported by `routes/*`; `assert_breakglass_not_in_server()`.
 - `lib/auth.py`, binds the caller token at the top of `get_current_user`/`_or_pending` (so even the
