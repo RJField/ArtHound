@@ -70,15 +70,20 @@ async def get_credential_status(
     if not owner_id:
         raise HTTPException(status_code=403, detail="No studio/vendor linked to account")
 
-    r = await db_client.get(
-        _url("/rest/v1/source_credentials"),
-        params={
-            "owner_type": f"eq.{owner_type}",
-            "owner_id":   f"eq.{owner_id}",
-            "select":     "source_type,updated_at",
-        },
-        headers=_headers(),
-    )
+    # source_credentials is an F-table (deny-all to users); read as the system identity, scoped to the
+    # caller's own org (owner_id is derived from their verified membership above). Under user identity an
+    # RLS-denied SELECT returns an empty 200, which would silently report "no credentials configured".
+    from lib.system_auth import system_identity
+    async with system_identity():
+        r = await db_client.get(
+            _url("/rest/v1/source_credentials"),
+            params={
+                "owner_type": f"eq.{owner_type}",
+                "owner_id":   f"eq.{owner_id}",
+                "select":     "source_type,updated_at",
+            },
+            headers=_headers(),
+        )
     r.raise_for_status()
     return {"configured": r.json()}
 
@@ -103,24 +108,29 @@ async def trigger_sync(
     if not owner_id:
         raise HTTPException(status_code=403, detail="No studio/vendor linked to account")
 
-    source_type = body.source_type
-    if not source_type:
-        r = await db_client.get(
-            _url("/rest/v1/source_credentials"),
-            params={
-                "owner_type": f"eq.{owner_type}",
-                "owner_id":   f"eq.{owner_id}",
-                "select":     "source_type",
-                "limit":      "1",
-            },
-            headers=_headers(),
-        )
-        rows = r.json()
-        if not rows:
-            raise HTTPException(status_code=400, detail="No source credentials configured")
-        source_type = rows[0]["source_type"]
+    # source_credentials is an F-table (deny-all to users) and sync_log is SELECT-only for users — both
+    # the credential lookup and the log insert are system operations. The caller's JWT authorizes the
+    # trigger and pins owner to their own org (above); the DB work runs as system, mirroring run_sync.
+    from lib.system_auth import system_identity
+    async with system_identity():
+        source_type = body.source_type
+        if not source_type:
+            r = await db_client.get(
+                _url("/rest/v1/source_credentials"),
+                params={
+                    "owner_type": f"eq.{owner_type}",
+                    "owner_id":   f"eq.{owner_id}",
+                    "select":     "source_type",
+                    "limit":      "1",
+                },
+                headers=_headers(),
+            )
+            rows = r.json()
+            if not rows:
+                raise HTTPException(status_code=400, detail="No source credentials configured")
+            source_type = rows[0]["source_type"]
 
-    log_id = await create_sync_log(owner_type, owner_id, source_type, "manual")
+        log_id = await create_sync_log(owner_type, owner_id, source_type, "manual")
     background_tasks.add_task(
         run_sync,
         owner_type=owner_type,
