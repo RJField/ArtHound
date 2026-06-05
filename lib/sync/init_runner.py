@@ -81,7 +81,23 @@ async def run_init_sync(
     """
     Full sync with progress written to init_jobs.progress_current after each batch.
     Sets studios.initialized_at on completion.
+
+    Dispatched as a FastAPI BackgroundTask (routes/init.py) but does SYSTEM DB work — reads the
+    source_credentials F-table (deny-all to users) and writes init_jobs / replicated_* / sync_* /
+    studios. Open the system identity here, mirroring run_sync: a background task must not rely on
+    request-context token inheritance (plan §8e), and under flag-on _headers() would otherwise raise.
     """
+    from lib.system_auth import system_identity
+    async with system_identity():
+        await _run_init_sync_impl(job_id, owner_type, owner_id, source_type)
+
+
+async def _run_init_sync_impl(
+    job_id: str,
+    owner_type: str,
+    owner_id: str,
+    source_type: str = "airtable",
+) -> None:
     sync_started = datetime.now(timezone.utc).isoformat()
     log_id = None
 

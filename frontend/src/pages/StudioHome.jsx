@@ -144,7 +144,7 @@ export default function StudioHome() {
           label="Active shares"
           value={summary?.active_shares}
           loading={loading}
-          onClick={() => navigate('/shares')}
+          onClick={() => navigate('/vendors')}
         />
         <StatCard
           label="Generated work"
@@ -159,13 +159,12 @@ export default function StudioHome() {
         />
       </div>
 
-      {/* Cu-TOOL-u panel */}
+      {/* ScentHounds panel */}
       <div className="bg-surface border border-border rounded-xl p-5 flex flex-col gap-4">
         <div className="flex flex-col items-center gap-2 text-center">
-          <img src="/cutoolu_logo.png" alt="Cu-TOOL-u" className="w-16 h-16 rounded-lg object-cover" />
+          <img src="/scenthounds_logo.png" alt="ScentHounds" className="w-16 h-16 rounded-lg object-cover" />
           <div>
-            <div className="text-foreground text-sm font-semibold">Cu-TOOL-u</div>
-            <div className="text-muted text-xs">Intelligence beyond mortal comprehension</div>
+            <div className="text-foreground text-sm font-semibold">ScentHounds</div>
           </div>
         </div>
         <div className="grid grid-cols-4 gap-2">

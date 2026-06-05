@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { toast } from 'sonner'
 import { apiFetch } from '../lib/api'
 import { cn } from '../lib/utils'
@@ -24,6 +24,29 @@ function daysUntil(isoString) {
 
 function Dot() {
   return <span className="text-border">·</span>
+}
+
+function SectionHeader({ title, count, action }) {
+  return (
+    <div className="flex items-center justify-between">
+      <h2 className="text-muted text-xs font-medium uppercase tracking-wider">
+        {title}{count != null && ` (${count})`}
+      </h2>
+      {action}
+    </div>
+  )
+}
+
+// ── Shared-asset (payload dispatch) helpers ────────────────────────────────────
+
+function shareStatus(d) {
+  if (d.revoked_at)                          return { label: 'Revoked', cls: 'text-error   bg-error/10   border-error/20' }
+  if (new Date() > new Date(d.expires_at))   return { label: 'Expired', cls: 'text-muted   bg-surface-2  border-border'   }
+  return                                            { label: 'Active',  cls: 'text-success bg-success/10 border-success/20' }
+}
+
+function assetName(d) {
+  return d.payload_data?.data?.['Name'] ?? d.payload_data?.data?.['name'] ?? '—'
 }
 
 // ── Cancel confirmation modal ─────────────────────────────────────────────────
@@ -113,36 +136,213 @@ function CancelLinkModal({ link, vendorName, onConfirm, onClose }) {
   )
 }
 
+// ── Per-vendor sections ────────────────────────────────────────────────────────
+
+const SHARE_STATUS_OPTIONS = [
+  { value: 'active',         label: 'Active' },
+  { value: 'active-expired', label: 'Active & Expired' },
+  { value: 'expired',        label: 'Expired' },
+  { value: 'revoked',        label: 'Revoked' },
+  { value: 'all',            label: 'All statuses' },
+]
+
+function SharedAssets({ shares, revoking, onRevoke }) {
+  const [statusFilter, setStatusFilter] = useState('active')
+  const now = new Date()
+
+  const filtered = useMemo(() => shares.filter(d => {
+    const label = shareStatus(d).label.toLowerCase()
+    if (statusFilter === 'all')            return true
+    if (statusFilter === 'active-expired') return label !== 'revoked'
+    return label === statusFilter
+  }), [shares, statusFilter])
+
+  return (
+    <section className="flex flex-col gap-3">
+      <SectionHeader
+        title="Shared Assets"
+        count={filtered.length}
+        action={
+          <select
+            value={statusFilter}
+            onChange={e => setStatusFilter(e.target.value)}
+            className="px-2.5 py-1 rounded-md border border-border bg-surface-2 text-foreground text-xs outline-none focus:border-accent cursor-pointer"
+          >
+            {SHARE_STATUS_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+        }
+      />
+      {filtered.length === 0 ? (
+        <p className="text-muted text-sm">
+          {shares.length === 0 ? 'No assets shared with this vendor yet.' : 'No shares match the current filter.'}
+        </p>
+      ) : (
+        <div className="flex flex-col gap-2">
+          {filtered.map(d => {
+            const status      = shareStatus(d)
+            const isRevokable = !d.revoked_at && now <= new Date(d.expires_at)
+            const viewCount   = d.view_count ?? 0
+            const viewLabel   = viewCount === 0 ? 'Not viewed' : `Viewed ${viewCount}×`
+            const ingestedAt  = d.payload_field_mappings?.[0]?.ingested_at
+            const ingestedBy  = d.payload_field_mappings?.[0]?.ingested_by_name
+            return (
+              <div
+                key={d.id}
+                className="flex items-center justify-between gap-4 px-4 py-3 rounded-lg border border-border bg-surface"
+              >
+                <div className="flex flex-col gap-1 min-w-0">
+                  <span className="text-foreground text-sm font-medium truncate">{assetName(d)}</span>
+                  <div className="flex items-center gap-2 text-xs text-muted flex-wrap">
+                    <span>Sent {d.created_at ? new Date(d.created_at).toLocaleDateString() : '—'}</span>
+                    <Dot />
+                    <span className={cn(viewCount > 0 ? 'text-p2' : 'text-muted')}>{viewLabel}</span>
+                    {ingestedAt && (
+                      <>
+                        <Dot />
+                        <span className="text-success font-medium">
+                          Ingested {new Date(ingestedAt).toLocaleDateString()}
+                          {ingestedBy && <span className="font-normal"> by {ingestedBy}</span>}
+                        </span>
+                      </>
+                    )}
+                  </div>
+                </div>
+                <div className="flex items-center gap-3 shrink-0">
+                  <span className={cn('px-2 py-0.5 rounded-full border text-xs font-medium', status.cls)}>
+                    {status.label}
+                  </span>
+                  {isRevokable && (
+                    <button
+                      onClick={() => onRevoke(d.id)}
+                      disabled={revoking === d.id}
+                      className="px-3 py-1 rounded-md bg-error/10 text-error text-xs hover:bg-error/20 transition-colors cursor-pointer disabled:opacity-40"
+                    >
+                      {revoking === d.id ? 'Revoking…' : 'Revoke'}
+                    </button>
+                  )}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </section>
+  )
+}
+
+function OpenReviews({ reviews }) {
+  return (
+    <section className="flex flex-col gap-3">
+      <SectionHeader title="Open Reviews" count={reviews.length} />
+      {reviews.length === 0 ? (
+        <p className="text-muted text-sm">No open reviews with this vendor yet.</p>
+      ) : (
+        <div className="flex flex-col gap-2">
+          {reviews.map(r => (
+            <div key={r.id} className="px-4 py-3 rounded-lg border border-border bg-surface">
+              <span className="text-foreground text-sm font-medium truncate">
+                {r.title || r.asset?.name || '—'}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  )
+}
+
+function ReceivedEstimates({ estimates, expanded, onToggle }) {
+  return (
+    <section className="flex flex-col gap-3">
+      <SectionHeader title="Received Estimates" count={estimates.length} />
+      {estimates.length === 0 ? (
+        <p className="text-muted text-sm">No estimates received from this vendor yet.</p>
+      ) : (
+        <>
+          <p className="text-muted text-xs -mt-1">
+            Rate estimates shared by this vendor. These use the vendor's own labels and are read-only.
+          </p>
+          <div className="flex flex-col gap-2">
+            {estimates.map(share => {
+              const isOpen = expanded === share.dispatch_id
+              return (
+                <div key={share.dispatch_id} className="flex flex-col rounded-lg border border-border bg-surface">
+                  <div className="flex items-center justify-between gap-4 px-4 py-3">
+                    <div className="flex flex-col gap-0.5 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="text-foreground text-sm font-medium truncate">
+                          {GRANULARITY_LABELS[share.granularity] ?? share.granularity}
+                        </span>
+                        {share.label && <span className="text-muted text-xs truncate">· {share.label}</span>}
+                      </div>
+                      <div className="flex items-center gap-2 text-xs text-muted">
+                        <span>Received {new Date(share.created_at).toLocaleDateString()}</span>
+                        {share.expires_at && (
+                          <>
+                            <Dot />
+                            <span>Expires {new Date(share.expires_at).toLocaleDateString()}</span>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => onToggle(share.dispatch_id)}
+                      className="px-3 py-1 rounded-md bg-surface-2 text-foreground text-xs hover:bg-surface border border-border transition-colors cursor-pointer shrink-0"
+                    >
+                      {isOpen ? 'Hide' : 'View'}
+                    </button>
+                  </div>
+                  {isOpen && (
+                    <div className="px-4 pb-4 pt-1 border-t border-border">
+                      <EstimateSnapshotView snapshot={share.snapshot} />
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        </>
+      )}
+    </section>
+  )
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function VendorConnections() {
-  const [links, setLinks]           = useState([])
-  const [invites, setInvites]       = useState([])
-  const [templates, setTemplates]   = useState([])
-  const [inbox, setInbox]           = useState([])    // estimate shares received from vendors
-  const [expandedShare, setExpandedShare] = useState(null)  // dispatch_id
-  const [loading, setLoading]       = useState(true)
+  const [links, setLinks]         = useState([])
+  const [invites, setInvites]     = useState([])
+  const [templates, setTemplates] = useState([])
+  const [inbox, setInbox]         = useState([])   // estimate shares received from vendors
+  const [outbox, setOutbox]       = useState([])   // shared-asset dispatches
+  const [loading, setLoading]     = useState(true)
 
-  const [inviteOpen, setInviteOpen]         = useState(false)
-  const [cancelTarget, setCancelTarget]     = useState(null)  // { link, vendorName }
-  const [resending, setResending]           = useState(null)
+  const [selectedVendorId, setSelectedVendorId] = useState(null)
+  const [expandedEstimate, setExpandedEstimate] = useState(null)  // dispatch_id
+
+  const [inviteOpen, setInviteOpen]             = useState(false)
+  const [cancelTarget, setCancelTarget]         = useState(null)  // { link, vendorName }
+  const [resending, setResending]               = useState(null)
   const [cancellingInvite, setCancellingInvite] = useState(null)
-  const [templateModal, setTemplateModal]   = useState(null)  // null | template row | 'new'
+  const [revoking, setRevoking]                 = useState(null)  // share dispatch id
+  const [templateModal, setTemplateModal]       = useState(null)  // null | template row | 'new'
   const [deletingTemplate, setDeletingTemplate] = useState(null)
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const [l, inv, tmpl, ib] = await Promise.all([
+      const [l, inv, tmpl, ib, ob] = await Promise.all([
         apiFetch('/api/handshake/links'),
         apiFetch('/api/handshake/invites/sent'),
         apiFetch('/api/payloads/templates'),
         apiFetch('/api/estimate-shares/inbox').catch(() => []),
+        apiFetch('/api/payloads/outbox').catch(() => []),
       ])
       setLinks(l)
       setInvites(inv)
       setTemplates(tmpl)
       setInbox(ib)
+      setOutbox(ob)
     } catch (err) {
       toast.error(err.message)
     } finally {
@@ -151,6 +351,36 @@ export default function VendorConnections() {
   }, [])
 
   useEffect(() => { load() }, [load])
+
+  // Keep the selected vendor valid: default to the first connection, re-pick if the
+  // current selection disappears (e.g. after cancelling), clear when none remain.
+  useEffect(() => {
+    if (loading) return
+    if (links.length === 0) { setSelectedVendorId(null); return }
+    if (!links.some(l => l.vendor_id === selectedVendorId)) {
+      setSelectedVendorId(links[0].vendor_id)
+    }
+  }, [links, loading, selectedVendorId])
+
+  const selectedLink = useMemo(
+    () => links.find(l => l.vendor_id === selectedVendorId) ?? null,
+    [links, selectedVendorId]
+  )
+
+  const vendorShares = useMemo(
+    () => outbox.filter(d => d.recipient_vendor_id === selectedVendorId),
+    [outbox, selectedVendorId]
+  )
+
+  const vendorEstimates = useMemo(
+    () => inbox.filter(e =>
+      (selectedLink && e.link_id === selectedLink.id) || e.vendor?.id === selectedVendorId
+    ),
+    [inbox, selectedLink, selectedVendorId]
+  )
+
+  // Reviews carry no vendor association in the schema yet — always empty for now.
+  const vendorReviews = []
 
   async function cancelLink() {
     const { link } = cancelTarget
@@ -181,29 +411,6 @@ export default function VendorConnections() {
     }
   }
 
-  async function deleteTemplate(id) {
-    setDeletingTemplate(id)
-    try {
-      await apiFetch(`/api/payloads/templates/${id}`, { method: 'DELETE' })
-      setTemplates(prev => prev.filter(t => t.id !== id))
-      toast.success('Template deleted')
-    } catch (err) {
-      toast.error(err.message)
-    } finally {
-      setDeletingTemplate(null)
-    }
-  }
-
-  function toggleShare(dispatchId) {
-    if (expandedShare === dispatchId) {
-      setExpandedShare(null)
-      return
-    }
-    setExpandedShare(dispatchId)
-    // Best-effort view telemetry — never blocks the UI.
-    apiFetch(`/api/estimate-shares/${dispatchId}/view`, { method: 'POST' }).catch(() => {})
-  }
-
   async function cancelInvite(id) {
     setCancellingInvite(id)
     try {
@@ -217,10 +424,49 @@ export default function VendorConnections() {
     }
   }
 
+  async function revokeShare(id) {
+    setRevoking(id)
+    try {
+      await apiFetch(`/api/payloads/dispatch/${encodeURIComponent(id)}`, { method: 'DELETE' })
+      toast.success('Access revoked')
+      const ob = await apiFetch('/api/payloads/outbox').catch(() => outbox)
+      setOutbox(ob)
+    } catch (err) {
+      toast.error(err.message)
+    } finally {
+      setRevoking(null)
+    }
+  }
+
+  async function deleteTemplate(id) {
+    setDeletingTemplate(id)
+    try {
+      await apiFetch(`/api/payloads/templates/${id}`, { method: 'DELETE' })
+      setTemplates(prev => prev.filter(t => t.id !== id))
+      toast.success('Template deleted')
+    } catch (err) {
+      toast.error(err.message)
+    } finally {
+      setDeletingTemplate(null)
+    }
+  }
+
+  function toggleEstimate(dispatchId) {
+    if (expandedEstimate === dispatchId) {
+      setExpandedEstimate(null)
+      return
+    }
+    setExpandedEstimate(dispatchId)
+    // Best-effort view telemetry — never blocks the UI.
+    apiFetch(`/api/estimate-shares/${dispatchId}/view`, { method: 'POST' }).catch(() => {})
+  }
+
+  const selectedVendor = selectedLink?.vendor ?? {}
+
   return (
     <main className="flex-1 flex flex-col p-6 gap-6 max-w-3xl">
       <div className="flex items-center justify-between">
-        <h1 className="text-foreground text-lg font-semibold">Vendor Connections</h1>
+        <h1 className="text-foreground text-lg font-semibold">Vendors</h1>
         <button
           onClick={() => setInviteOpen(true)}
           className="px-3 py-1.5 rounded-md bg-accent text-white text-xs font-medium hover:bg-accent-hover cursor-pointer transition-colors"
@@ -231,122 +477,68 @@ export default function VendorConnections() {
 
       {loading && <p className="text-muted text-sm">Loading…</p>}
 
-      {/* Active connections */}
-      {!loading && (
-        <section className="flex flex-col gap-3">
-          <h2 className="text-muted text-xs font-medium uppercase tracking-wider">
-            Active connections ({links.length})
-          </h2>
-
-          {links.length === 0 ? (
-            <p className="text-muted text-sm">
-              No vendor connections yet.{' '}
-              <button onClick={() => setInviteOpen(true)} className="text-accent hover:underline cursor-pointer">
-                Invite your first vendor.
-              </button>
-            </p>
-          ) : (
-            <div className="flex flex-col gap-2">
-              {links.map(link => {
-                const vendor = link.vendor ?? {}
-                const vendorName = vendor.name ?? 'Unknown Vendor'
-                return (
-                  <div
-                    key={link.id}
-                    className="flex items-center justify-between gap-4 px-4 py-3 rounded-lg border border-border bg-surface"
-                  >
-                    <div className="flex flex-col gap-0.5 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="text-foreground text-sm font-medium truncate">{vendorName}</span>
-                        {vendor.handle && (
-                          <span className="text-muted text-xs">@{vendor.handle}</span>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-2 text-xs text-muted">
-                        <span>{REVIEW_MODE_LABELS[link.review_collaboration_mode] ?? link.review_collaboration_mode}</span>
-                        <Dot />
-                        <span>Connected {new Date(link.created_at).toLocaleDateString()}</span>
-                      </div>
-                    </div>
-
-                    <button
-                      onClick={() => setCancelTarget({ link, vendorName })}
-                      className="px-3 py-1 rounded-md bg-error/10 text-error text-xs hover:bg-error/20 transition-colors cursor-pointer shrink-0"
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                )
-              })}
-            </div>
-          )}
-        </section>
+      {/* ── Vendor selector + connection summary ── */}
+      {!loading && links.length === 0 && (
+        <p className="text-muted text-sm">
+          No vendor connections yet.{' '}
+          <button onClick={() => setInviteOpen(true)} className="text-accent hover:underline cursor-pointer">
+            Invite your first vendor.
+          </button>
+        </p>
       )}
 
-      {/* Received estimates */}
-      {!loading && inbox.length > 0 && (
-        <section className="flex flex-col gap-3">
-          <h2 className="text-muted text-xs font-medium uppercase tracking-wider">
-            Received estimates ({inbox.length})
-          </h2>
-          <p className="text-muted text-xs -mt-1">
-            Rate estimates shared by your vendors. These use each vendor's own labels and are read-only.
-          </p>
-          <div className="flex flex-col gap-2">
-            {inbox.map(share => {
-              const expanded = expandedShare === share.dispatch_id
-              const vendor   = share.vendor ?? {}
-              return (
-                <div
-                  key={share.dispatch_id}
-                  className="flex flex-col rounded-lg border border-border bg-surface"
-                >
-                  <div className="flex items-center justify-between gap-4 px-4 py-3">
-                    <div className="flex flex-col gap-0.5 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="text-foreground text-sm font-medium truncate">
-                          {vendor.name ?? 'Unknown Vendor'}
-                        </span>
-                        {vendor.handle && <span className="text-muted text-xs">@{vendor.handle}</span>}
-                        {share.label && <span className="text-muted text-xs truncate">· {share.label}</span>}
-                      </div>
-                      <div className="flex items-center gap-2 text-xs text-muted">
-                        <span>{GRANULARITY_LABELS[share.granularity] ?? share.granularity}</span>
-                        <Dot />
-                        <span>Received {new Date(share.created_at).toLocaleDateString()}</span>
-                        {share.expires_at && (
-                          <>
-                            <Dot />
-                            <span>Expires {new Date(share.expires_at).toLocaleDateString()}</span>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                    <button
-                      onClick={() => toggleShare(share.dispatch_id)}
-                      className="px-3 py-1 rounded-md bg-surface-2 text-foreground text-xs hover:bg-surface border border-border transition-colors cursor-pointer shrink-0"
-                    >
-                      {expanded ? 'Hide' : 'View'}
-                    </button>
-                  </div>
-                  {expanded && (
-                    <div className="px-4 pb-4 pt-1 border-t border-border">
-                      <EstimateSnapshotView snapshot={share.snapshot} />
-                    </div>
-                  )}
-                </div>
-              )
-            })}
+      {!loading && links.length > 0 && (
+        <div className="flex items-center justify-between gap-4 px-4 py-3 rounded-lg border border-border bg-surface">
+          <div className="flex flex-col gap-1 min-w-0">
+            <select
+              value={selectedVendorId ?? ''}
+              onChange={e => { setSelectedVendorId(e.target.value); setExpandedEstimate(null) }}
+              className="bg-surface-2 border border-border rounded-md px-3 py-1.5 text-foreground text-sm font-medium outline-none focus:border-accent cursor-pointer max-w-xs"
+            >
+              {links.map(l => (
+                <option key={l.id} value={l.vendor_id}>
+                  {l.vendor?.name ?? 'Unknown Vendor'}
+                </option>
+              ))}
+            </select>
+            {selectedLink && (
+              <div className="flex items-center gap-2 text-xs text-muted pl-0.5">
+                {selectedVendor.handle && <span>@{selectedVendor.handle}</span>}
+                {selectedVendor.handle && <Dot />}
+                <span>{REVIEW_MODE_LABELS[selectedLink.review_collaboration_mode] ?? selectedLink.review_collaboration_mode}</span>
+                <Dot />
+                <span>Connected {new Date(selectedLink.created_at).toLocaleDateString()}</span>
+              </div>
+            )}
           </div>
-        </section>
+          {selectedLink && (
+            <button
+              onClick={() => setCancelTarget({ link: selectedLink, vendorName: selectedVendor.name ?? 'this vendor' })}
+              className="px-3 py-1 rounded-md bg-error/10 text-error text-xs hover:bg-error/20 transition-colors cursor-pointer shrink-0"
+            >
+              Cancel
+            </button>
+          )}
+        </div>
       )}
 
-      {/* Pending invites */}
+      {/* ── Per-vendor hub ── */}
+      {!loading && selectedLink && (
+        <>
+          <SharedAssets shares={vendorShares} revoking={revoking} onRevoke={revokeShare} />
+          <OpenReviews reviews={vendorReviews} />
+          <ReceivedEstimates
+            estimates={vendorEstimates}
+            expanded={expandedEstimate}
+            onToggle={toggleEstimate}
+          />
+        </>
+      )}
+
+      {/* ── Pending invites (connections in progress) ── */}
       {!loading && invites.length > 0 && (
-        <section className="flex flex-col gap-3">
-          <h2 className="text-muted text-xs font-medium uppercase tracking-wider">
-            Pending invites ({invites.length})
-          </h2>
+        <section className="flex flex-col gap-3 pt-2 border-t border-border">
+          <SectionHeader title="Pending invites" count={invites.length} />
           <div className="flex flex-col gap-2">
             {invites.map(inv => {
               const canResend = inv.resend_count < MAX_RESENDS
@@ -358,9 +550,7 @@ export default function VendorConnections() {
                   <div className="flex flex-col gap-0.5 min-w-0">
                     <div className="flex items-center gap-2">
                       <span className="text-foreground text-sm font-medium truncate">{inv.vendor_name}</span>
-                      {inv.vendor_handle && (
-                        <span className="text-muted text-xs">@{inv.vendor_handle}</span>
-                      )}
+                      {inv.vendor_handle && <span className="text-muted text-xs">@{inv.vendor_handle}</span>}
                     </div>
                     <div className="flex items-center gap-2 text-xs text-muted">
                       <span className={cn(new Date(inv.expires_at) - Date.now() < 86400000 ? 'text-warning' : '')}>
@@ -374,7 +564,6 @@ export default function VendorConnections() {
                       )}
                     </div>
                   </div>
-
                   <div className="flex items-center gap-2 shrink-0">
                     <button
                       onClick={() => resendInvite(inv.id)}
@@ -399,21 +588,21 @@ export default function VendorConnections() {
         </section>
       )}
 
-      {/* Payload Templates */}
+      {/* ── Payload templates (studio-wide config) ── */}
       {!loading && (
         <section className="flex flex-col gap-3 pt-2 border-t border-border">
-          <div className="flex items-center justify-between">
-            <h2 className="text-muted text-xs font-medium uppercase tracking-wider">
-              Payload Templates ({templates.length})
-            </h2>
-            <button
-              onClick={() => setTemplateModal('new')}
-              className="px-2.5 py-1 rounded-md bg-surface-2 text-foreground text-xs hover:bg-surface border border-border transition-colors cursor-pointer"
-            >
-              + New template
-            </button>
-          </div>
-
+          <SectionHeader
+            title="Payload Templates"
+            count={templates.length}
+            action={
+              <button
+                onClick={() => setTemplateModal('new')}
+                className="px-2.5 py-1 rounded-md bg-surface-2 text-foreground text-xs hover:bg-surface border border-border transition-colors cursor-pointer"
+              >
+                + New template
+              </button>
+            }
+          />
           {templates.length === 0 ? (
             <p className="text-muted text-sm">
               No templates yet.{' '}
