@@ -12,6 +12,7 @@ from lib.sync.connector import BaseConnector, RawRecord, SchemaField
 from routes.schema import FIELD_CATEGORY
 
 _AT_BASE = "https://api.airtable.com/v0"
+_TRANSIENT_STATUS = {429, 500, 502, 503, 504}
 
 
 def build_filter_formula(filters: list[dict]) -> str | None:
@@ -49,9 +50,61 @@ class AirtableConnector(BaseConnector):
         self._base_id = base_id
         self._client = client
         self._page_delay_s = page_delay_s
+        self._tables_cache: list[dict] | None = None
 
     def _headers(self) -> dict:
         return {"Authorization": f"Bearer {self._token}"}
+
+    async def _get(self, url: str, params=None) -> httpx.Response:
+        """
+        GET with retry/backoff on Airtable rate-limit (429) and transient 5xx,
+        mirroring create_record. Returns the response; the caller handles the
+        status (so 404 and other non-transient codes stay caller-controlled).
+        Raises RuntimeError only after exhausting retries on a transient error.
+
+        Without this, a single 429 from Airtable's rate limiter aborts the whole
+        sync at the fetch phase — reads are idempotent, so they retry safely and
+        with one more attempt than the write path.
+        """
+        r = None
+        for attempt in range(4):
+            if attempt:
+                await asyncio.sleep(2 ** attempt)  # 2s, 4s, 8s
+            try:
+                r = await self._client.get(url, headers=self._headers(), params=params)
+            except httpx.TransportError as exc:
+                log.warning("Airtable GET network error (attempt %d/4): %s", attempt + 1, exc)
+                r = None
+                continue
+            if r.status_code == 429:
+                wait = int(r.headers.get("Retry-After", 10))
+                log.warning("Airtable 429 on GET %s — retrying in %ds (attempt %d/4)", url, wait, attempt + 1)
+                await asyncio.sleep(wait)
+                r = None
+                continue
+            if r.status_code in _TRANSIENT_STATUS:
+                log.warning("Airtable GET %s %s (attempt %d/4): %s", url, r.status_code, attempt + 1, r.text)
+                r = None
+                continue
+            break
+        if r is None:
+            raise RuntimeError(f"Airtable GET exhausted retries on transient error: {url}")
+        return r
+
+    async def _fetch_tables(self) -> list[dict]:
+        """
+        Fetch and cache the base's table schema (the /meta/bases/{id}/tables
+        payload). Cached per connector instance — a single sync calls
+        fetch_asset_schema up to 3× (asset + product + item-type name
+        resolution); without this cache each call re-hit the meta endpoint,
+        multiplying 429 pressure on the exact endpoint that rate-limits first.
+        Connectors are built fresh per sync, so the cache never goes stale.
+        """
+        if self._tables_cache is None:
+            r = await self._get(f"{_AT_BASE}/meta/bases/{self._base_id}/tables")
+            r.raise_for_status()
+            self._tables_cache = r.json().get("tables", [])
+        return self._tables_cache
 
     async def _select_all(self, table_name: str, since: str | None = None) -> list[dict]:
         table_enc = quote(table_name, safe="")
@@ -65,9 +118,8 @@ class AirtableConnector(BaseConnector):
             if offset:
                 params.append(("offset", offset))
 
-            r = await self._client.get(
+            r = await self._get(
                 f"{_AT_BASE}/{self._base_id}/{table_enc}",
-                headers=self._headers(),
                 params=params,
             )
             r.raise_for_status()
@@ -89,9 +141,8 @@ class AirtableConnector(BaseConnector):
     ) -> RawRecord | None:
         table = table_id or config.tables["assets"]
         table_enc = quote(table, safe="")
-        r = await self._client.get(
+        r = await self._get(
             f"{_AT_BASE}/{self._base_id}/{table_enc}/{source_record_id}",
-            headers=self._headers(),
         )
         if r.status_code == 404:
             return None
@@ -166,9 +217,8 @@ class AirtableConnector(BaseConnector):
             if offset:
                 params.append(("offset", offset))
 
-            r = await self._client.get(
+            r = await self._get(
                 f"{_AT_BASE}/{self._base_id}/{table_enc}",
-                headers=self._headers(),
                 params=params,
             )
             r.raise_for_status()
@@ -195,12 +245,7 @@ class AirtableConnector(BaseConnector):
         Return full base schema: all tables with all fields including options.
         Shape: [{id, name, fields: [{id, name, type, category, options}]}]
         """
-        r = await self._client.get(
-            f"{_AT_BASE}/meta/bases/{self._base_id}/tables",
-            headers=self._headers(),
-        )
-        r.raise_for_status()
-        tables = r.json().get("tables", [])
+        tables = await self._fetch_tables()
         return [
             {
                 "id":     t["id"],
@@ -227,12 +272,7 @@ class AirtableConnector(BaseConnector):
         Return schema fields for the asset table. When table_id is given, looks
         up by ID (entity-definition path); otherwise falls back to config.tables["assets"] by name.
         """
-        r = await self._client.get(
-            f"{_AT_BASE}/meta/bases/{self._base_id}/tables",
-            headers=self._headers(),
-        )
-        r.raise_for_status()
-        tables = r.json().get("tables", [])
+        tables = await self._fetch_tables()
         if table_id:
             target = next((t for t in tables if t["id"] == table_id), None)
         else:
@@ -262,7 +302,6 @@ class AirtableConnector(BaseConnector):
         Callers must NOT pre-merge qualifier_defaults into fields — this method is the
         sole merge site. Pass raw fields and the defaults dict separately.
         """
-        _TRANSIENT = {429, 500, 502, 503, 504}
         effective_fields = {**qualifier_defaults, **fields}
         url     = f"{_AT_BASE}/{self._base_id}/{quote(table_id, safe='')}"
         headers = {**self._headers(), "Content-Type": "application/json"}
@@ -283,7 +322,7 @@ class AirtableConnector(BaseConnector):
                 await asyncio.sleep(wait)
                 r = None
                 continue
-            if r.status_code in _TRANSIENT:
+            if r.status_code in _TRANSIENT_STATUS:
                 log.warning("Airtable create_record %s (attempt %d/3): %s", r.status_code, attempt + 1, r.text)
                 r = None
                 continue
