@@ -104,8 +104,15 @@ var + restart = instant rollback; both verify during Supabase's dual-verificatio
 `authenticated` (changing it = §0b#3, separate). Verified on dev: JWKS shows both kids; ES256 token
 accepted by PostgREST; `SET ROLE arthound_system` confirmed (system read returns rows, anon 0); live server
 boots clean under `USE_USER_IDENTITY=1` (proves the startup-probe gate passed on ES256); HS256 fallback
-still accepted. CLI-version worry was moot — *generate* works on v2.98.1; *import* is dashboard-side. **PROD
-still pending** (separate standby key into `rhzlmkalwpmjufruacky` + Railway secret + deploy + re-verify).
+still accepted. CLI-version worry was moot — *generate* works on v2.98.1; *import* is dashboard-side.
+**PROD DONE 2026-06-05 too** — separate prod key (kid `f456b5dd-…`) imported as standby into
+`rhzlmkalwpmjufruacky` JWKS (now carries `edde3e89-…` current + `f456b5dd-…` standby); code shipped
+`dev→main→prod` (prod `86ab7d4`); `ARTHOUND_SYSTEM_SIGNING_JWK` set as a Railway secret (raw single-line
+JWK, no quotes — Railway injects to env, no .env file in the image). Pre-deploy standalone probe confirmed
+prod PostgREST accepts the ES256 token + `SET ROLE` (3 source_credentials rows, anon 0); post-deploy prod
+serves healthy under `USE_USER_IDENTITY=1` (green deploy = the live ES256 startup gate passed). Rollback =
+delete the Railway var → redeploy → HS256. Cutover rule proven on both: IMPORT KEY FIRST, then activate the
+env var (the startup probe is a blocking go/no-go).
 
 ### 0d. Identity model, END-TO-END VALIDATED ON DEV 2026-05-29 (reversible probe, fully torn down)
 
@@ -636,7 +643,7 @@ anon+user-token):**
   `system_identity()` CM; `system_token_accepted()` live probe (startup go/no-go + §0a deprecation watch).
   **Signer = ES256 standby key on dev (2026-06-05, §0a UPDATE)**: signs with `ARTHOUND_SYSTEM_SIGNING_JWK`
   (private JWK + `kid` header) when set, else legacy HS256/`SUPABASE_JWT_SECRET` fallback (= rollback).
-  Prod still on HS256 until the prod standby key is imported.
+  Live on ES256 on BOTH dev (kid `fb73f484-…`) and prod (kid `f456b5dd-…`) as of 2026-06-05.
 - `lib/db_breakglass.py`, isolated `service_role_headers()` gated by `ALLOW_SERVICE_ROLE=1`, never
   imported by `routes/*`; `assert_breakglass_not_in_server()`.
 - `lib/auth.py`, binds the caller token at the top of `get_current_user`/`_or_pending` (so even the

@@ -31,17 +31,35 @@ export default function Topbar() {
 
   const nav = role === 'vendor' ? VENDOR_NAV : STUDIO_NAV
 
+  // The trigger route is fire-and-forget — a 200 only means the sync was queued,
+  // not that it succeeded. Poll the returned log_id until it reaches a terminal
+  // status so the badge reflects the real outcome instead of "queued".
+  async function pollSyncStatus(logId, { intervalMs = 2000, timeoutMs = 180000 } = {}) {
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, intervalMs))
+      try {
+        const run = await apiFetch(`/api/sync/status/${logId}`)
+        if (run.status === 'success' || run.status === 'error') return run.status
+      } catch {
+        // transient poll error — keep retrying until the deadline
+      }
+    }
+    return 'timeout'
+  }
+
   async function handleSync() {
     setSyncing(true)
     setSyncMsg(null)
     try {
-      await apiFetch('/api/sync/run', { method: 'POST', body: JSON.stringify({ full: true }) })
-      setSyncMsg('ok')
+      const { log_id } = await apiFetch('/api/sync/run', { method: 'POST', body: JSON.stringify({ full: true }) })
+      const status = log_id ? await pollSyncStatus(log_id) : 'error'
+      setSyncMsg(status === 'success' ? 'ok' : status === 'error' ? 'err' : null)
     } catch {
       setSyncMsg('err')
     } finally {
       setSyncing(false)
-      setTimeout(() => setSyncMsg(null), 3000)
+      setTimeout(() => setSyncMsg(null), 4000)
     }
   }
 
