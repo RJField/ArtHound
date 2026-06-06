@@ -4,6 +4,7 @@ import { useAuth } from '../contexts/AuthContext'
 import { apiFetch } from '../lib/api'
 import NumbersBotModal from '../components/NumbersBotModal'
 import LoreBotModal from '../components/LoreBotModal'
+import PageContainer from '../components/PageContainer'
 
 function timeAgo(iso) {
   if (!iso) return null
@@ -76,7 +77,7 @@ export default function StudioHome() {
   }
 
   return (
-    <main className="flex-1 p-8 flex flex-col gap-8 max-w-4xl">
+    <PageContainer width="md" className="p-8 gap-8">
       <div className="flex items-center gap-4">
         <img src="/ArtHound_logo.png" alt="ArtHound" className="w-28 h-28 rounded-xl object-cover shrink-0" />
         <div className="flex flex-col gap-2">
@@ -189,6 +190,6 @@ export default function StudioHome() {
 
       {openBot === 'NumberBot' && <NumbersBotModal onClose={() => setOpenBot(null)} />}
       {openBot === 'LoreBot'   && <LoreBotModal    onClose={() => setOpenBot(null)} />}
-    </main>
+    </PageContainer>
   )
 }

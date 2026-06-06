@@ -5,6 +5,7 @@ import { cn } from '../lib/utils'
 import InviteVendorModal from '../components/InviteVendorModal'
 import PayloadTemplateModal from '../components/PayloadTemplateModal'
 import EstimateSnapshotView, { GRANULARITY_LABELS } from '../components/EstimateSnapshotView'
+import PageContainer from '../components/PageContainer'
 
 const MAX_RESENDS = 2
 
@@ -464,7 +465,7 @@ export default function VendorConnections() {
   const selectedVendor = selectedLink?.vendor ?? {}
 
   return (
-    <main className="flex-1 flex flex-col p-6 gap-6 max-w-3xl">
+    <PageContainer width="sm" className="p-6 gap-6">
       <div className="flex items-center justify-between">
         <h1 className="text-foreground text-lg font-semibold">Vendors</h1>
         <button
@@ -676,6 +677,6 @@ export default function VendorConnections() {
           }}
         />
       )}
-    </main>
+    </PageContainer>
   )
 }

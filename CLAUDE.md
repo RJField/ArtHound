@@ -89,6 +89,8 @@ Sync is triggered on login (via `AuthContext.jsx`) and by a background polling l
 
 **Field schema:** When passing field definitions between layers, always include the full type + options object (select choices, `linkedTableId`, formula result type). Do not strip to just the type name, downstream rendering depends on options.
 
+**Page centering:** Page content must always be horizontally centered — it must never hug the left edge with dead space on the right. Standard content pages render their body inside `PageContainer` (`frontend/src/components/PageContainer.jsx`), which bakes in `mx-auto` + a max-width column so centering can't be forgotten; pick the column via the `width` prop (`sm`/`md`/`lg`) and keep per-page padding/gap in `className`. Never put a bare `max-w-*` on a page's root `<main>` without `mx-auto` (that is the exact left-align bug `PageContainer` exists to prevent). Pages rendered as panels inside another layout (e.g. `OrgHub` tabs) center via `max-w-* mx-auto w-full` instead. The only exception is intentionally full-bleed multi-panel tools — `Assets` (3-panel), `Reviews` (split), `Estimates`/`EstimatesTab` (matrix grid), `ScenarioPlanner` (chat) — which fill the viewport by design and manage their own layout.
+
 ## Database
 
 Migrations live in `supabase/migrations/` and are applied in filename order. All schema changes must go through migration files, never via the Supabase dashboard.

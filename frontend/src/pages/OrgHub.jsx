@@ -918,7 +918,7 @@ function WorkflowsTab() {
       : ''
 
   return (
-    <div className="flex flex-col gap-4 p-6">
+    <div className="flex flex-col gap-4 p-6 max-w-4xl mx-auto w-full">
       {/* Toolbar */}
       <div className="flex items-center gap-2">
         <button onClick={() => setModal('add')} className={btnSecondary()}>+ Add</button>
