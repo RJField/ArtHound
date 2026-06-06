@@ -4,6 +4,7 @@ import { apiFetch, payloadAttachmentUrl } from '../lib/api'
 import { formatRawFields, fieldDisplayString } from '../lib/fields'
 import DetailModal from '../components/DetailModal'
 import IngestModal from '../components/IngestModal'
+import PageContainer from '../components/PageContainer'
 
 const SKIP = new Set(['Name', 'name'])
 
@@ -85,7 +86,7 @@ export default function VendorInbox() {
   }
 
   return (
-    <main className="flex-1 flex flex-col p-6 gap-4">
+    <PageContainer width="lg" className="p-6 gap-4">
       <div className="flex items-center gap-3">
         <h1 className="text-foreground text-lg font-semibold">Incoming Scope</h1>
         <button
@@ -167,6 +168,6 @@ export default function VendorInbox() {
           onIngested={handleIngested}
         />
       )}
-    </main>
+    </PageContainer>
   )
 }

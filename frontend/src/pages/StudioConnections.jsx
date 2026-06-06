@@ -4,6 +4,7 @@ import { apiFetch } from '../lib/api'
 import { cn } from '../lib/utils'
 import ShareEstimatesModal from '../components/ShareEstimatesModal'
 import EstimateSnapshotView, { GRANULARITY_LABELS } from '../components/EstimateSnapshotView'
+import PageContainer from '../components/PageContainer'
 
 const REVIEW_MODE_LABELS = {
   none:          'Simple delivery',
@@ -390,7 +391,7 @@ export default function StudioConnections() {
   }
 
   return (
-    <main className="flex-1 flex flex-col p-6 gap-6 max-w-3xl">
+    <PageContainer width="sm" className="p-6 gap-6">
       <h1 className="text-foreground text-lg font-semibold">Studio Connections</h1>
 
       {loading && <p className="text-muted text-sm">Loading…</p>}
@@ -584,6 +585,6 @@ export default function StudioConnections() {
           onShared={() => { setShareTarget(null); load() }}
         />
       )}
-    </main>
+    </PageContainer>
   )
 }
