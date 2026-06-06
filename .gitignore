@@ -9,3 +9,6 @@ pitch.md
 media/
 frontend/dist/
 private/
+
+# Supabase CLI scratch state (version checks, linked-project ref, pooler URL)
+supabase/.temp/
