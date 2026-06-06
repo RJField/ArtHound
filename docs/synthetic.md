@@ -1,6 +1,6 @@
 # Synthetic Data Generator
 
-_Last updated: 2026-05-14_
+_Last updated: 2026-06-03_
 
 The Synthetic Data Generator is an admin-only tool for populating an Airtable base with realistic-looking test data. It creates Products, Assets, and Work records (with configurable link fields) against a studio-configured "target" base. It is used to build test environments for ArtHound without needing real production data.
 
@@ -8,9 +8,9 @@ The Synthetic Data Generator is an admin-only tool for populating an Airtable ba
 
 ## Access
 
-**Admin-only.** All routes call `require_admin(user)`, which checks that the calling user holds at least the `admin` role in their studio. The endpoints are under `/api/synthetic`.
+**Backend — org admin.** All routes are under `/api/synthetic` and call `require_admin(user)`, which authorizes any user holding the `owner` or `admin` role in their org (studio **or** vendor). It is *not* gated on platform-admin email.
 
-The frontend lives at `AdminPanel.jsx`, reachable by platform admins or studio admins from the account/settings area.
+**UI — behind the platform-admin gate.** The generator is a "Synthetic data" card on the platform admin page (`AdminPanel.jsx` at `/admin`); its **Open wizard** button launches the `SyntheticDataModal` component. That page is reached only via the **Platform Admin** button in the Topbar, which renders solely for platform admins (`PLATFORM_ADMIN_EMAILS`). So although the backend would authorize any org admin, the only UI entry point currently sits behind the platform-admin gate.
 
 ---
 

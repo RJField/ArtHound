@@ -3,6 +3,7 @@ import { toast } from 'sonner'
 import { apiFetch } from '../lib/api'
 import { getSupabase } from '../lib/supabase'
 import { cn } from '../lib/utils'
+import PageContainer from '../components/PageContainer'
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -285,7 +286,7 @@ export default function Workflows() {
       : ''
 
   return (
-    <main className="flex-1 flex flex-col p-6 gap-4">
+    <PageContainer width="lg" className="p-6 gap-4">
       {/* Toolbar */}
       <div className="flex items-center gap-2">
         <h1 className="text-foreground text-lg font-semibold mr-2">Workflow Steps</h1>
@@ -395,7 +396,7 @@ export default function Workflows() {
           onConfirm={handleRemove}
         />
       )}
-    </main>
+    </PageContainer>
   )
 }
 

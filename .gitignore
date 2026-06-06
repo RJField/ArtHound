@@ -9,3 +9,10 @@ pitch.md
 media/
 frontend/dist/
 private/
+
+# Supabase CLI scratch state (version checks, linked-project ref, pooler URL)
+supabase/.temp/
+
+# Claude Code per-user local settings (machine-specific paths + command allowlist).
+# The shared .claude/settings.json stays tracked.
+.claude/settings.local.json

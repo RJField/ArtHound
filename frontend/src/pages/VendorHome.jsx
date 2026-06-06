@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { apiFetch } from '../lib/api'
+import PageContainer from '../components/PageContainer'
 
 export default function VendorHome() {
   const { profile } = useAuth()
@@ -27,7 +28,7 @@ export default function VendorHome() {
   }, [])
 
   return (
-    <main className="flex-1 p-8 flex flex-col gap-8 max-w-3xl">
+    <PageContainer width="sm" className="p-8 gap-8">
       <div>
         <h1 className="text-foreground text-2xl font-semibold mb-1">
           Welcome{profile?.org ? `, ${profile.org.name}` : ''}
@@ -73,7 +74,7 @@ export default function VendorHome() {
           highlight={inviteCount > 0}
         />
       </div>
-    </main>
+    </PageContainer>
   )
 }
 
