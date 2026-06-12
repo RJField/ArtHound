@@ -3,18 +3,23 @@ import { Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { apiFetch } from '../../lib/api'
 import { useAuth } from '../../contexts/AuthContext'
-import { Button, Pill, SectionLabel, Spinner, Textarea } from '../ui'
+import { Button, Pill, SectionLabel, Select, Spinner, Textarea } from '../ui'
 
-// Threaded comments on a review. P0: internal lane only — the visibility pill and
-// lane controls become meaningful when cross-org reviews land (P1).
-// Render with key={reviewId} when the same instance can switch reviews — state
-// resets via remount, not in-effect setState.
-export default function CommentThread({ reviewId }) {
+// Threaded comments on a review with visibility lanes. Internal reviews have one
+// (internal) lane; cross-org reviews (scope="cross_org") add the shared lane: a lane
+// picker on compose, a Shared pill on shared comments, and a one-way Share action on
+// your own internal comments. Render with key={reviewId} when the same instance can
+// switch reviews — state resets via remount, not in-effect setState.
+export default function CommentThread({ reviewId, scope = 'internal' }) {
   const { session } = useAuth()
   const myUserId = session?.user?.id ?? null
+  const crossOrg = scope === 'cross_org'
 
   const [comments, setComments]   = useState(null)
   const [draft, setDraft]         = useState('')
+  // On a cross-org review you are commenting on the shared surface — shared is the
+  // expected default; internal is the explicit org-private exception.
+  const [lane, setLane]           = useState(crossOrg ? 'shared' : 'internal')
   const [posting, setPosting]     = useState(false)
   const [editingId, setEditingId] = useState(null)
   const [editDraft, setEditDraft] = useState('')
@@ -34,7 +39,7 @@ export default function CommentThread({ reviewId }) {
     try {
       const comment = await apiFetch(`/api/reviews/${reviewId}/comments`, {
         method: 'POST',
-        body: JSON.stringify({ body }),
+        body: JSON.stringify({ body, visibility: crossOrg ? lane : 'internal' }),
       })
       setComments(prev => [...(prev ?? []), comment])
       setDraft('')
@@ -42,6 +47,19 @@ export default function CommentThread({ reviewId }) {
       toast.error(err.message)
     } finally {
       setPosting(false)
+    }
+  }
+
+  async function share(commentId) {
+    if (!window.confirm('Share this comment with the partner org? This cannot be undone.')) return
+    try {
+      const updated = await apiFetch(`/api/reviews/${reviewId}/comments/${commentId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ visibility: 'shared' }),
+      })
+      setComments(prev => prev.map(c => (c.id === commentId ? updated : c)))
+    } catch (err) {
+      toast.error(err.message)
     }
   }
 
@@ -98,8 +116,19 @@ export default function CommentThread({ reviewId }) {
                 <span className="text-faint text-xs shrink-0">{date}</span>
                 {c.edited_at && <span className="text-faint text-xs shrink-0">(edited)</span>}
                 {c.visibility === 'shared' && <Pill tone="accent">Shared</Pill>}
+                {crossOrg && c.visibility === 'internal' && <Pill>Internal</Pill>}
                 {mine && !editing && (
                   <div className="ml-auto flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                    {crossOrg && c.visibility === 'internal' && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="px-1 text-xs"
+                        onClick={() => share(c.id)}
+                      >
+                        Share
+                      </Button>
+                    )}
                     <Button
                       variant="ghost"
                       size="sm"
@@ -152,7 +181,13 @@ export default function CommentThread({ reviewId }) {
           placeholder="Write a comment…"
           className="resize-none"
         />
-        <div className="flex justify-end">
+        <div className="flex items-center justify-end gap-2">
+          {crossOrg && (
+            <Select value={lane} onChange={e => setLane(e.target.value)} aria-label="Comment visibility">
+              <option value="shared">Shared</option>
+              <option value="internal">Internal</option>
+            </Select>
+          )}
           <Button variant="primary" size="sm" onClick={post} disabled={posting || !draft.trim()}>
             {posting ? 'Posting…' : 'Comment'}
           </Button>

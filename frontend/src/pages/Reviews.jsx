@@ -3,11 +3,13 @@ import { ChevronLeft, ChevronRight, ClipboardList, Paperclip, Trash2, Upload } f
 import { toast } from 'sonner'
 import { apiFetch, apiUpload, reviewAttachmentUrl } from '../lib/api'
 import { cn } from '../lib/utils'
+import { useAuth } from '../contexts/AuthContext'
 import {
-  Button, Dropdown, EmptyState, Field, Input, KV, Modal,
-  SectionLabel, Select, Spinner, StatusDot, Textarea,
+  Button, Dropdown, EmptyState, Field, Input, KV, Modal, Pill,
+  SectionLabel, Select, Spinner, StatusDot, Tabs, Textarea,
 } from '../components/ui'
 import CommentThread from '../components/reviews/CommentThread'
+import PromoteModal from '../components/reviews/PromoteModal'
 import ImageViewer from '../components/media/ImageViewer'
 import VideoViewer from '../components/media/VideoViewer'
 import PdfViewer from '../components/media/PdfViewer'
@@ -327,8 +329,9 @@ function AttachmentPanel({ reviewId }) {
 
 // ── New Review Modal ───────────────────────────────────────────────────────────
 
-function NewReviewModal({ onClose, onCreated }) {
+function NewReviewModal({ onClose, onCreated, isVendor }) {
   const [assets, setAssets]         = useState([])
+  const [links, setLinks]           = useState([])
   const [loadingAssets, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
   const [form, setForm] = useState({
@@ -336,6 +339,7 @@ function NewReviewModal({ onClose, onCreated }) {
     title: '',
     description: '',
     status: '',
+    link_id: '',
   })
 
   useEffect(() => {
@@ -347,8 +351,13 @@ function NewReviewModal({ onClose, onCreated }) {
       })
       .catch(err => { if (err.name !== 'AbortError') toast.error(err.message) })
       .finally(() => setLoading(false))
+    if (isVendor) {
+      apiFetch('/api/handshake/links', { signal: controller.signal })
+        .then(data => setLinks(data ?? []))
+        .catch(() => {})
+    }
     return () => controller.abort()
-  }, [])
+  }, [isVendor])
 
   async function submit() {
     if (!form.canonical_asset_id) { toast.error('Please select an asset'); return }
@@ -361,9 +370,10 @@ function NewReviewModal({ onClose, onCreated }) {
           title:       form.title       || null,
           description: form.description || null,
           status:      form.status      || null,
+          link_id:     form.link_id     || null,
         }),
       })
-      toast.success('Review created')
+      toast.success(form.link_id ? 'Cross-org review created' : 'Review created')
       onCreated(review)
     } catch (err) {
       toast.error(err.message)
@@ -440,6 +450,21 @@ function NewReviewModal({ onClose, onCreated }) {
             {STATUS_OPTS.map(s => <option key={s} value={s}>{s}</option>)}
           </Select>
         </Field>
+
+        {isVendor && links.length > 0 && (
+          <Field label="Send to studio (optional)">
+            <Select
+              size="lg"
+              value={form.link_id}
+              onChange={e => setForm(f => ({ ...f, link_id: e.target.value }))}
+            >
+              <option value="">No — internal review</option>
+              {links.map(l => (
+                <option key={l.id} value={l.id}>{l.studio?.name || l.studio_id}</option>
+              ))}
+            </Select>
+          </Field>
+        )}
       </div>
     </Modal>
   )
@@ -448,11 +473,14 @@ function NewReviewModal({ onClose, onCreated }) {
 // ── Main page ──────────────────────────────────────────────────────────────────
 
 export default function Reviews() {
+  const { role } = useAuth()
+  const [scopeTab, setScopeTab]     = useState('internal')
   const [reviews, setReviews]       = useState([])
   const [selectedId, setSelectedId] = useState(null)
   const [loading, setLoading]       = useState(true)
   const [filters, setFilters]       = useState({ status: new Set() })
   const [showNew, setShowNew]       = useState(false)
+  const [showPromote, setShowPromote] = useState(false)
   const [editing, setEditing]       = useState(false)
   const [editForm, setEditForm]     = useState({})
 
@@ -460,7 +488,7 @@ export default function Reviews() {
     setLoading(true)
     setSelectedId(null)
     try {
-      const data = await apiFetch('/api/reviews')
+      const data = await apiFetch(`/api/reviews?scope=${scopeTab}`)
       setReviews(data)
       setFilters({ status: new Set() })
     } catch (err) {
@@ -468,7 +496,7 @@ export default function Reviews() {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [scopeTab])
 
   useEffect(() => { load() }, [load])
 
@@ -513,8 +541,31 @@ export default function Reviews() {
 
   function handleCreated(review) {
     setShowNew(false)
+    if ((review.scope === 'cross_org') !== (scopeTab === 'cross_org')) {
+      setScopeTab(review.scope === 'cross_org' ? 'cross_org' : 'internal')
+      return // tab switch triggers a reload
+    }
     setReviews(prev => [review, ...prev])
     setSelectedId(review.id)
+  }
+
+  function handlePromoted() {
+    setShowPromote(false)
+    setScopeTab('cross_org') // reload via the tab effect; the promoted copy lives there
+  }
+
+  async function setStatus(review, status) {
+    if (!status || status === review.status) return
+    try {
+      await apiFetch(`/api/reviews/${review.id}/status`, {
+        method: 'POST',
+        body: JSON.stringify({ status }),
+      })
+      setReviews(prev => prev.map(r => (r.id === review.id ? { ...r, status } : r)))
+      toast.success('Status updated')
+    } catch (err) {
+      toast.error(err.message)
+    }
   }
 
   const allStatuses = [...new Set(reviews.map(r => r.status).filter(Boolean))].sort()
@@ -529,6 +580,15 @@ export default function Reviews() {
 
       {/* ── Left panel ── */}
       <div className="w-72 flex flex-col border-r border-border shrink-0">
+        <Tabs
+          className="shrink-0 px-1"
+          tabs={[
+            { id: 'internal',  label: 'Internal' },
+            { id: 'cross_org', label: 'Cross-org' },
+          ]}
+          active={scopeTab}
+          onChange={setScopeTab}
+        />
         <div className="flex items-center justify-between p-3 border-b border-border shrink-0">
           <Button variant="ghost" size="sm" onClick={load}>Refresh</Button>
           <Button variant="primary" onClick={() => setShowNew(true)}>+ New Review</Button>
@@ -586,6 +646,11 @@ export default function Reviews() {
                   ) : (
                     <span className="text-xs text-faint">No status</span>
                   )}
+                  {r.scope === 'cross_org' && (
+                    <Pill tone={r.is_author ? 'neutral' : 'accent'}>
+                      {r.is_author ? 'Sent' : 'Received'}
+                    </Pill>
+                  )}
                   <span className="text-muted text-xs">{date}</span>
                 </div>
               </div>
@@ -635,18 +700,27 @@ export default function Reviews() {
                   </>
                 ) : (
                   <>
-                    <Button variant="ghost" size="sm" onClick={() => openEdit(selected)}>
-                      Edit
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => deleteReview(selected)}
-                      aria-label="Delete review"
-                      className="px-1 hover:text-error"
-                    >
-                      <Trash2 size={14} />
-                    </Button>
+                    {role === 'vendor' && selected.scope === 'internal' && (
+                      <Button variant="ghost" size="sm" onClick={() => setShowPromote(true)}>
+                        Promote
+                      </Button>
+                    )}
+                    {selected.is_author !== false && (
+                      <>
+                        <Button variant="ghost" size="sm" onClick={() => openEdit(selected)}>
+                          Edit
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => deleteReview(selected)}
+                          aria-label="Delete review"
+                          className="px-1 hover:text-error"
+                        >
+                          <Trash2 size={14} />
+                        </Button>
+                      </>
+                    )}
                   </>
                 )}
               </div>
@@ -691,7 +765,19 @@ export default function Reviews() {
                     <FieldRow label="Description" value={selected.description} span="full" />
                     <div className="flex items-center gap-3 py-2">
                       <span className="text-faint text-xs w-28 shrink-0">Status</span>
-                      {selected.status ? (
+                      {selected.scope === 'cross_org' ? (
+                        // Either link party may transition a cross-org review (review_set_status RPC).
+                        <Select
+                          value={selected.status || ''}
+                          onChange={e => setStatus(selected, e.target.value)}
+                        >
+                          <option value="" disabled>Set status…</option>
+                          {STATUS_OPTS.map(o => <option key={o} value={o}>{o}</option>)}
+                          {selected.status && !STATUS_OPTS.includes(selected.status) && (
+                            <option value={selected.status}>{selected.status}</option>
+                          )}
+                        </Select>
+                      ) : selected.status ? (
                         <StatusDot label={selected.status} className="text-xs text-foreground" />
                       ) : (
                         <span className="text-faint text-sm">—</span>
@@ -703,14 +789,25 @@ export default function Reviews() {
             </div>
 
             {/* Comments */}
-            <CommentThread key={selected.id} reviewId={selected.id} />
+            <CommentThread key={selected.id} reviewId={selected.id} scope={selected.scope} />
 
           </div>
         )}
       </div>
 
       {showNew && (
-        <NewReviewModal onClose={() => setShowNew(false)} onCreated={handleCreated} />
+        <NewReviewModal
+          onClose={() => setShowNew(false)}
+          onCreated={handleCreated}
+          isVendor={role === 'vendor'}
+        />
+      )}
+      {showPromote && selected && (
+        <PromoteModal
+          review={selected}
+          onClose={() => setShowPromote(false)}
+          onPromoted={handlePromoted}
+        />
       )}
     </main>
   )

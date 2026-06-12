@@ -153,7 +153,15 @@ async def _enrich(reviews: list[dict], user: CurrentUser) -> list[dict]:
         meta = await _fetch_vendor_asset_meta(user.vendor_id, asset_ids)
     else:
         meta = {}
-    return [{**rv, "asset": meta.get(rv["canonical_asset_id"])} for rv in reviews]
+    org_type, org_id = _resolve_org(user)
+    return [
+        {
+            **rv,
+            "asset": meta.get(rv["canonical_asset_id"]),
+            "is_author": rv.get("author_org_type") == org_type and rv.get("author_org_id") == org_id,
+        }
+        for rv in reviews
+    ]
 
 
 # ── Storage helpers ───────────────────────────────────────────────────────────
@@ -193,6 +201,27 @@ class ReviewCreate(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
     status: Optional[str] = None
+    link_id: Optional[str] = None  # set → ad-hoc cross-org review on that link
+
+
+class PromoteRequest(BaseModel):
+    link_id: str
+    trim: Optional[dict] = None  # {"fields": {...}, "comment_ids": [...], "attachment_ids": [...]}
+
+
+class StatusRequest(BaseModel):
+    status: str
+
+
+class TrimTemplateCreate(BaseModel):
+    name: str
+    config: dict
+    link_id: Optional[str] = None
+
+
+class TrimTemplateUpdate(BaseModel):
+    name: Optional[str] = None
+    config: Optional[dict] = None
 
 
 class ReviewUpdate(BaseModel):
@@ -306,22 +335,127 @@ async def _vendor_assets(user: CurrentUser) -> list[dict]:
     return [{"id": aid, "name": name} for aid, name in seen.items()]
 
 
+# ── Trim templates (vendor-owned promote defaults; payload_templates analogue) ─
+# Registered BEFORE the /{review_id} routes so the literal path isn't shadowed.
+
+def _require_vendor_id(user: CurrentUser) -> str:
+    if user.role != "vendor" or not user.vendor_id:
+        raise HTTPException(status_code=403, detail="Vendor account required")
+    return user.vendor_id
+
+
+@router.get("/trim-templates")
+async def list_trim_templates(
+    linkId: Optional[str] = Query(None),
+    user: CurrentUser = Depends(get_current_user),
+):
+    vendor_id = _require_vendor_id(user)
+    params: dict = {
+        "select": "*",
+        "vendor_id": f"eq.{vendor_id}",
+        "order": "updated_at.desc",
+    }
+    if linkId:
+        params["or"] = f"(link_id.eq.{linkId},link_id.is.null)"
+    r = await db_client.get(
+        _url("/rest/v1/review_trim_templates"), params=params, headers=_headers()
+    )
+    if not r.is_success:
+        raise HTTPException(status_code=502, detail="Failed to fetch templates")
+    return r.json()
+
+
+@router.post("/trim-templates")
+async def create_trim_template(
+    body: TrimTemplateCreate, user: CurrentUser = Depends(get_current_user)
+):
+    vendor_id = _require_vendor_id(user)
+    if not body.name.strip():
+        raise HTTPException(status_code=422, detail="Template name is empty")
+    r = await db_client.post(
+        _url("/rest/v1/review_trim_templates"),
+        json={
+            "vendor_id": vendor_id,
+            "link_id": body.link_id or None,
+            "name": body.name,
+            "config": body.config,
+        },
+        headers=_headers({"Prefer": "return=representation"}),
+    )
+    if not r.is_success or not r.json():
+        raise HTTPException(status_code=502, detail="Failed to create template")
+    return r.json()[0]
+
+
+@router.patch("/trim-templates/{template_id}")
+async def update_trim_template(
+    template_id: str, body: TrimTemplateUpdate, user: CurrentUser = Depends(get_current_user)
+):
+    vendor_id = _require_vendor_id(user)
+    patch: dict = {}
+    if body.name is not None:
+        patch["name"] = body.name
+    if body.config is not None:
+        patch["config"] = body.config
+    if not patch:
+        return {"ok": True}
+    from datetime import datetime, timezone
+    patch["updated_at"] = datetime.now(timezone.utc).isoformat()
+    r = await db_client.patch(
+        _url("/rest/v1/review_trim_templates"),
+        params={"id": f"eq.{template_id}", "vendor_id": f"eq.{vendor_id}"},
+        json=patch,
+        headers=_headers({"Prefer": "return=representation"}),
+    )
+    if not r.is_success or not r.json():
+        raise HTTPException(status_code=404, detail="Template not found")
+    return r.json()[0]
+
+
+@router.delete("/trim-templates/{template_id}")
+async def delete_trim_template(
+    template_id: str, user: CurrentUser = Depends(get_current_user)
+):
+    vendor_id = _require_vendor_id(user)
+    r = await db_client.delete(
+        _url("/rest/v1/review_trim_templates"),
+        params={"id": f"eq.{template_id}", "vendor_id": f"eq.{vendor_id}"},
+        headers=_headers({"Prefer": "return=representation"}),
+    )
+    if not r.is_success:
+        raise HTTPException(status_code=502, detail="Failed to delete template")
+    if not r.json():
+        raise HTTPException(status_code=404, detail="Template not found")
+    return {"ok": True}
+
+
 # ── Review CRUD ───────────────────────────────────────────────────────────────
 
 @router.get("")
 @router.get("/")
 async def list_reviews(
     canonicalAssetId: Optional[str] = Query(None),
+    scope: Optional[str] = Query(None),
     user: CurrentUser = Depends(get_current_user),
 ):
     org_type, org_id = _resolve_org(user)
 
-    params: dict = {
-        "select": "*",
-        "author_org_type": f"eq.{org_type}",
-        "author_org_id": f"eq.{org_id}",
-        "order": "created_at.desc",
-    }
+    params: dict = {"select": "*", "order": "created_at.desc"}
+    if scope == "cross_org":
+        # No author filter: RLS (ar_sel) returns own-authored + link-partner cross-org reviews —
+        # this IS the cross-org inbox/outbox.
+        params["scope"] = "eq.cross_org"
+    elif scope == "internal":
+        params["scope"] = "eq.internal"
+        params["author_org_type"] = f"eq.{org_type}"
+        params["author_org_id"] = f"eq.{org_id}"
+    elif scope == "all":
+        # Everything the caller's RLS view exposes: own-authored + link-party cross-org.
+        pass
+    else:
+        # Legacy default: everything the org authored (both scopes).
+        params["author_org_type"] = f"eq.{org_type}"
+        params["author_org_id"] = f"eq.{org_id}"
     if canonicalAssetId:
         params["canonical_asset_id"] = f"eq.{canonicalAssetId}"
 
@@ -376,6 +510,8 @@ async def create_review(body: ReviewCreate, user: CurrentUser = Depends(get_curr
             "canonical_asset_id": body.canonical_asset_id,
             "author_org_type": org_type,
             "author_org_id": org_id,
+            "scope": "cross_org" if body.link_id else "internal",
+            "link_id": body.link_id or None,
             "title": body.title or None,
             "description": body.description or None,
             "status": body.status or None,
@@ -385,6 +521,9 @@ async def create_review(body: ReviewCreate, user: CurrentUser = Depends(get_curr
         headers=_headers({"Prefer": "return=representation"}),
     )
     if not r.is_success:
+        # RLS ar_ins rejects a cross-org insert when the link isn't active/yours/this studio's.
+        if body.link_id and ("42501" in r.text or r.status_code in (401, 403)):
+            raise HTTPException(status_code=403, detail="Link is not active or does not match this asset's studio")
         raise HTTPException(status_code=502, detail="Failed to create review")
 
     rows = r.json()
@@ -409,8 +548,8 @@ async def create_review(body: ReviewCreate, user: CurrentUser = Depends(get_curr
 
 @router.get("/{review_id}")
 async def get_review(review_id: str, user: CurrentUser = Depends(get_current_user)):
-    org_type, org_id = _resolve_org(user)
-    review = await _fetch_review(review_id, org_type, org_id)
+    _resolve_org(user)
+    review = await _fetch_visible_review(review_id)
     enriched = await _enrich([review], user)
     return enriched[0]
 
@@ -476,14 +615,74 @@ async def delete_review(review_id: str, user: CurrentUser = Depends(get_current_
     return {"ok": True}
 
 
+# ── Promotion + cross-org status ──────────────────────────────────────────────
+
+@router.post("/{review_id}/promote")
+async def promote_review(
+    review_id: str, body: PromoteRequest, user: CurrentUser = Depends(get_current_user)
+):
+    """Promote an internal review to a cross-org review on a link — the ONE path a review
+    crosses the org wall. All validation + the trimmed copy happen atomically in the
+    promote_review DEFINER RPC (in-fn authz: author-org member, active link, studio match)."""
+    org_type, org_id = _resolve_org(user)
+    await _fetch_review(review_id, org_type, org_id)  # owner gate for a clean 404
+
+    r = await db_client.post(
+        _url("/rest/v1/rpc/promote_review"),
+        json={
+            "p_review_id": review_id,
+            "p_link_id": body.link_id,
+            "p_trim": body.trim or {},
+            "p_actor_email": user.email,
+        },
+        headers=_headers(),
+    )
+    if not r.is_success:
+        detail = "Promotion failed"
+        try:
+            detail = r.json().get("message") or detail
+        except Exception:  # noqa: BLE001
+            pass
+        raise HTTPException(status_code=400, detail=detail)
+
+    new_id = r.json()
+    new_review = await _fetch_visible_review(new_id)
+    enriched = await _enrich([new_review], user)
+    return enriched[0]
+
+
+@router.post("/{review_id}/status")
+async def set_review_status(
+    review_id: str, body: StatusRequest, user: CurrentUser = Depends(get_current_user)
+):
+    """Cross-org status transition (either link party, active link) via the review_set_status
+    DEFINER RPC. Owner-org edits on internal reviews keep using PATCH."""
+    _resolve_org(user)
+    await _fetch_visible_review(review_id)
+
+    r = await db_client.post(
+        _url("/rest/v1/rpc/review_set_status"),
+        json={"p_review_id": review_id, "p_status": body.status},
+        headers=_headers(),
+    )
+    if not r.is_success:
+        detail = "Status update failed"
+        try:
+            detail = r.json().get("message") or detail
+        except Exception:  # noqa: BLE001
+            pass
+        raise HTTPException(status_code=400, detail=detail)
+    return {"ok": True}
+
+
 # ── Comment CRUD ──────────────────────────────────────────────────────────────
 # Visibility lanes (P0: internal only in practice — 'shared' requires a cross-org parent, which
 # lands in P1). RLS enforces lane + authorship; the route mirrors those checks for clean errors.
 
 @router.get("/{review_id}/comments")
 async def list_comments(review_id: str, user: CurrentUser = Depends(get_current_user)):
-    org_type, org_id = _resolve_org(user)
-    await _fetch_review(review_id, org_type, org_id)
+    _resolve_org(user)
+    await _fetch_visible_review(review_id)
 
     r = await db_client.get(
         _url("/rest/v1/review_comments"),
@@ -500,7 +699,7 @@ async def create_comment(
     review_id: str, body: CommentCreate, user: CurrentUser = Depends(get_current_user)
 ):
     org_type, org_id = _resolve_org(user)
-    review = await _fetch_review(review_id, org_type, org_id)
+    review = await _fetch_visible_review(review_id)
 
     if not body.body.strip():
         raise HTTPException(status_code=422, detail="Comment body is empty")
@@ -538,7 +737,7 @@ async def update_comment(
     user: CurrentUser = Depends(get_current_user),
 ):
     org_type, org_id = _resolve_org(user)
-    review = await _fetch_review(review_id, org_type, org_id)
+    review = await _fetch_visible_review(review_id)
 
     patch: dict = {}
     if body.body is not None:
@@ -579,8 +778,8 @@ async def update_comment(
 async def delete_comment(
     review_id: str, comment_id: str, user: CurrentUser = Depends(get_current_user)
 ):
-    org_type, org_id = _resolve_org(user)
-    await _fetch_review(review_id, org_type, org_id)
+    _resolve_org(user)
+    await _fetch_visible_review(review_id)
 
     r = await db_client.delete(
         _url("/rest/v1/review_comments"),
@@ -602,8 +801,8 @@ async def delete_comment(
 
 @router.get("/{review_id}/events")
 async def list_events(review_id: str, user: CurrentUser = Depends(get_current_user)):
-    org_type, org_id = _resolve_org(user)
-    await _fetch_review(review_id, org_type, org_id)
+    _resolve_org(user)
+    await _fetch_visible_review(review_id)
 
     r = await db_client.get(
         _url("/rest/v1/review_events"),
@@ -619,8 +818,8 @@ async def list_events(review_id: str, user: CurrentUser = Depends(get_current_us
 
 @router.get("/{review_id}/attachments")
 async def list_attachments(review_id: str, user: CurrentUser = Depends(get_current_user)):
-    org_type, org_id = _resolve_org(user)
-    await _fetch_review(review_id, org_type, org_id)
+    _resolve_org(user)
+    await _fetch_visible_review(review_id)
 
     r = await db_client.get(
         _url("/rest/v1/review_attachments"),
@@ -643,9 +842,10 @@ async def upload_attachment(
     user: CurrentUser = Depends(get_current_user),
 ):
     # §7 STORAGE GATE (write side): authorize via a user-context review read (RLS `ar_sel`) BEFORE
-    # uploading any bytes — a caller who can't see the review can't attach to it.
+    # uploading any bytes — a caller who can't see the review can't attach to it. Visibility-based:
+    # a link partner may attach to a shared cross-org review (rat_ins still binds the row to their org).
     org_type, org_id = _resolve_org(user)
-    review = await _fetch_review(review_id, org_type, org_id)
+    review = await _fetch_visible_review(review_id)
 
     data = await file.read()
     if len(data) > 100 * 1024 * 1024:
@@ -693,12 +893,12 @@ async def serve_attachment(
     attachment_id: str,
     user: CurrentUser = Depends(get_current_user),
 ):
-    # §7 STORAGE GATE: two user-context reads authorize the byte stream below. `_fetch_review` (RLS
-    # `ar_sel`) hides a review the caller's org can't see; the review_attachments read (RLS `rat_sel`)
-    # hides the attachment row. Either invisible → 404 before any blob is fetched. Both run as the
-    # caller (`_headers()`); the byte stream itself is the §0c service-role carve-out.
-    org_type, org_id = _resolve_org(user)
-    await _fetch_review(review_id, org_type, org_id)
+    # §7 STORAGE GATE: two user-context reads authorize the byte stream below. The visibility fetch
+    # (RLS `ar_sel`) hides a review the caller's org can't see; the review_attachments read (RLS
+    # `rat_sel`) hides the attachment row. Either invisible → 404 before any blob is fetched. Both
+    # run as the caller (`_headers()`); the byte stream itself is the §0c service-role carve-out.
+    _resolve_org(user)
+    await _fetch_visible_review(review_id)
 
     r = await db_client.get(
         _url("/rest/v1/review_attachments"),
@@ -737,8 +937,8 @@ async def delete_attachment(
     attachment_id: str,
     user: CurrentUser = Depends(get_current_user),
 ):
-    org_type, org_id = _resolve_org(user)
-    await _fetch_review(review_id, org_type, org_id)
+    _resolve_org(user)
+    await _fetch_visible_review(review_id)
 
     r = await db_client.get(
         _url("/rest/v1/review_attachments"),
@@ -762,10 +962,32 @@ async def delete_attachment(
     if not is_uploader:
         raise HTTPException(status_code=403, detail="Only the uploader can delete this attachment")
 
+    # Promoted copies reference the SAME storage path (no byte copy) — only delete the blob when no
+    # OTHER row still points at it. Checked as arthound_system: the other referencing row may live on
+    # a review outside the caller's RLS view.
+    blob_shared = False
     try:
-        await _storage_delete(att["storage_path"])
+        async with system_identity():
+            refs = await db_client.get(
+                _url("/rest/v1/review_attachments"),
+                params={
+                    "select": "id",
+                    "storage_path": f"eq.{att['storage_path']}",
+                    "id": f"neq.{attachment_id}",
+                    "limit": "1",
+                },
+                headers=_headers(),
+            )
+            blob_shared = refs.is_success and bool(refs.json())
     except Exception as exc:
-        log.warning("storage delete failed for %s: %s", att["storage_path"], exc)
+        log.warning("shared-blob check failed for %s (keeping blob): %s", att["storage_path"], exc)
+        blob_shared = True  # fail safe: never delete a possibly-referenced blob
+
+    if not blob_shared:
+        try:
+            await _storage_delete(att["storage_path"])
+        except Exception as exc:
+            log.warning("storage delete failed for %s: %s", att["storage_path"], exc)
 
     await db_client.delete(
         _url("/rest/v1/review_attachments"),
@@ -778,6 +1000,7 @@ async def delete_attachment(
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
 async def _fetch_review(review_id: str, org_type: str, org_id: str) -> dict:
+    """Owner-org fetch: the review must be AUTHORED by the caller's org. Gate for edits/promotion."""
     r = await db_client.get(
         _url("/rest/v1/asset_reviews"),
         params={
@@ -786,6 +1009,20 @@ async def _fetch_review(review_id: str, org_type: str, org_id: str) -> dict:
             "author_org_type": f"eq.{org_type}",
             "author_org_id": f"eq.{org_id}",
         },
+        headers=_headers(),
+    )
+    if not r.is_success or not r.json():
+        raise HTTPException(status_code=404, detail="Review not found")
+    return r.json()[0]
+
+
+async def _fetch_visible_review(review_id: str) -> dict:
+    """Visibility fetch: any review the caller's RLS view exposes — own-org authored, or a
+    cross-org review on a link their org is party to (ar_sel). Gate for reads, comments,
+    attachments on shared reviews. Runs as the caller (§7 storage-gate contract holds)."""
+    r = await db_client.get(
+        _url("/rest/v1/asset_reviews"),
+        params={"select": "*", "id": f"eq.{review_id}"},
         headers=_headers(),
     )
     if not r.is_success or not r.json():
