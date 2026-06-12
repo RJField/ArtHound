@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { Loader2, Clock } from 'lucide-react'
+import { Clock } from 'lucide-react'
+import { Spinner } from '../ui'
 import { useMediaUrl } from '../../hooks/useMediaUrl'
 
 export default function ImageViewer({ proxyUrl, filename }) {
@@ -18,7 +19,7 @@ export default function ImageViewer({ proxyUrl, filename }) {
   if (loading) {
     return (
       <div className="flex items-center justify-center w-full h-full">
-        <Loader2 className="text-muted animate-spin" size={24} />
+        <Spinner size={24} />
       </div>
     )
   }
@@ -27,7 +28,7 @@ export default function ImageViewer({ proxyUrl, filename }) {
     return (
       <div className="flex flex-col items-center justify-center w-full h-full gap-1 text-muted text-sm">
         <span>Failed to load image.</span>
-        <span className="text-xs opacity-60">{error}</span>
+        <span className="text-xs text-faint">{error}</span>
       </div>
     )
   }

@@ -1,4 +1,6 @@
 import { useState } from 'react'
+import { ChevronDown, ChevronRight } from 'lucide-react'
+import { Table, Th, Tr, Td, Pill, EmptyState } from './ui'
 
 // Read-only renderer for a frozen estimate-share snapshot (vendor-estimate-share plan §3.5, §4.5).
 // The snapshot is self-describing; granularity decides whether a per-profile breakdown is present:
@@ -33,41 +35,37 @@ function ProfileRow({ profile, variableFields, unit, hasBreakdown }) {
   const canExpand = hasBreakdown && breakdown.length > 0
 
   return (
-    <div className="flex flex-col">
-      <button
-        type="button"
-        disabled={!canExpand}
-        onClick={() => canExpand && setOpen(o => !o)}
-        className={
-          'flex items-center justify-between gap-4 px-3 py-2 text-left ' +
-          (canExpand ? 'cursor-pointer hover:bg-surface-2' : 'cursor-default')
-        }
+    <>
+      <Tr
+        onClick={canExpand ? () => setOpen(o => !o) : undefined}
+        className={canExpand ? undefined : 'hover:bg-transparent'}
       >
-        <span className="flex items-center gap-2 min-w-0">
-          {canExpand && (
-            <span className="text-muted text-xs w-3 shrink-0">{open ? '▾' : '▸'}</span>
-          )}
-          {!canExpand && <span className="w-3 shrink-0" />}
-          <span className="text-foreground text-xs font-medium truncate">
-            {profileName(profile.variable_values, variableFields)}
+        <Td primary>
+          <span className="flex items-center gap-1.5 min-w-0">
+            {canExpand ? (
+              open
+                ? <ChevronDown size={12} className="text-muted shrink-0" />
+                : <ChevronRight size={12} className="text-muted shrink-0" />
+            ) : (
+              <span className="w-3 shrink-0" />
+            )}
+            <span className="truncate">
+              {profileName(profile.variable_values, variableFields)}
+            </span>
           </span>
-        </span>
-        <span className="text-foreground text-xs font-semibold tabular-nums shrink-0">
+        </Td>
+        <Td className="text-right text-foreground font-semibold">
           {profile.total_days} {unit}
-        </span>
-      </button>
+        </Td>
+      </Tr>
 
-      {open && canExpand && (
-        <div className="flex flex-col divide-y divide-border border-t border-border bg-surface-2">
-          {breakdown.map((b, i) => (
-            <div key={i} className="flex items-center justify-between gap-4 pl-8 pr-3 py-1.5">
-              <span className="text-muted text-xs truncate">{b.label}</span>
-              <span className="text-muted text-xs tabular-nums shrink-0">{b.days} {unit}</span>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
+      {open && canExpand && breakdown.map((b, i) => (
+        <Tr key={i} className="bg-surface-2 hover:bg-surface-2">
+          <Td className="pl-8 border-border-faint">{b.label}</Td>
+          <Td className="text-right border-border-faint">{b.days} {unit}</Td>
+        </Tr>
+      ))}
+    </>
   )
 }
 
@@ -79,25 +77,33 @@ export default function EstimateSnapshotView({ snapshot }) {
   return (
     <div className="flex flex-col gap-2">
       <div className="flex items-center gap-2 text-xs text-muted">
-        <span className="px-2 py-0.5 rounded-full bg-surface-2 border border-border text-foreground">
-          {GRANULARITY_LABELS[granularity] ?? granularity}
-        </span>
+        <Pill tone="neutral">{GRANULARITY_LABELS[granularity] ?? granularity}</Pill>
         <span>{GRANULARITY_HINTS[granularity]}</span>
       </div>
 
       {profiles.length === 0 ? (
-        <p className="text-muted text-xs">This share contains no estimate profiles.</p>
+        <EmptyState title="This share contains no estimate profiles." />
       ) : (
-        <div className="flex flex-col divide-y divide-border border border-border rounded-lg overflow-hidden">
-          {profiles.map((p, i) => (
-            <ProfileRow
-              key={i}
-              profile={p}
-              variableFields={variableFields}
-              unit={unit}
-              hasBreakdown={hasBreakdown}
-            />
-          ))}
+        <div className="border border-border rounded-lg overflow-hidden">
+          <Table>
+            <thead>
+              <tr>
+                <Th>Profile</Th>
+                <Th className="text-right">Total</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {profiles.map((p, i) => (
+                <ProfileRow
+                  key={i}
+                  profile={p}
+                  variableFields={variableFields}
+                  unit={unit}
+                  hasBreakdown={hasBreakdown}
+                />
+              ))}
+            </tbody>
+          </Table>
         </div>
       )}
     </div>

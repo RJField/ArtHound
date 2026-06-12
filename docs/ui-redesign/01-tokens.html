@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ArtHound redesign — design system</title>
+<link rel="stylesheet" href="mock.css">
+<style>
+  .page { max-width: 1060px; margin: 0 auto; padding: 32px 24px 80px; }
+  section { margin-top: 40px; }
+  .grid { display: grid; gap: 12px; }
+  .cols-2 { grid-template-columns: 1fr 1fr; }
+  .cols-6 { grid-template-columns: repeat(6, 1fr); }
+  .demo { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 16px; }
+  .label-sm { font-size: 11px; color: var(--faint); margin-top: 6px; font-family: var(--mono); }
+
+  /* "current" theme reproduction for the side-by-side */
+  .cur { --c-bg:#0d0a1a; --c-surface:#161229; --c-s2:#1f1a3a; --c-border:#3a2f6b; --c-fg:#ece6ff; --c-muted:#a89cd6; }
+  .cur .swatch-bg{background:var(--c-bg)} .cur .swatch-surface{background:var(--c-surface)}
+  .cur .swatch-s2{background:var(--c-s2)} .cur .swatch-border{background:var(--c-border)}
+  .cur .swatch-muted{background:var(--c-muted)} .cur .swatch-fg{background:var(--c-fg)}
+  .new .swatch-bg{background:var(--bg)} .new .swatch-surface{background:var(--surface)}
+  .new .swatch-s2{background:var(--surface-2)} .new .swatch-border{background:var(--border)}
+  .new .swatch-muted{background:var(--muted)} .new .swatch-fg{background:var(--fg)}
+
+  /* mini table reproduction in CURRENT style for density comparison */
+  .cur-panel { background:#0d0a1a; border:1px solid #3a2f6b; border-radius:10px; overflow:hidden; }
+  .cur-table { width:100%; border-collapse:collapse; font-size:12px; background:#161229; }
+  .cur-table th { text-align:left; color:#a89cd6; font-weight:500; padding:6px 8px; border-bottom:1px solid #3a2f6b; font-size:12px; }
+  .cur-table td { padding:8px 8px; border-bottom:1px solid rgba(58,47,107,.5); color:#ece6ff; }
+  .new-panel { background: var(--surface); border:1px solid var(--border); border-radius:10px; overflow:hidden; }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="t-display">ArtHound UI — proposed design system</div>
+  <p class="muted" style="max-width:72ch">Direction: <strong style="color:var(--fg)">graphite + violet</strong>. The chrome (backgrounds, borders, labels) drops to near-neutral graphite so it recedes; the brand purple is reserved for actions, selection and focus — the things that should pull the eye. Baseline density tightens: 13px UI font, 30px table rows, tabular numerals everywhere numbers align.</p>
+
+  <section>
+    <div class="t-title">1 · Palette — current vs proposed</div>
+    <div class="grid cols-2" style="margin-top:12px">
+      <div class="card card-pad cur">
+        <div class="t-label">Current — saturated purple chrome</div>
+        <div class="grid cols-6" style="margin-top:10px">
+          <div><div class="swatch swatch-bg"></div><div class="label-sm">bg #0d0a1a</div></div>
+          <div><div class="swatch swatch-surface"></div><div class="label-sm">surface</div></div>
+          <div><div class="swatch swatch-s2"></div><div class="label-sm">surface-2</div></div>
+          <div><div class="swatch swatch-border"></div><div class="label-sm">border #3a2f6b</div></div>
+          <div><div class="swatch swatch-muted"></div><div class="label-sm">muted #a89cd6</div></div>
+          <div><div class="swatch swatch-fg"></div><div class="label-sm">text #ece6ff</div></div>
+        </div>
+        <p class="muted t-small" style="margin-bottom:0">Every border and secondary label carries saturation — with 100s of rows on screen, the chrome competes with the data.</p>
+      </div>
+      <div class="card card-pad new">
+        <div class="t-label">Proposed — neutral chrome, purple = action</div>
+        <div class="grid cols-6" style="margin-top:10px">
+          <div><div class="swatch swatch-bg"></div><div class="label-sm">bg #131217</div></div>
+          <div><div class="swatch swatch-surface"></div><div class="label-sm">surface</div></div>
+          <div><div class="swatch swatch-s2"></div><div class="label-sm">surface-2</div></div>
+          <div><div class="swatch swatch-border"></div><div class="label-sm">border #2e2d38</div></div>
+          <div><div class="swatch swatch-muted"></div><div class="label-sm">muted #a3a1b0</div></div>
+          <div><div class="swatch swatch-fg"></div><div class="label-sm">text #e9e8ef</div></div>
+        </div>
+        <p class="muted t-small" style="margin-bottom:0">Graphite with a faint cool cast keeps the dark identity; the only saturated chrome left is the accent — so selected rows, primary buttons and focus rings pop without effort.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="t-title">2 · Borders — a 3-step system replaces ad-hoc opacities</div>
+    <div class="card demo" style="margin-top:12px; gap:24px">
+      <div style="width:220px; border:1px solid var(--border); border-radius:8px; padding:10px"><span class="t-label">border</span><div class="t-small muted">structural — panels, modals, inputs</div></div>
+      <div style="width:220px; border:1px solid var(--border-soft); border-radius:8px; padding:10px"><span class="t-label">border-soft</span><div class="t-small muted">internal — table rows, dividers</div></div>
+      <div style="width:220px; border:1px solid var(--border-faint); border-radius:8px; padding:10px"><span class="t-label">border-faint</span><div class="t-small muted">hairline — dense grids, kv rows</div></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="t-title">3 · Controls — one radius (6px), two heights (28 / 32), four variants</div>
+    <div class="card demo" style="margin-top:12px">
+      <button class="btn btn-primary">Primary action</button>
+      <button class="btn btn-secondary">Secondary</button>
+      <button class="btn btn-ghost">Ghost</button>
+      <button class="btn btn-danger">Delete</button>
+      <button class="btn btn-primary" disabled>Disabled</button>
+      <span style="width:16px"></span>
+      <input class="input" placeholder="Search assets…" style="width:180px">
+      <select class="select"><option>All statuses</option></select>
+      <span style="width:16px"></span>
+      <button class="btn btn-lg btn-primary">Large (forms)</button>
+    </div>
+    <p class="muted t-small">Unified focus: every control gets the same 2px accent ring (<span class="t-mono">--ring</span>). Kills the current border-vs-ring-vs-undefined-var mix. Tab to try it.</p>
+  </section>
+
+  <section>
+    <div class="t-title">4 · Status language — pills, one tint level (12%)</div>
+    <div class="card demo" style="margin-top:12px">
+      <span class="pill pill-success">Approved</span>
+      <span class="pill pill-info">In Review</span>
+      <span class="pill pill-warning">Pending</span>
+      <span class="pill pill-error">Changes Requested</span>
+      <span class="pill pill-neutral">Draft</span>
+      <span class="pill pill-accent">Generated</span>
+      <span style="width:16px"></span>
+      <span class="pill pill-success">P1</span>
+      <span class="pill pill-info">P2</span>
+      <span class="pill pill-warning">P3</span>
+      <span class="pill" style="background:rgba(249,115,22,.12);color:#f97316">P4</span>
+      <span class="pill pill-error">P5</span>
+    </div>
+    <p class="muted t-small">All status colors move to a shared <span class="t-mono">lib/statusColors.js</span> — Reviews and ScenarioViewer currently hardcode their own hex maps.</p>
+  </section>
+
+  <section>
+    <div class="t-title">5 · Table density — current vs proposed</div>
+    <div class="grid cols-2" style="margin-top:12px">
+      <div>
+        <div class="t-label" style="margin-bottom:8px">Current (~37px rows, mixed-case headers, 50%-opacity borders)</div>
+        <div class="cur-panel">
+          <table class="cur-table">
+            <thead><tr><th>Name</th><th>Status</th><th>Priority</th><th>Updated</th></tr></thead>
+            <tbody>
+              <tr><td>CHR_Knight_Captain</td><td>In Progress</td><td>P2</td><td>2026-06-10</td></tr>
+              <tr><td>ENV_Throne_Hall</td><td>Review</td><td>P1</td><td>2026-06-09</td></tr>
+              <tr><td>PRP_Greatsword_Royal</td><td>Blocked</td><td>P3</td><td>2026-06-08</td></tr>
+              <tr><td>VFX_Banner_Tear</td><td>In Progress</td><td>P4</td><td>2026-06-08</td></tr>
+              <tr><td>CHR_Squire_Variant_B</td><td>Done</td><td>P3</td><td>2026-06-07</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div>
+        <div class="t-label" style="margin-bottom:8px">Proposed (30px rows, label-case headers, status pills, +24% rows/screen)</div>
+        <div class="new-panel">
+          <table class="table">
+            <thead><tr><th>Name</th><th>Status</th><th>Pri</th><th>Updated</th></tr></thead>
+            <tbody>
+              <tr><td class="td-primary">CHR_Knight_Captain</td><td><span class="pill pill-info">In Progress</span></td><td><span class="pill pill-info">P2</span></td><td class="muted">Jun 10</td></tr>
+              <tr class="is-selected"><td class="td-primary">ENV_Throne_Hall</td><td><span class="pill pill-warning">Review</span></td><td><span class="pill pill-success">P1</span></td><td class="muted">Jun 9</td></tr>
+              <tr><td class="td-primary">PRP_Greatsword_Royal</td><td><span class="pill pill-error">Blocked</span></td><td><span class="pill pill-warning">P3</span></td><td class="muted">Jun 8</td></tr>
+              <tr><td class="td-primary">VFX_Banner_Tear</td><td><span class="pill pill-info">In Progress</span></td><td><span class="pill" style="background:rgba(249,115,22,.12);color:#f97316">P4</span></td><td class="muted">Jun 8</td></tr>
+              <tr><td class="td-primary">CHR_Squire_Variant_B</td><td><span class="pill pill-success">Done</span></td><td><span class="pill pill-warning">P3</span></td><td class="muted">Jun 7</td></tr>
+              <tr><td class="td-primary">ENV_Courtyard_Night</td><td><span class="pill pill-neutral">Draft</span></td><td><span class="pill pill-info">P2</span></td><td class="muted">Jun 6</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="muted t-small">Selected row = accent tint + 2px left rail. Hover = surface-2. Numerics tabular. Dates compact.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="t-title">6 · Type scale — 6 named steps, mapped to semantics</div>
+    <div class="card card-pad" style="margin-top:12px; display:flex; flex-direction:column; gap:10px">
+      <div class="t-display">Display 20/600 — page titles (one per page, max)</div>
+      <div class="t-title">Title 15/600 — section &amp; modal headers</div>
+      <div class="t-body">Body 13/400 — default UI text (down from 14px)</div>
+      <div class="t-small muted">Small 12/400 — table cells, secondary copy</div>
+      <div class="t-label">Label 11/500 caps — column headers, field labels</div>
+      <div class="t-mono">mono 12 — asset numbers, invite codes, IDs</div>
+    </div>
+  </section>
+</div>
+</body>
+</html>

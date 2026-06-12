@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { ChevronLeft, ChevronRight, ZoomIn, ZoomOut, Loader2, Clock } from 'lucide-react'
+import { ChevronLeft, ChevronRight, ZoomIn, ZoomOut, Clock } from 'lucide-react'
+import { Button, Spinner } from '../ui'
 import { useMediaUrl } from '../../hooks/useMediaUrl'
 
 let _pdfjsLib = null
@@ -101,7 +102,7 @@ export default function PdfViewer({ proxyUrl, fitWidth = false }) {
   if (fetching || (!blobUrl && !fetchError)) {
     return (
       <div className="flex items-center justify-center h-full">
-        <Loader2 className="text-muted animate-spin" size={24} />
+        <Spinner size={24} />
       </div>
     )
   }
@@ -116,44 +117,56 @@ export default function PdfViewer({ proxyUrl, fitWidth = false }) {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="flex items-center justify-between px-4 py-2 border-b border-border/40 shrink-0">
+      <div className="flex items-center justify-between px-4 py-2 border-b border-border-soft shrink-0">
         <div className="flex items-center gap-2">
-          <button
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
             disabled={currentPage <= 1}
-            className="p-1 rounded hover:bg-surface-2 disabled:opacity-30 text-muted"
+            aria-label="Previous page"
+            className="px-1"
           >
             <ChevronLeft size={16} />
-          </button>
-          <span className="text-xs text-muted">{currentPage} / {pdf?.numPages ?? '…'}</span>
-          <button
+          </Button>
+          <span className="text-xs text-muted tabular-nums">{currentPage} / {pdf?.numPages ?? '…'}</span>
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={() => setCurrentPage(p => Math.min(pdf?.numPages ?? p, p + 1))}
             disabled={!pdf || currentPage >= pdf.numPages}
-            className="p-1 rounded hover:bg-surface-2 disabled:opacity-30 text-muted"
+            aria-label="Next page"
+            className="px-1"
           >
             <ChevronRight size={16} />
-          </button>
+          </Button>
         </div>
         <div className="flex items-center gap-2">
-          <button
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={() => setScale(s => Math.max(0.5, +(s - 0.25).toFixed(2)))}
-            className="p-1 rounded hover:bg-surface-2 text-muted"
+            aria-label="Zoom out"
+            className="px-1"
           >
             <ZoomOut size={16} />
-          </button>
-          <span className="text-xs text-muted w-10 text-center">{Math.round(scale * 100)}%</span>
-          <button
+          </Button>
+          <span className="text-xs text-muted w-10 text-center tabular-nums">{Math.round(scale * 100)}%</span>
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={() => setScale(s => Math.min(3, +(s + 0.25).toFixed(2)))}
-            className="p-1 rounded hover:bg-surface-2 text-muted"
+            aria-label="Zoom in"
+            className="px-1"
           >
             <ZoomIn size={16} />
-          </button>
+          </Button>
         </div>
       </div>
       <div ref={scrollRef} className="flex-1 overflow-auto flex justify-center p-4 bg-surface-2/20 relative">
         {rendering && (
           <div className="absolute inset-0 flex items-center justify-center bg-surface/40">
-            <Loader2 className="text-muted animate-spin" size={20} />
+            <Spinner size={20} />
           </div>
         )}
         <canvas ref={canvasRef} className="shadow-lg" />

@@ -1,17 +1,11 @@
 import { useState, useEffect } from 'react'
 import { apiFetch } from '../lib/api'
-import { cn } from '../lib/utils'
+import { Modal, Tabs, Spinner, Table, Th, Tr, Td, Pill } from './ui'
 
 const TYPE_LABEL = {
   text: 'text', number: 'num', date: 'date', link: 'link',
   computed: 'calc', select: 'select', bool: 'bool', user: 'user',
   file: 'file', other: '…',
-}
-
-const TYPE_COLOR = {
-  text: 'text-p2', number: 'text-p3', date: 'text-p4', link: 'text-p2',
-  computed: 'text-muted', select: 'text-accent', bool: 'text-p1',
-  user: 'text-p2', file: 'text-p4',
 }
 
 export default function SchemaModal({ onClose }) {
@@ -32,48 +26,42 @@ export default function SchemaModal({ onClose }) {
   const activeTable = data?.configured.find(t => t.key === activeKey)
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
-      onClick={e => e.target === e.currentTarget && onClose()}
+    <Modal
+      title="Schema"
+      onClose={onClose}
+      width="max-w-3xl"
+      bodyClassName="p-0 overflow-hidden flex flex-col"
     >
-      <div className="bg-surface border border-border rounded-xl w-full max-w-3xl max-h-[85vh] flex flex-col">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-border shrink-0">
-          <h2 className="text-foreground text-base font-semibold">Schema</h2>
-          <button onClick={onClose} className="text-muted hover:text-foreground text-xl cursor-pointer leading-none">×</button>
+      {loading && (
+        <div className="flex items-center gap-2 p-5 text-muted text-sm">
+          <Spinner size={14} /> Loading schema…
         </div>
+      )}
+      {error && <p className="text-error text-sm p-5">{error}</p>}
 
-        {loading && <p className="text-muted text-sm p-5">Loading schema…</p>}
-        {error   && <p className="text-error text-sm p-5">{error}</p>}
-
-        {data && (
-          <>
-            {/* Tabs */}
-            <div className="flex gap-1 px-4 pt-3 shrink-0 flex-wrap">
-              {data.configured.map(t => (
-                <button
-                  key={t.key}
-                  onClick={() => setActiveKey(t.key)}
-                  className={cn(
-                    'px-3 py-1.5 rounded-md text-xs font-medium cursor-pointer transition-colors flex items-center gap-1',
-                    activeKey === t.key
-                      ? 'bg-surface-2 text-foreground'
-                      : 'text-muted hover:text-foreground'
-                  )}
-                >
+      {data && (
+        <>
+          <Tabs
+            className="px-4 shrink-0"
+            tabs={data.configured.map(t => ({
+              id: t.key,
+              label: (
+                <span className="inline-flex items-center gap-1">
                   {t.key}
-                  {!t.found && <span className="text-error text-xs">!</span>}
-                </button>
-              ))}
-            </div>
+                  {!t.found && <span className="text-error">!</span>}
+                </span>
+              ),
+            }))}
+            active={activeKey}
+            onChange={setActiveKey}
+          />
 
-            {/* Body */}
-            <div className="flex-1 overflow-y-auto p-4">
-              {activeTable && <TableFields table={activeTable} allNames={data.allTableNames} />}
-            </div>
-          </>
-        )}
-      </div>
-    </div>
+          <div className="flex-1 overflow-y-auto p-4">
+            {activeTable && <TableFields table={activeTable} allNames={data.allTableNames} />}
+          </div>
+        </>
+      )}
+    </Modal>
   )
 }
 
@@ -110,18 +98,18 @@ function TableFields({ table, allNames }) {
     <div className="flex flex-col gap-3">
       <div className="flex items-center gap-3">
         <span className="text-foreground text-sm font-medium">{table.name}</span>
-        <span className="text-muted text-xs px-2 py-0.5 rounded-full bg-surface-2">
+        <Pill tone="neutral">
           {table.fields.length} field{table.fields.length !== 1 ? 's' : ''}
-        </span>
-        <span className="text-muted text-xs font-mono">{table.id}</span>
+        </Pill>
+        <span className="text-faint text-xs font-mono">{table.id}</span>
       </div>
 
-      <table className="w-full text-xs border-collapse">
+      <Table>
         <thead>
-          <tr className="border-b border-border">
-            <th className="text-left text-muted font-normal pb-1.5 pr-4">Field name</th>
-            <th className="text-left text-muted font-normal pb-1.5 pr-4 w-16">Type</th>
-            <th className="text-left text-muted font-normal pb-1.5 font-mono">Field ID</th>
+          <tr>
+            <Th>Field name</Th>
+            <Th className="w-16">Type</Th>
+            <Th>Field ID</Th>
           </tr>
         </thead>
         <tbody>
@@ -129,7 +117,7 @@ function TableFields({ table, allNames }) {
           {estimateCols.length > 0 && (
             <>
               <tr>
-                <td colSpan={3} className="py-2 text-muted text-xs border-t border-border">
+                <td colSpan={3} className="py-2 px-2.5 text-faint text-xs border-t border-b border-border-soft">
                   Estimate columns ({estimateCols.length})
                 </td>
               </tr>
@@ -137,21 +125,20 @@ function TableFields({ table, allNames }) {
             </>
           )}
         </tbody>
-      </table>
+      </Table>
     </div>
   )
 }
 
 function FieldRow({ field }) {
   const label = TYPE_LABEL[field.category] ?? field.type
-  const color = TYPE_COLOR[field.category] ?? 'text-muted'
   return (
-    <tr className="border-b border-border/40">
-      <td className="py-1.5 pr-4 text-foreground">{field.name}</td>
-      <td className="py-1.5 pr-4">
-        <span className={cn('font-mono', color)}>{label}</span>
-      </td>
-      <td className="py-1.5 text-muted font-mono">{field.id}</td>
-    </tr>
+    <Tr>
+      <Td primary className="font-normal text-foreground">{field.name}</Td>
+      <Td>
+        <span className="font-mono text-faint">{label}</span>
+      </Td>
+      <Td className="font-mono">{field.id}</Td>
+    </Tr>
   )
 }

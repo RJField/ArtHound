@@ -3,9 +3,10 @@ import { Navigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { getSupabase } from '../lib/supabase'
 import SignupModal from '../components/SignupModal'
+import { Button, Field, Input } from '../components/ui'
 
 export default function Login() {
-  const { session, role, loading } = useAuth()
+  const { session, loading } = useAuth()
   const [email, setEmail]         = useState('')
   const [password, setPassword]   = useState('')
   const [error, setError]         = useState(null)
@@ -40,42 +41,34 @@ export default function Login() {
       />
       <form
         onSubmit={handleLogin}
-        className="bg-surface border border-border rounded-xl p-8 w-full max-w-sm flex flex-col gap-4"
+        className="bg-surface border border-border rounded-lg p-8 w-full max-w-sm flex flex-col gap-4"
       >
         <h1 className="text-foreground text-xl font-semibold">ArtHound</h1>
 
-        <div className="flex flex-col gap-1">
-          <label className="text-muted text-xs">Email</label>
-          <input
+        <Field label="Email">
+          <Input
+            size="lg"
             type="email"
             value={email}
             onChange={e => setEmail(e.target.value)}
             required
             autoFocus
-            className="bg-surface-2 border border-border rounded-lg px-3 py-2 text-foreground text-sm outline-none focus:border-accent"
           />
-        </div>
+        </Field>
 
-        <div className="flex flex-col gap-1">
-          <label className="text-muted text-xs">Password</label>
-          <input
+        <Field label="Password" error={error}>
+          <Input
+            size="lg"
             type="password"
             value={password}
             onChange={e => setPassword(e.target.value)}
             required
-            className="bg-surface-2 border border-border rounded-lg px-3 py-2 text-foreground text-sm outline-none focus:border-accent"
           />
-        </div>
+        </Field>
 
-        {error && <p className="text-error text-xs">{error}</p>}
-
-        <button
-          type="submit"
-          disabled={busy}
-          className="px-4 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:bg-accent-hover transition-colors cursor-pointer disabled:opacity-50"
-        >
+        <Button type="submit" variant="primary" size="lg" disabled={busy}>
           {busy ? 'Signing in…' : 'Sign in'}
-        </button>
+        </Button>
 
         <button
           type="button"
@@ -85,7 +78,7 @@ export default function Login() {
           Create account
         </button>
 
-        <p className="text-muted text-xs text-center mt-2">© 2026 FieldTech. All rights reserved.</p>
+        <p className="text-faint text-xs text-center mt-2">© 2026 FieldTech. All rights reserved.</p>
       </form>
 
       {signupOpen && <SignupModal onClose={() => setSignupOpen(false)} />}

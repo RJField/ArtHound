@@ -1,4 +1,5 @@
-import { File, FileText, Film, Clock, Loader2 } from 'lucide-react'
+import { File, FileText, Film, Clock } from 'lucide-react'
+import { Spinner } from '../ui'
 import { useMediaUrl } from '../../hooks/useMediaUrl'
 import { viewerType } from './mediaUtils'
 
@@ -6,7 +7,7 @@ function Thumbnail({ proxyUrl, filename, type }) {
   const { blobUrl, loading } = useMediaUrl(type === 'image' ? proxyUrl : null)
 
   if (type === 'image') {
-    if (loading) return <Loader2 size={16} className="text-muted animate-spin" />
+    if (loading) return <Spinner size={16} />
     if (blobUrl) return <img src={blobUrl} alt={filename} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200" loading="lazy" />
     return <File size={20} className="text-muted" />
   }
@@ -15,7 +16,7 @@ function Thumbnail({ proxyUrl, filename, type }) {
   return <File size={20} className="text-muted" />
 }
 
-export default function AttachmentCard({ filename, mimetype, size_bytes: _, proxyUrl, onClick }) {
+export default function AttachmentCard({ filename, mimetype, proxyUrl, onClick }) {
   const type    = viewerType(mimetype, filename)
   const pending = !proxyUrl
 
@@ -23,7 +24,7 @@ export default function AttachmentCard({ filename, mimetype, size_bytes: _, prox
     <button
       onClick={!pending ? onClick : undefined}
       disabled={pending}
-      className="group w-28 flex flex-col rounded-lg border border-border/40 overflow-hidden bg-surface-2/40 hover:border-border transition-colors disabled:opacity-60 disabled:cursor-default text-left"
+      className="group w-28 flex flex-col rounded-lg border border-border-soft overflow-hidden bg-surface-2/40 hover:border-border transition-colors disabled:opacity-60 disabled:cursor-default text-left"
     >
       <div className="w-full h-20 flex items-center justify-center bg-surface-2 overflow-hidden">
         {pending

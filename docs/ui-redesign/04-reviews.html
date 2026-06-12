@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ArtHound redesign — Reviews (split view)</title>
+<link rel="stylesheet" href="mock.css">
+<style>
+  html, body { height: 100%; overflow: hidden; }
+  .shell { display: flex; flex-direction: column; height: 100vh; }
+  .main { display: flex; flex: 1; min-height: 0; }
+
+  .list { width: 300px; flex-shrink: 0; border-right: 1px solid var(--border); display:flex; flex-direction:column; background: var(--surface); }
+  .list-head { padding: 10px 12px; border-bottom: 1px solid var(--border); display:flex; flex-direction:column; gap:8px; flex-shrink:0; }
+  .filters { display:flex; gap:4px; flex-wrap:wrap; }
+  .fchip { padding: 2px 9px; border-radius: 999px; font-size: 11px; font-weight:500; border:1px solid var(--border); color: var(--muted); cursor:pointer; background:none; font-family:inherit; }
+  .fchip.is-on { background: var(--accent-tint); border-color: var(--accent); color: var(--accent-hover); }
+  .ritem { padding: 9px 12px; border-bottom: 1px solid var(--border-soft); cursor:pointer; }
+  .ritem:hover { background: var(--surface-2); }
+  .ritem.is-active { background: var(--accent-tint); box-shadow: inset 2px 0 0 var(--accent); }
+  .ritem .rt { font-size: 12.5px; font-weight: 500; display:flex; justify-content:space-between; gap:8px; align-items:baseline; }
+  .ritem .ra { font-size: 11.5px; color: var(--faint); margin-top: 1px; }
+
+  .detail { flex:1; min-width:0; overflow-y:auto; background: var(--surface); }
+  .detail-inner { max-width: 760px; margin: 0 auto; padding: 20px 24px 60px; }
+  .thumb { width: 132px; height: 88px; border-radius: 6px; background: var(--surface-3); border: 1px solid var(--border-soft); display:flex; align-items:center; justify-content:center; color:var(--faint); font-size:11px; flex-shrink:0; cursor:pointer; }
+  .thumb:hover { border-color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="shell">
+  <div class="topbar">
+    <div class="row gap-2" style="margin-right:16px">
+      <div style="width:22px;height:22px;border-radius:6px;background:var(--accent);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px;color:#fff">A</div>
+      <strong style="font-size:13px">ArtHound</strong>
+    </div>
+    <a class="nav-link">Home</a>
+    <a class="nav-link">Assets</a>
+    <a class="nav-link is-active">Reviews</a>
+    <a class="nav-link">Vendors</a>
+    <a class="nav-link">Org</a>
+    <a class="nav-link">Scenario</a>
+    <div class="grow"></div>
+    <span class="pill pill-success">Synced · 2m ago</span>
+    <button class="btn btn-ghost">robin@arthound.io ▾</button>
+  </div>
+
+  <div class="main">
+    <div class="list">
+      <div class="list-head">
+        <div class="row" style="justify-content:space-between">
+          <span class="t-title" style="font-size:13px">Reviews <span class="faint t-num">24</span></span>
+          <button class="btn btn-primary" style="height:24px;padding:0 10px">+ New</button>
+        </div>
+        <div class="filters">
+          <button class="fchip is-on">All</button>
+          <button class="fchip">Pending 6</button>
+          <button class="fchip">In Review 4</button>
+          <button class="fchip">Approved 11</button>
+          <button class="fchip">Changes 3</button>
+        </div>
+      </div>
+      <div style="flex:1; overflow-y:auto">
+        <div class="ritem is-active">
+          <div class="rt"><span>Lighting pass 2</span><span class="pill pill-warning">Pending</span></div>
+          <div class="ra">ENV_Throne_Hall · A. Reyes · Jun 9</div>
+        </div>
+        <div class="ritem">
+          <div class="rt"><span>Final silhouette check</span><span class="pill pill-success">Approved</span></div>
+          <div class="ra">CHR_Knight_Captain · M. Osei · Jun 9</div>
+        </div>
+        <div class="ritem">
+          <div class="rt"><span>Texture pass — heraldry</span><span class="pill pill-error">Changes</span></div>
+          <div class="ra">PRP_Greatsword_Royal · A. Reyes · Jun 8</div>
+        </div>
+        <div class="ritem">
+          <div class="rt"><span>Blockout review</span><span class="pill pill-info">In Review</span></div>
+          <div class="ra">ENV_Undercroft · vendor: Forge &amp; Filament · Jun 8</div>
+        </div>
+        <div class="ritem">
+          <div class="rt"><span>Cloth sim direction</span><span class="pill pill-warning">Pending</span></div>
+          <div class="ra">VFX_Banner_Tear · K. Lindqvist · Jun 7</div>
+        </div>
+        <div class="ritem">
+          <div class="rt"><span>LOD chain validation</span><span class="pill pill-success">Approved</span></div>
+          <div class="ra">CHR_Squire_Variant_B · M. Osei · Jun 6</div>
+        </div>
+        <div class="ritem">
+          <div class="rt"><span>Materials — wet stone</span><span class="pill pill-info">In Review</span></div>
+          <div class="ra">ENV_Courtyard_Night · A. Reyes · Jun 6</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="detail">
+      <div class="detail-inner">
+        <div class="row" style="justify-content:space-between; align-items:flex-start">
+          <div>
+            <div class="t-display" style="font-size:18px">Lighting pass 2</div>
+            <div class="t-small muted" style="margin-top:3px">
+              <span style="color:var(--accent-hover)">ENV_Throne_Hall</span> · created by A. Reyes · Jun 9, 2026 · <span class="t-mono">REV-0231</span>
+            </div>
+          </div>
+          <div class="row gap-2">
+            <select class="select"><option>Pending</option><option>In Review</option><option>Approved</option><option>Changes Requested</option></select>
+            <button class="btn btn-secondary">Edit</button>
+            <button class="btn btn-ghost">⋯</button>
+          </div>
+        </div>
+
+        <div class="t-label" style="margin:20px 0 8px">Attachments · 4</div>
+        <div class="row gap-2" style="align-items:flex-start">
+          <div class="thumb" style="background:linear-gradient(135deg,#2a2932,#3a3947)">throne_keylight.png</div>
+          <div class="thumb">dais_blowout.png</div>
+          <div class="thumb">ref_interior_occluders.jpg</div>
+          <div class="thumb">▶ flythrough.mp4</div>
+          <div class="thumb" style="border-style:dashed; background:none">+ Add</div>
+        </div>
+
+        <div class="t-label" style="margin:20px 0 8px">Notes</div>
+        <div class="card card-pad" style="padding:12px 14px; font-size:13px; line-height:1.55">
+          North windows are blowing out the dais — pull exposure on the key or add interior occluders.
+          Banner cloth needs to read against the backlight; coordinate with <span style="color:var(--accent-hover)">VFX_Banner_Tear</span>.
+          Otherwise composition is approved as boarded.
+        </div>
+
+        <div class="t-label" style="margin:20px 0 4px">Asset snapshot</div>
+        <div class="card" style="padding: 4px 14px">
+          <div class="kv"><span class="k">Product</span><span class="v">Hollow Crown</span></div>
+          <div class="kv"><span class="k">Type</span><span class="v">Environment</span></div>
+          <div class="kv"><span class="k">Status</span><span class="v"><span class="pill pill-warning">Review</span></span></div>
+          <div class="kv"><span class="k">Priority</span><span class="v"><span class="pill pill-success">P1</span></span></div>
+          <div class="kv"><span class="k">Asset #</span><span class="v t-mono">HC-0018</span></div>
+          <div class="kv"><span class="k">Team</span><span class="v">Env Core</span></div>
+        </div>
+
+        <div class="t-label" style="margin:20px 0 8px">History</div>
+        <div class="kv"><span class="k" style="width:64px">Jun 9</span><span class="v muted">Status set to <strong style="color:var(--fg)">Pending</strong> by A. Reyes</span></div>
+        <div class="kv"><span class="k" style="width:64px">Jun 9</span><span class="v muted">4 attachments added</span></div>
+        <div class="kv"><span class="k" style="width:64px">Jun 8</span><span class="v muted">Review created from <span class="t-mono">Lighting pass 1</span> revision chain</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

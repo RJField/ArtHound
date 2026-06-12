@@ -2,12 +2,13 @@ import { useState, useEffect, useRef } from 'react'
 import { toast } from 'sonner'
 import { apiFetch } from '../lib/api'
 import { cn } from '../lib/utils'
+import { Button, Modal, Pill, Select, Spinner } from './ui'
 
 const STEP_LABELS = ['Variables', 'Values', 'Matrix', 'Options', 'Create']
 
 function StepNav({ step }) {
   return (
-    <div className="flex items-center px-5 py-3 border-b border-border shrink-0 overflow-x-auto">
+    <div className="sticky top-0 z-20 flex items-center px-5 py-3 border-b border-border-soft bg-surface shrink-0 overflow-x-auto">
       {STEP_LABELS.map((label, i) => {
         const n = i + 1
         const done = n < step
@@ -18,7 +19,7 @@ function StepNav({ step }) {
             <div className={cn('flex items-center gap-1.5 text-xs', active ? 'text-foreground' : done ? 'text-accent' : 'text-muted')}>
               <span className={cn(
                 'w-5 h-5 rounded-full flex items-center justify-center text-xs font-medium shrink-0',
-                active ? 'bg-accent text-white' : done ? 'bg-accent/20 text-accent' : 'bg-surface-2 text-muted'
+                active ? 'bg-accent text-white' : done ? 'bg-accent-tint text-accent' : 'bg-surface-2 text-muted'
               )}>
                 {done ? '✓' : n}
               </span>
@@ -54,7 +55,7 @@ function Step1({ wiz, setWiz }) {
     })
   }
 
-  if (loading) return <p className="text-muted text-sm p-5">Loading fields…</p>
+  if (loading) return <div className="flex items-center gap-2 text-muted text-sm p-5"><Spinner size={14} /> Loading fields…</div>
   if (error)   return <p className="text-error text-sm p-5">{error}</p>
 
   const typeLabel = t => {
@@ -67,7 +68,7 @@ function Step1({ wiz, setWiz }) {
     <div className="flex flex-col gap-3 p-5">
       <div>
         <p className="text-foreground text-sm font-medium mb-1">Select variable fields</p>
-        <p className="text-muted text-xs">These fields' combinations determine which estimate to use (e.g. Item Type, Team, Priority).</p>
+        <p className="text-faint text-xs">These fields' combinations determine which estimate to use (e.g. Item Type, Team, Priority).</p>
       </div>
       <div className="flex flex-col gap-1.5">
         {wiz.fields.map(f => (
@@ -79,7 +80,7 @@ function Step1({ wiz, setWiz }) {
               className="accent-accent"
             />
             <span className="text-foreground text-sm flex-1">{f.name}</span>
-            <span className="text-muted text-xs font-mono">{typeLabel(f.type)}</span>
+            <span className="text-faint text-xs font-mono">{typeLabel(f.type)}</span>
           </label>
         ))}
       </div>
@@ -94,6 +95,13 @@ function Step2({ wiz, setWiz }) {
   const [combosData, setCombosData] = useState(null)
   const [combosError, setCombosError] = useState(null)
   const fields = [...wiz.selected]
+
+  function fetchCombos(signal) {
+    const qs = fields.map(f => `field=${encodeURIComponent(f)}`).join('&')
+    apiFetch(`/api/setup/asset-combinations?${qs}`, signal ? { signal } : {})
+      .then(data => { setWiz(w => ({ ...w, existingCombos: data.combinations })); setCombosData(data); setLoadingCombos(false) })
+      .catch(e => { if (e.name !== 'AbortError') { setCombosError(e.message); setLoadingCombos(false) } })
+  }
 
   useEffect(() => {
     const controller = new AbortController()
@@ -112,13 +120,6 @@ function Step2({ wiz, setWiz }) {
     return () => controller.abort()
   }, [])
 
-  function fetchCombos(signal) {
-    const qs = fields.map(f => `field=${encodeURIComponent(f)}`).join('&')
-    apiFetch(`/api/setup/asset-combinations?${qs}`, signal ? { signal } : {})
-      .then(data => { setWiz(w => ({ ...w, existingCombos: data.combinations })); setCombosData(data); setLoadingCombos(false) })
-      .catch(e => { if (e.name !== 'AbortError') { setCombosError(e.message); setLoadingCombos(false) } })
-  }
-
   return (
     <div className="flex flex-col gap-4 p-5">
       {fields.map(f => {
@@ -127,21 +128,21 @@ function Step2({ wiz, setWiz }) {
           <div key={f}>
             <div className="flex items-center gap-2 mb-1.5">
               <span className="text-foreground text-sm font-medium">{f}</span>
-              <span className="text-muted text-xs bg-surface-2 px-1.5 py-0.5 rounded-full">{vals.length}</span>
+              <span className="text-faint text-xs tabular-nums">{vals.length}</span>
             </div>
             <div className="flex flex-wrap gap-1">
               {vals.map(v => (
-                <span key={v.name} className="text-xs bg-surface-2 text-foreground px-2 py-0.5 rounded-full border border-border">{v.name}</span>
+                <Pill key={v.name} tone="neutral">{v.name}</Pill>
               ))}
             </div>
           </div>
         )
       })}
 
-      <div className="border-t border-border pt-4">
+      <div className="border-t border-border-soft pt-4">
         <p className="text-foreground text-sm font-medium mb-1">Existing Asset Combinations</p>
-        <p className="text-muted text-xs mb-3">Unique combinations currently present in the Assets table</p>
-        {loadingCombos && <p className="text-muted text-xs">Loading…</p>}
+        <p className="text-faint text-xs mb-3">Unique combinations currently present in the Assets table</p>
+        {loadingCombos && <div className="flex items-center gap-2 text-muted text-xs"><Spinner size={12} /> Loading…</div>}
         {combosError   && <p className="text-error text-xs">{combosError}</p>}
         {combosData && !combosData.combinations.length && (
           <p className="text-muted text-xs">No assets with all variable fields populated.</p>
@@ -151,16 +152,16 @@ function Step2({ wiz, setWiz }) {
             <table className="w-full text-xs border-collapse">
               <thead>
                 <tr className="border-b border-border">
-                  {fields.map(f => <th key={f} className="text-left text-muted font-normal pb-1.5 pr-4">{f}</th>)}
-                  <th className="text-left text-muted font-normal pb-1.5">Assets</th>
+                  {fields.map(f => <th key={f} className="text-left text-faint font-normal pb-1.5 pr-4">{f}</th>)}
+                  <th className="text-left text-faint font-normal pb-1.5">Assets</th>
                 </tr>
               </thead>
               <tbody>
                 {combosData.combinations.map((c, i) => (
-                  <tr key={i} className="border-b border-border/40">
+                  <tr key={i} className="border-b border-border-soft">
                     {fields.map(f => <td key={f} className="py-1.5 pr-4 text-foreground">{c.values[f] ?? '—'}</td>)}
                     <td className="py-1.5">
-                      <span className="bg-surface-2 text-foreground text-xs px-1.5 py-0.5 rounded-full">{c.count}</span>
+                      <Pill tone="neutral">{c.count}</Pill>
                     </td>
                   </tr>
                 ))}
@@ -207,22 +208,22 @@ function FilterDropdown({ field, values, filter, onChange }) {
         type="button"
         onClick={() => setOpen(o => !o)}
         className={cn(
-          'flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md border transition-colors',
-          allSel ? 'border-border text-muted' : 'border-accent text-accent bg-accent/10'
+          'flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md border cursor-pointer transition-colors',
+          allSel ? 'border-border text-muted' : 'border-accent text-accent bg-accent-tint'
         )}
       >
         <span>{field}</span>
-        <span className="text-muted">{allSel ? `All (${values.length})` : `${sel}/${values.length}`}</span>
+        <span className="text-faint">{allSel ? `All (${values.length})` : `${sel}/${values.length}`}</span>
         <span>▾</span>
       </button>
       {open && (
-        <div className="absolute top-full left-0 mt-1 z-10 bg-surface border border-border rounded-lg shadow-lg min-w-36 py-1">
-          <div className="flex gap-1 px-2 py-1 border-b border-border">
+        <div className="absolute top-full left-0 mt-1 z-10 bg-surface border border-border rounded-lg shadow-(--ah-shadow-md) min-w-36 py-1">
+          <div className="flex gap-1 px-2 py-1 border-b border-border-soft">
             <button type="button" onClick={() => { onChange(new Set(values.map(v => v.name))); setOpen(false) }}
-              className="text-xs text-muted hover:text-foreground">All</button>
+              className="text-xs text-muted hover:text-foreground cursor-pointer">All</button>
             <span className="text-border">·</span>
             <button type="button" onClick={() => { onChange(new Set()); setOpen(false) }}
-              className="text-xs text-muted hover:text-foreground">None</button>
+              className="text-xs text-muted hover:text-foreground cursor-pointer">None</button>
           </div>
           <div className="max-h-48 overflow-y-auto">
             {values.map(v => (
@@ -251,7 +252,7 @@ function Step3({ wiz, setWiz }) {
   const fields = [...wiz.selected]
 
   // Build combos + compute existing indices once on mount
-  const [combos, setCombos] = useState(() => {
+  const [combos] = useState(() => {
     const built = buildCombinations(fields, wiz.values)
     return built
   })
@@ -364,14 +365,14 @@ function Step3({ wiz, setWiz }) {
               </td>
               <td colSpan={fields.length} className="py-1 text-xs text-muted font-medium">
                 <strong className="text-foreground">{groupBy}: {gkey}</strong>
-                <span className="ml-2 bg-surface-3 text-muted text-xs px-1.5 py-0.5 rounded-full">{gIndices.length}</span>
+                <span className="ml-2 text-faint tabular-nums">{gIndices.length}</span>
               </td>
             </tr>
             {gIndices.map(i => {
               const c = combos[i]
               const excl = excluded.has(i)
               return (
-                <tr key={i} className={cn('border-b border-border/30', excl && 'opacity-40')}>
+                <tr key={i} className={cn('border-b border-border-faint', excl && 'opacity-40')}>
                   <td className="py-1 pl-3">
                     <input type="checkbox" checked={!excl} onChange={e => toggleRow(i, e.target.checked)} className="accent-accent" />
                   </td>
@@ -388,9 +389,9 @@ function Step3({ wiz, setWiz }) {
       <>
         <tbody>
           <tr className="bg-surface-3/40">
-            <td colSpan={fields.length + 1} className="py-1.5 px-3 text-xs text-muted font-medium uppercase tracking-wide">
+            <td colSpan={fields.length + 1} className="py-1.5 px-3 text-[11px] text-faint font-medium uppercase tracking-wider">
               {label}
-              <span className="ml-2 bg-surface-2 px-1.5 py-0.5 rounded-full">{indices.length}</span>
+              <span className="ml-2 tabular-nums">{indices.length}</span>
             </td>
           </tr>
         </tbody>
@@ -402,7 +403,7 @@ function Step3({ wiz, setWiz }) {
                 const c = combos[i]
                 const excl = excluded.has(i)
                 return (
-                  <tr key={i} className={cn('border-b border-border/30', excl && 'opacity-40')}>
+                  <tr key={i} className={cn('border-b border-border-faint', excl && 'opacity-40')}>
                     <td className="py-1 pl-3">
                       <input type="checkbox" checked={!excl} onChange={e => toggleRow(i, e.target.checked)} className="accent-accent" />
                     </td>
@@ -420,14 +421,10 @@ function Step3({ wiz, setWiz }) {
   return (
     <div className="flex flex-col gap-3 p-4">
       <div className="flex items-center gap-2 flex-wrap">
-        <select
-          value={groupBy}
-          onChange={e => setGroupBy(e.target.value)}
-          className="text-xs bg-surface-2 border border-border rounded-md px-2 py-1 text-foreground"
-        >
+        <Select size="sm" value={groupBy} onChange={e => setGroupBy(e.target.value)}>
           <option value="">Group by: none</option>
           {fields.map(f => <option key={f} value={f}>{f}</option>)}
-        </select>
+        </Select>
         <div className="flex gap-1.5 flex-wrap">
           {fields.map(f => (
             <FilterDropdown
@@ -440,10 +437,12 @@ function Step3({ wiz, setWiz }) {
           ))}
         </div>
         <div className="flex gap-1.5 ml-auto">
-          <button type="button" onClick={() => setExcluded(prev => { const next = new Set(prev); visible.forEach(i => next.delete(i)); return next })}
-            className="text-xs text-muted hover:text-foreground px-2 py-1 rounded-md border border-border">Select visible</button>
-          <button type="button" onClick={() => setExcluded(prev => { const next = new Set(prev); visible.forEach(i => next.add(i)); return next })}
-            className="text-xs text-muted hover:text-foreground px-2 py-1 rounded-md border border-border">Deselect visible</button>
+          <Button size="sm" onClick={() => setExcluded(prev => { const next = new Set(prev); visible.forEach(i => next.delete(i)); return next })}>
+            Select visible
+          </Button>
+          <Button size="sm" onClick={() => setExcluded(prev => { const next = new Set(prev); visible.forEach(i => next.add(i)); return next })}>
+            Deselect visible
+          </Button>
         </div>
       </div>
 
@@ -468,7 +467,7 @@ function Step3({ wiz, setWiz }) {
                   className="accent-accent"
                 />
               </th>
-              {fields.map(f => <th key={f} className="py-2 pr-3 text-left text-muted font-normal">{f}</th>)}
+              {fields.map(f => <th key={f} className="py-2 pr-3 text-left text-faint font-normal">{f}</th>)}
             </tr>
           </thead>
           {!visible.length
@@ -491,7 +490,7 @@ function Step4({ wiz, setWiz }) {
     <div className="flex flex-col gap-5 p-5">
       <div>
         <p className="text-foreground text-sm font-medium mb-0.5">Reset matrix</p>
-        <p className="text-muted text-xs mb-2">
+        <p className="text-faint text-xs mb-2">
           If enabled, all existing estimate values for this studio will be cleared before writing new rows.
         </p>
         <label className="flex items-center gap-2 cursor-pointer">
@@ -506,7 +505,7 @@ function Step4({ wiz, setWiz }) {
       </div>
       <div>
         <p className="text-foreground text-sm font-medium mb-0.5">Prefill from Default</p>
-        <p className="text-muted text-xs mb-2">
+        <p className="text-faint text-xs mb-2">
           If enabled, new combination rows will be seeded with each step's current Default column value instead of zero.
         </p>
         <label className="flex items-center gap-2 cursor-pointer">
@@ -558,7 +557,8 @@ function Step5({ wiz, onCreated }) {
 
   if (status === 'pending') {
     return (
-      <div className="p-8 flex items-center justify-center">
+      <div className="p-8 flex items-center justify-center gap-2">
+        <Spinner size={14} />
         <p className="text-muted text-sm">
           {`Syncing ${activeCombos.length} combination${activeCombos.length !== 1 ? 's' : ''} to ArtHound Matrix…`}
         </p>
@@ -581,11 +581,11 @@ function Step5({ wiz, onCreated }) {
       <span className="text-success text-2xl">✓</span>
       <p className="text-foreground text-sm font-medium">Done</p>
       <div className="flex flex-wrap items-center gap-2 justify-center">
-        <span className="bg-surface-2 text-foreground text-xs px-2 py-1 rounded-full">{result.stepsUpserted} workflow steps</span>
-        <span className="bg-surface-2 text-foreground text-xs px-2 py-1 rounded-full">{result.matrixRows} matrix rows</span>
+        <Pill tone="neutral">{result.stepsUpserted} workflow steps</Pill>
+        <Pill tone="neutral">{result.matrixRows} matrix rows</Pill>
         {result.cleared && <span className="text-muted text-xs">previous matrix cleared</span>}
       </div>
-      <p className="text-muted text-xs text-center max-w-xs">
+      <p className="text-faint text-xs text-center max-w-xs">
         Estimates are stored in ArtHound. Edit day values directly in the matrix view.
       </p>
     </div>
@@ -621,48 +621,36 @@ export default function EstimateWizardModal({ onClose, onComplete }) {
   }
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
-      onClick={e => e.target === e.currentTarget && onClose()}
+    <Modal
+      title="ArtHound Matrix Setup"
+      onClose={onClose}
+      width="max-w-2xl"
+      bodyClassName="p-0"
+      footer={
+        <>
+          {wiz.step > 1 && wiz.step < 5 && (
+            <Button size="lg" className="mr-auto" onClick={goBack}>← Back</Button>
+          )}
+          {wiz.step < 5 && (
+            <Button variant="primary" size="lg" onClick={goNext}>
+              {wiz.step === 4 ? 'Create' : 'Next →'}
+            </Button>
+          )}
+          {wiz.step === 5 && (
+            <Button size="lg" onClick={onClose}>Close</Button>
+          )}
+        </>
+      }
     >
-      <div className="bg-surface border border-border rounded-xl w-full max-w-2xl max-h-[90vh] flex flex-col">
-        {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-border shrink-0">
-          <h2 className="text-foreground text-base font-semibold">ArtHound Matrix Setup</h2>
-          <button onClick={onClose} className="text-muted hover:text-foreground text-xl cursor-pointer leading-none">×</button>
-        </div>
+      {/* Step nav */}
+      <StepNav step={wiz.step} />
 
-        {/* Step nav */}
-        <StepNav step={wiz.step} />
-
-        {/* Body */}
-        <div className="flex-1 overflow-y-auto">
-          {wiz.step === 1 && <Step1 wiz={wiz} setWiz={setWiz} />}
-          {wiz.step === 2 && <Step2 wiz={wiz} setWiz={setWiz} />}
-          {wiz.step === 3 && <Step3 wiz={wiz} setWiz={setWiz} />}
-          {wiz.step === 4 && <Step4 wiz={wiz} setWiz={setWiz} />}
-          {wiz.step === 5 && <Step5 wiz={wiz} onCreated={onComplete} />}
-        </div>
-
-        {/* Footer */}
-        <div className="flex items-center justify-between px-5 py-4 border-t border-border shrink-0">
-          <div>
-            {wiz.step > 1 && wiz.step < 5 && (
-              <button onClick={goBack} className="text-xs text-muted hover:text-foreground px-3 py-1.5 rounded-md border border-border cursor-pointer">← Back</button>
-            )}
-          </div>
-          <div>
-            {wiz.step < 5 && (
-              <button onClick={goNext} className="text-xs bg-accent text-white px-3 py-1.5 rounded-md font-medium hover:bg-accent-hover cursor-pointer">
-                {wiz.step === 4 ? 'Create' : 'Next →'}
-              </button>
-            )}
-            {wiz.step === 5 && (
-              <button onClick={onClose} className="text-xs text-muted hover:text-foreground px-3 py-1.5 rounded-md border border-border cursor-pointer">Close</button>
-            )}
-          </div>
-        </div>
-      </div>
-    </div>
+      {/* Step body */}
+      {wiz.step === 1 && <Step1 wiz={wiz} setWiz={setWiz} />}
+      {wiz.step === 2 && <Step2 wiz={wiz} setWiz={setWiz} />}
+      {wiz.step === 3 && <Step3 wiz={wiz} setWiz={setWiz} />}
+      {wiz.step === 4 && <Step4 wiz={wiz} setWiz={setWiz} />}
+      {wiz.step === 5 && <Step5 wiz={wiz} onCreated={onComplete} />}
+    </Modal>
   )
 }

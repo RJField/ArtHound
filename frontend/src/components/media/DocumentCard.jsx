@@ -1,15 +1,16 @@
-import { File, FileText, Film, Image, Download, Loader2 } from 'lucide-react'
+import { File, FileText, Film, Image, Download } from 'lucide-react'
 import { useState } from 'react'
+import { Button, Spinner } from '../ui'
 import { apiFetchRaw } from '../../lib/api'
 import { resolveMimetype } from './mediaUtils'
 
-function iconForMimetype(mimetype, filename) {
+function iconForMimetype(mimetype, filename, props) {
   const mt = resolveMimetype(mimetype, filename)
-  if (!mt) return File
-  if (mt.startsWith('image/')) return Image
-  if (mt.startsWith('video/')) return Film
-  if (mt === 'application/pdf') return FileText
-  return File
+  if (!mt) return <File {...props} />
+  if (mt.startsWith('image/')) return <Image {...props} />
+  if (mt.startsWith('video/')) return <Film {...props} />
+  if (mt === 'application/pdf') return <FileText {...props} />
+  return <File {...props} />
 }
 
 function fmtSize(bytes) {
@@ -21,7 +22,6 @@ function fmtSize(bytes) {
 
 export default function DocumentCard({ filename, mimetype, size_bytes, proxyUrl, compact = false }) {
   const [downloading, setDownloading] = useState(false)
-  const Icon = iconForMimetype(mimetype, filename)
   const size = fmtSize(size_bytes)
 
   async function handleDownload(e) {
@@ -46,20 +46,23 @@ export default function DocumentCard({ filename, mimetype, size_bytes, proxyUrl,
   }
 
   return (
-    <div className={`flex items-center gap-3 ${compact ? '' : 'p-4 bg-surface-2/60 rounded-lg border border-border/40'}`}>
-      <Icon className="text-muted shrink-0" size={compact ? 20 : 32} />
+    <div className={`flex items-center gap-3 ${compact ? '' : 'p-4 bg-surface-2/60 rounded-lg border border-border-soft'}`}>
+      {iconForMimetype(mimetype, filename, { className: 'text-muted shrink-0', size: compact ? 20 : 32 })}
       <div className="flex-1 min-w-0">
         <p className="text-foreground text-sm truncate">{filename}</p>
         {size && <p className="text-muted text-xs">{size}</p>}
       </div>
       {proxyUrl && (
-        <button
+        <Button
+          variant="ghost"
+          size="sm"
           onClick={handleDownload}
           disabled={downloading}
-          className="text-muted hover:text-foreground disabled:opacity-50 shrink-0"
+          aria-label="Download"
+          className="shrink-0 px-1"
         >
-          {downloading ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />}
-        </button>
+          {downloading ? <Spinner size={16} /> : <Download size={16} />}
+        </Button>
       )}
     </div>
   )

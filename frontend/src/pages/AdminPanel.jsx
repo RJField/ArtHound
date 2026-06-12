@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { apiFetch } from '../lib/api'
 import SyntheticDataModal from '../components/SyntheticDataModal'
+import { Button, Card, Field, Input, PageHeader, Spinner } from '../components/ui'
 
 export default function AdminPanel() {
   const [settings, setSettings]   = useState(null)
@@ -85,49 +86,40 @@ export default function AdminPanel() {
     }
   }
 
-  const inputCls = 'bg-surface-2 border border-border rounded-lg px-3 py-2 text-foreground text-sm outline-none focus:border-accent font-mono tracking-widest uppercase'
-  const btnPrimary = 'px-4 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:bg-accent-hover transition-colors cursor-pointer disabled:opacity-50'
-
   return (
     <main className="flex-1 overflow-auto p-8">
       <div className="max-w-lg mx-auto flex flex-col gap-8">
-        <div>
-          <h1 className="text-foreground text-xl font-semibold">Platform settings</h1>
-          <p className="text-muted text-sm mt-1">Visible only to platform admins.</p>
-        </div>
+        <PageHeader
+          title="Platform settings"
+          subtitle="Visible only to platform admins."
+        />
 
-        {loading && <p className="text-muted text-sm">Loading…</p>}
-        {error   && <p className="text-error text-sm">Failed to load settings: {error}</p>}
+        {loading && (
+          <div className="flex items-center gap-2 text-muted text-sm">
+            <Spinner size={14} />
+            Loading…
+          </div>
+        )}
+        {error && <p className="text-error text-sm">Failed to load settings: {error}</p>}
 
         {/* Maintenance actions — available regardless of settings load state */}
-        <section className="flex flex-col gap-4 p-5 rounded-xl border border-border bg-surface">
-          <div>
-            <h2 className="text-foreground text-sm font-semibold">Maintenance</h2>
-            <p className="text-muted text-xs mt-0.5">One-off admin operations.</p>
-          </div>
+        <Card title="Maintenance" className="flex flex-col">
+          <p className="text-muted text-xs -mt-2 mb-4">One-off admin operations.</p>
 
           <div className="flex flex-col gap-3">
             <div className="flex items-center gap-3">
-              <button
-                onClick={handleReconcile}
-                disabled={reconciling}
-                className="px-4 py-2 rounded-lg bg-surface-2 text-foreground text-sm hover:bg-surface-3 transition-colors cursor-pointer disabled:opacity-50"
-              >
+              <Button onClick={handleReconcile} disabled={reconciling}>
                 {reconciling ? 'Reconciling…' : 'Reconcile work'}
-              </button>
+              </Button>
               {reconcileMsg === 'ok'  && <span className="text-success text-sm">Done</span>}
               {reconcileMsg === 'err' && <span className="text-error text-sm">Failed</span>}
             </div>
 
             <div className="flex flex-col gap-1.5">
               <div className="flex items-center gap-3">
-                <button
-                  onClick={handlePurgeAttachments}
-                  disabled={purging}
-                  className="px-4 py-2 rounded-lg bg-surface-2 text-foreground text-sm hover:bg-surface-3 transition-colors cursor-pointer disabled:opacity-50"
-                >
+                <Button onClick={handlePurgeAttachments} disabled={purging}>
                   {purging ? 'Purging…' : 'Purge orphaned attachments'}
-                </button>
+                </Button>
               </div>
               {purgeResult && (
                 <p className="text-xs text-muted">
@@ -138,67 +130,60 @@ export default function AdminPanel() {
               {purgeError && <p className="text-xs text-error">{purgeError}</p>}
             </div>
           </div>
-        </section>
+        </Card>
 
         {/* Synthetic data */}
-        <section className="flex flex-col gap-4 p-5 rounded-xl border border-border bg-surface">
-          <div>
-            <h2 className="text-foreground text-sm font-semibold">Synthetic data</h2>
-            <p className="text-muted text-xs mt-0.5">Generate test records in an Airtable base.</p>
-          </div>
-          <button
-            onClick={() => setSyntheticOpen(true)}
-            className="px-4 py-2 rounded-lg bg-surface-2 text-foreground text-sm hover:bg-surface-3 transition-colors cursor-pointer self-start"
-          >
+        <Card title="Synthetic data" className="flex flex-col">
+          <p className="text-muted text-xs -mt-2 mb-4">Generate test records in an Airtable base.</p>
+          <Button onClick={() => setSyntheticOpen(true)} className="self-start">
             Open wizard
-          </button>
-        </section>
+          </Button>
+        </Card>
 
         {settings && (
           <form onSubmit={handleSave} className="flex flex-col gap-6">
 
             {/* Registration gate */}
-            <section className="flex flex-col gap-4 p-5 rounded-xl border border-border bg-surface">
-              <div>
-                <h2 className="text-foreground text-sm font-semibold">Registration gate</h2>
-                <p className="text-muted text-xs mt-0.5">
-                  When enabled, new users must enter this code to proceed through sign-up.
-                </p>
+            <Card title="Registration gate" className="flex flex-col">
+              <p className="text-muted text-xs -mt-2 mb-4">
+                When enabled, new users must enter this code to proceed through sign-up.
+              </p>
+
+              <div className="flex flex-col gap-4">
+                <label className="flex items-center gap-3 cursor-pointer select-none">
+                  <div
+                    onClick={() => setInviteRequired(v => !v)}
+                    className={`relative w-9 h-5 rounded-full transition-colors cursor-pointer ${inviteRequired ? 'bg-accent' : 'bg-surface-3 border border-border'}`}
+                  >
+                    <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${inviteRequired ? 'translate-x-4' : 'translate-x-0.5'}`} />
+                  </div>
+                  <span className="text-foreground text-sm">
+                    {inviteRequired ? 'Invite code required to register' : 'Open registration (no code required)'}
+                  </span>
+                </label>
+
+                {inviteRequired && (
+                  <Field
+                    label="Access code"
+                    hint="Share this code with users you want to allow to register."
+                  >
+                    <Input
+                      size="lg"
+                      type="text"
+                      value={inviteCode}
+                      onChange={e => setInviteCode(e.target.value.toUpperCase())}
+                      placeholder="e.g. ARTHOUND"
+                      className="font-mono tracking-widest uppercase"
+                    />
+                  </Field>
+                )}
               </div>
-
-              <label className="flex items-center gap-3 cursor-pointer select-none">
-                <div
-                  onClick={() => setInviteRequired(v => !v)}
-                  className={`relative w-9 h-5 rounded-full transition-colors cursor-pointer ${inviteRequired ? 'bg-accent' : 'bg-surface-3 border border-border'}`}
-                >
-                  <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${inviteRequired ? 'translate-x-4' : 'translate-x-0.5'}`} />
-                </div>
-                <span className="text-foreground text-sm">
-                  {inviteRequired ? 'Invite code required to register' : 'Open registration (no code required)'}
-                </span>
-              </label>
-
-              {inviteRequired && (
-                <div className="flex flex-col gap-1">
-                  <label className="text-muted text-xs">Access code</label>
-                  <input
-                    type="text"
-                    value={inviteCode}
-                    onChange={e => setInviteCode(e.target.value.toUpperCase())}
-                    placeholder="e.g. ARTHOUND"
-                    className={inputCls}
-                  />
-                  <p className="text-muted text-xs mt-0.5">
-                    Share this code with users you want to allow to register.
-                  </p>
-                </div>
-              )}
-            </section>
+            </Card>
 
             <div className="flex items-center gap-3">
-              <button type="submit" disabled={saving} className={btnPrimary}>
+              <Button type="submit" variant="primary" size="lg" disabled={saving}>
                 {saving ? 'Saving…' : 'Save'}
-              </button>
+              </Button>
               {saveMsg === 'ok'  && <span className="text-success text-sm">Saved</span>}
               {saveMsg === 'err' && <span className="text-error text-sm">Failed to save — try again</span>}
             </div>

@@ -81,6 +81,13 @@ Sync is triggered on login (via `AuthContext.jsx`) and by a background polling l
 
 ## Frontend Conventions
 
+**Component library:** All UI is built from the primitives in `frontend/src/components/ui/` (import via the barrel: `Button`, `Input`, `Select`, `Textarea`, `Field`, `Modal`, `Pill`, `StatusDot`, `Tabs`, `Card`, `KV`, `Table`/`Th`/`Tr`/`Td`, `EmptyState`, `Spinner`, `Skeleton`, `Dropdown`, `PageHeader`, `SectionLabel`). Never hand-roll buttons, inputs, modal overlays, badges, or table styling in feature code. Full usage rules live in `docs/ui-redesign/MIGRATION.md`. Key invariants:
+- Status/priority/craft colors resolve through `frontend/src/lib/statusColors.js` — no hardcoded hex in JSX. Statuses inside data tables render as `<StatusDot>` (dot + plain text), not pills; `<Pill>` is for role/sync/dispatch badges.
+- Border tiers: `border-border` (structural), `border-border-soft` (internal dividers, table rows), `border-border-faint` (hairlines). No ad-hoc `border-border/NN` opacities.
+- Text tiers: `text-foreground` / `text-muted` / `text-faint`. Links are `text-link hover:underline`.
+- Radii: `rounded-md` (6px) controls, `rounded-lg` (8px) panels/cards/modals. Data tables are fixed-density (30px rows via the `Table` primitives).
+- Theme tokens live in `frontend/src/index.css` (`@theme`); the chrome is neutral graphite — the lavender accent is reserved for actions, selection, and focus.
+
 **API calls:** Always use `apiFetch()` from `frontend/src/lib/api.js`. It injects the Supabase JWT and standardizes error handling. Never use raw `fetch` for `/api` routes.
 
 **Auth state:** Supabase session and user profile live in `AuthContext`. App-level UI state (open modals, selected assets, filters) lives in `AppContext`. Hooks in `frontend/src/hooks/` encapsulate all data fetching.

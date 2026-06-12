@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
+import { Button, Pill, Spinner, Textarea } from '../ui'
 
-const STAGE_LABELS = {
+const STAGE_STATUS = {
   scoping:            null,
-  pending_generation: 'Queued — waiting for generation to start…',
-  generating:         'Generating scenario…',
+  pending_generation: { label: 'Queued — waiting for generation to start…', tone: 'warning' },
+  generating:         { label: 'Generating scenario…', tone: 'info' },
   generation_failed:  null,
   discussion:         null,
 }
@@ -49,7 +50,7 @@ export default function ScenarioChat({
   }
 
   const inputDisabled = sending || isGenerating || stage === 'generation_failed'
-  const statusLabel   = STAGE_LABELS[stage]
+  const stageStatus   = STAGE_STATUS[stage]
 
   return (
     <div className="flex flex-col border-b border-border" style={{ height: '38vh', minHeight: 220 }}>
@@ -60,23 +61,21 @@ export default function ScenarioChat({
         ))}
 
         {/* Generation status */}
-        {statusLabel && (
-          <div className="flex items-center gap-2 text-muted text-sm py-1">
-            <Spinner />
-            <span>{statusLabel}</span>
+        {stageStatus && (
+          <div className="flex items-center gap-2 py-1">
+            <Spinner size={14} />
+            <Pill tone={stageStatus.tone}>{stageStatus.label}</Pill>
           </div>
         )}
 
         {/* Generation failed */}
         {stage === 'generation_failed' && (
-          <div className="flex items-center gap-3 bg-surface-2 border border-border rounded-lg px-4 py-3 text-sm">
+          <div className="flex items-center gap-3 bg-error-tint border border-error/25 rounded-lg px-4 py-3 text-sm">
+            <Pill tone="error">Failed</Pill>
             <span className="text-foreground">Generation failed — something went wrong.</span>
-            <button
-              onClick={onRetry}
-              className="text-accent hover:text-accent/80 font-medium transition-colors"
-            >
+            <Button size="sm" variant="primary" onClick={onRetry}>
               Try again
-            </button>
+            </Button>
           </div>
         )}
 
@@ -92,7 +91,7 @@ export default function ScenarioChat({
 
         {/* Send error (e.g. overloaded) */}
         {error && (
-          <div className="text-sm text-red-400 bg-surface-2 border border-border rounded-lg px-4 py-2">
+          <div className="text-sm text-error bg-error-tint border border-error/25 rounded-lg px-4 py-2">
             {error}
           </div>
         )}
@@ -103,18 +102,15 @@ export default function ScenarioChat({
       {/* Escape hatch */}
       {showEscape && stage === 'scoping' && (
         <div className="px-6 pb-2">
-          <button
-            onClick={onForceGenerate}
-            className="text-xs text-muted hover:text-foreground transition-colors border border-border rounded px-3 py-1"
-          >
+          <Button size="sm" onClick={onForceGenerate}>
             Generate with what I have →
-          </button>
+          </Button>
         </div>
       )}
 
       {/* Input */}
       <form onSubmit={handleSubmit} className="flex gap-2 px-6 py-3 border-t border-border">
-        <textarea
+        <Textarea
           ref={inputRef}
           value={input}
           onChange={e => setInput(e.target.value)}
@@ -127,15 +123,17 @@ export default function ScenarioChat({
             'Describe your production plans…'
           }
           rows={2}
-          className="flex-1 resize-none bg-surface-2 border border-border rounded-lg px-3 py-2 text-sm text-foreground placeholder:text-muted focus:outline-none focus:border-accent/50 disabled:opacity-40 transition-colors"
+          className="flex-1 resize-none"
         />
-        <button
+        <Button
           type="submit"
+          variant="primary"
+          size="lg"
           disabled={inputDisabled || !input.trim()}
-          className="px-4 py-2 bg-accent text-white rounded-lg text-sm font-medium hover:bg-accent/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors self-end"
+          className="self-end"
         >
           Send
-        </button>
+        </Button>
       </form>
     </div>
   )
@@ -146,7 +144,7 @@ function MessageBubble({ role, content }) {
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
       <div
-        className={`max-w-[80%] rounded-xl px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap ${
+        className={`max-w-[80%] rounded-lg px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap ${
           isUser
             ? 'bg-accent text-white rounded-br-sm'
             : 'bg-surface-2 text-foreground border border-border rounded-bl-sm'
@@ -155,19 +153,6 @@ function MessageBubble({ role, content }) {
         {content}
       </div>
     </div>
-  )
-}
-
-function Spinner() {
-  return (
-    <svg
-      className="animate-spin h-3.5 w-3.5 text-muted"
-      fill="none"
-      viewBox="0 0 24 24"
-    >
-      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
-    </svg>
   )
 }
 
@@ -193,7 +178,7 @@ function ActionCard({ action, applying, onApply, onDismiss }) {
   }
 
   return (
-    <div className="rounded-xl border border-accent/40 bg-surface-2 px-4 py-3 flex flex-col gap-2.5 text-sm">
+    <div className="rounded-lg border border-accent/40 bg-surface-2 px-4 py-3 flex flex-col gap-2.5 text-sm">
       <div className="flex items-start justify-between gap-2">
         <div>
           <p className="text-foreground font-medium text-xs mb-1">Proposed changes</p>
@@ -210,20 +195,12 @@ function ActionCard({ action, applying, onApply, onDismiss }) {
         </ul>
       )}
       <div className="flex gap-2 pt-0.5">
-        <button
-          onClick={onApply}
-          disabled={applying}
-          className="px-3 py-1.5 rounded-md bg-accent text-white text-xs font-medium hover:bg-accent/90 disabled:opacity-40 transition-colors"
-        >
+        <Button variant="primary" onClick={onApply} disabled={applying}>
           {applying ? 'Regenerating…' : 'Apply & Regenerate'}
-        </button>
-        <button
-          onClick={onDismiss}
-          disabled={applying}
-          className="px-3 py-1.5 rounded-md text-muted text-xs hover:text-foreground transition-colors"
-        >
+        </Button>
+        <Button variant="ghost" onClick={onDismiss} disabled={applying}>
           Dismiss
-        </button>
+        </Button>
       </div>
     </div>
   )

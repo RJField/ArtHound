@@ -1,10 +1,12 @@
 import { useState, useEffect, useCallback } from 'react'
 import { toast } from 'sonner'
+import { Inbox } from 'lucide-react'
 import { apiFetch, payloadAttachmentUrl } from '../lib/api'
 import { formatRawFields, fieldDisplayString } from '../lib/fields'
 import DetailModal from '../components/DetailModal'
 import IngestModal from '../components/IngestModal'
 import PageContainer from '../components/PageContainer'
+import { Button, Pill, Card, PageHeader, EmptyState, Spinner } from '../components/ui'
 
 const SKIP = new Set(['Name', 'name'])
 
@@ -65,7 +67,7 @@ export default function VendorInbox() {
     }
   }, [])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => { load() }, [load]) // eslint-disable-line react-hooks/set-state-in-effect
 
   function openDispatch(d) {
     apiFetch(`/api/payloads/${encodeURIComponent(d.id)}/viewed`, { method: 'POST' }).catch(() => {})
@@ -87,20 +89,28 @@ export default function VendorInbox() {
 
   return (
     <PageContainer width="lg" className="p-6 gap-4">
-      <div className="flex items-center gap-3">
-        <h1 className="text-foreground text-lg font-semibold">Incoming Scope</h1>
-        <button
-          onClick={load}
-          className="px-3 py-1.5 rounded-md text-xs text-muted hover:text-foreground hover:bg-surface-2 transition-colors cursor-pointer"
-        >
-          Refresh
-        </button>
-      </div>
+      <PageHeader
+        title="Incoming Scope"
+        subtitle="Asset payloads dispatched to you by connected studios."
+        actions={
+          <Button variant="ghost" onClick={load}>
+            Refresh
+          </Button>
+        }
+      />
 
-      {loading && <p className="text-muted text-sm">Loading…</p>}
+      {loading && (
+        <div className="flex items-center gap-2 text-muted text-sm">
+          <Spinner /> Loading…
+        </div>
+      )}
 
       {!loading && dispatches.length === 0 && (
-        <p className="text-muted text-sm">No incoming assets yet.</p>
+        <EmptyState
+          icon={Inbox}
+          title="No incoming assets yet"
+          hint="Dispatches from connected studios will appear here."
+        />
       )}
 
       {!loading && dispatches.length > 0 && (
@@ -116,41 +126,30 @@ export default function VendorInbox() {
             const isFailed   = !isIngested && !!d.payload_field_mappings?.[0]?.failed_at
 
             return (
-              <div
-                key={d.id}
-                onClick={() => openDispatch(d)}
-                className="flex items-center justify-between gap-4 px-4 py-3 rounded-lg border border-border bg-surface hover:bg-surface-2 transition-colors cursor-pointer"
-              >
-                <div className="flex flex-col gap-1 min-w-0">
-                  <span className="text-foreground text-sm font-medium truncate">{name}</span>
-                  <div className="flex items-center gap-2 flex-wrap">
-                    {itemType && (
-                      <span className="px-2 py-0.5 rounded-full bg-surface-2 text-muted text-xs">{itemType}</span>
-                    )}
-                    {priority != null && (
-                      <span className="px-2 py-0.5 rounded-full bg-surface-3 text-muted text-xs">P{priority}</span>
-                    )}
-                    {isIngested && (
-                      <span className="px-2 py-0.5 rounded-full bg-accent/10 text-accent text-xs">Ingested</span>
-                    )}
-                    {isFailed && (
-                      <span className="px-2 py-0.5 rounded-full bg-error/10 text-error text-xs">Link Failed</span>
-                    )}
+              <div key={d.id} onClick={() => openDispatch(d)} className="cursor-pointer">
+                <Card
+                  pad={false}
+                  className="flex items-center justify-between gap-4 px-4 py-3 hover:bg-surface-2 transition-colors"
+                >
+                  <div className="flex flex-col gap-1 min-w-0">
+                    <span className="text-foreground text-sm font-medium truncate">{name}</span>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      {itemType && <Pill tone="neutral">{itemType}</Pill>}
+                      {priority != null && <Pill tone="neutral">P{priority}</Pill>}
+                      {isIngested && <Pill tone="success">Ingested</Pill>}
+                      {isFailed && <Pill tone="error">Link Failed</Pill>}
+                    </div>
                   </div>
-                </div>
-                <div className="flex items-center gap-3 shrink-0">
-                  <div className="flex flex-col items-end gap-1 text-xs text-muted">
-                    <span>{studio}</span>
-                    <span>{date}</span>
+                  <div className="flex items-center gap-3 shrink-0">
+                    <div className="flex flex-col items-end gap-1 text-xs text-muted">
+                      <span>{studio}</span>
+                      <span>{date}</span>
+                    </div>
+                    <Button size="sm" disabled onClick={e => e.stopPropagation()}>
+                      Request Refresh
+                    </Button>
                   </div>
-                  <button
-                    disabled
-                    onClick={e => e.stopPropagation()}
-                    className="px-3 py-1 rounded-md text-xs text-muted border border-border bg-surface opacity-40 cursor-not-allowed"
-                  >
-                    Request Refresh
-                  </button>
-                </div>
+                </Card>
               </div>
             )
           })}

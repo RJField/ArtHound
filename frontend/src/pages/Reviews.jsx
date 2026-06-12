@@ -1,8 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ChevronLeft, ChevronRight, Paperclip, Trash2, Upload, X } from 'lucide-react'
+import { ChevronLeft, ChevronRight, ClipboardList, Paperclip, Trash2, Upload } from 'lucide-react'
 import { toast } from 'sonner'
 import { apiFetch, apiUpload, reviewAttachmentUrl } from '../lib/api'
 import { cn } from '../lib/utils'
+import {
+  Button, Dropdown, EmptyState, Field, Input, KV, Modal,
+  SectionLabel, Select, Spinner, StatusDot, Textarea,
+} from '../components/ui'
 import ImageViewer from '../components/media/ImageViewer'
 import VideoViewer from '../components/media/VideoViewer'
 import PdfViewer from '../components/media/PdfViewer'
@@ -13,24 +17,9 @@ import { viewerType } from '../components/media/mediaUtils'
 
 const STATUS_OPTS = ['Pending', 'In Review', 'Approved', 'Changes Requested']
 
-const STATUS_STYLE = {
-  'Pending':            { color: '#fbbf24', bg: 'rgba(251,191,36,0.12)' },
-  'In Review':          { color: '#60a5fa', bg: 'rgba(96,165,250,0.12)' },
-  'Approved':           { color: '#34d399', bg: 'rgba(52,211,153,0.12)' },
-  'Changes Requested':  { color: '#f87171', bg: 'rgba(248,113,113,0.12)' },
-}
-
 // ── Shared sub-components ──────────────────────────────────────────────────────
 
 function FilterDropdown({ label, options, active, onChange }) {
-  const [open, setOpen] = useState(false)
-  const ref = useRef(null)
-  useEffect(() => {
-    function handler(e) { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
-    document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
-  }, [])
-
   const isFiltered = active.size > 0 && active.size < options.length
   const summary = active.size === 0 || active.size === options.length
     ? 'All'
@@ -43,51 +32,45 @@ function FilterDropdown({ label, options, active, onChange }) {
   }
 
   return (
-    <div ref={ref} className="relative">
-      <button
-        onClick={() => setOpen(o => !o)}
-        className={cn(
-          'flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border text-xs transition-colors cursor-pointer',
-          isFiltered
-            ? 'border-accent text-accent bg-accent/10'
-            : 'border-border text-muted hover:text-foreground hover:border-border'
-        )}
-      >
-        <span className="font-medium">{label}</span>
-        <span className="text-muted">{summary}</span>
-        <span className="text-muted">▾</span>
-      </button>
-      {open && (
-        <div className="absolute top-full left-0 mt-1 z-30 bg-surface border border-border rounded-lg shadow-lg min-w-40 py-1">
-          <div className="flex gap-2 px-3 py-1.5 border-b border-border">
-            <button onClick={() => onChange(new Set(options))} className="text-xs text-muted hover:text-foreground cursor-pointer">All</button>
-            <button onClick={() => onChange(new Set())}        className="text-xs text-muted hover:text-foreground cursor-pointer">None</button>
-          </div>
-          {options.map(v => (
-            <label key={v} className="flex items-center gap-2 px-3 py-1.5 hover:bg-surface-2 cursor-pointer">
-              <input type="checkbox" checked={active.has(v)} onChange={() => toggle(v)} className="accent-accent" />
-              <span className="text-foreground text-xs">{v}</span>
-            </label>
-          ))}
-        </div>
+    <Dropdown
+      align="left"
+      width="min-w-40"
+      trigger={({ toggle: toggleOpen }) => (
+        <Button
+          onClick={toggleOpen}
+          className={cn(isFiltered && 'border-accent text-accent bg-accent-tint hover:bg-accent-tint')}
+        >
+          <span className="font-medium">{label}</span>
+          <span className="text-muted">{summary}</span>
+          <span className="text-muted">▾</span>
+        </Button>
       )}
-    </div>
+    >
+      <div className="flex gap-2 px-3 py-1.5 border-b border-border-soft">
+        <button onClick={() => onChange(new Set(options))} className="text-xs text-muted hover:text-foreground cursor-pointer">All</button>
+        <button onClick={() => onChange(new Set())}        className="text-xs text-muted hover:text-foreground cursor-pointer">None</button>
+      </div>
+      {options.map(v => (
+        <label key={v} className="flex items-center gap-2 px-3 py-1.5 hover:bg-surface-2 cursor-pointer">
+          <input type="checkbox" checked={active.has(v)} onChange={() => toggle(v)} className="accent-accent" />
+          <span className="text-foreground text-xs">{v}</span>
+        </label>
+      ))}
+    </Dropdown>
   )
 }
 
 function FieldRow({ label, value, span }) {
   const display = value != null && value !== '' ? String(value) : '—'
   return (
-    <div className="flex items-start gap-4 py-2 border-b border-border/50 last:border-0">
-      <span className="text-muted text-xs w-28 shrink-0 pt-0.5">{label}</span>
+    <KV label={label}>
       <span className={cn(
-        'text-sm flex-1',
-        display === '—' ? 'text-border' : 'text-foreground',
+        display === '—' && 'text-faint',
         span === 'full' && 'whitespace-pre-wrap'
       )}>
         {display}
       </span>
-    </div>
+    </KV>
   )
 }
 
@@ -161,7 +144,7 @@ function AssetMeta({ asset }) {
 
   return (
     <div className="rounded-lg bg-surface-2 border border-border px-4 py-3">
-      <p className="text-foreground text-xs font-semibold uppercase tracking-wide mb-1">Asset</p>
+      <SectionLabel className="mb-1">Asset</SectionLabel>
       <div className="flex flex-col">
         {coreFields.map(([label, value]) => (
           <FieldRow key={label} label={label} value={value} />
@@ -246,7 +229,7 @@ function AttachmentPanel({ reviewId }) {
       <input ref={inputRef} type="file" multiple className="hidden" onChange={e => handleFiles(e.target.files)} />
 
       {/* ── Header bar ── */}
-      <div className="flex items-center gap-2 px-3 py-2 border-b border-border/40 bg-surface-2/30">
+      <div className="flex items-center gap-2 px-3 py-2 border-b border-border-soft bg-surface-2/30">
         <Paperclip size={12} className="text-muted shrink-0" />
 
         {hasFiles ? (
@@ -254,53 +237,62 @@ function AttachmentPanel({ reviewId }) {
             {active?.filename}
           </span>
         ) : (
-          <span className="text-foreground text-xs font-semibold uppercase tracking-wide flex-1">
-            Attachments
-          </span>
+          <SectionLabel className="flex-1">Attachments</SectionLabel>
         )}
 
         {/* Prev / counter / next */}
         {attachments.length > 1 && (
           <div className="flex items-center gap-1 shrink-0">
-            <button
+            <Button
+              variant="ghost"
+              size="sm"
               onClick={() => setActiveIdx(i => Math.max(0, i - 1))}
               disabled={activeIdx === 0}
-              className="p-0.5 rounded hover:bg-surface-2 text-muted disabled:opacity-30 cursor-pointer"
+              aria-label="Previous attachment"
+              className="px-1"
             >
               <ChevronLeft size={14} />
-            </button>
+            </Button>
             <span className="text-muted text-xs tabular-nums w-10 text-center">
               {activeIdx + 1} / {attachments.length}
             </span>
-            <button
+            <Button
+              variant="ghost"
+              size="sm"
               onClick={() => setActiveIdx(i => Math.min(attachments.length - 1, i + 1))}
               disabled={activeIdx >= attachments.length - 1}
-              className="p-0.5 rounded hover:bg-surface-2 text-muted disabled:opacity-30 cursor-pointer"
+              aria-label="Next attachment"
+              className="px-1"
             >
               <ChevronRight size={14} />
-            </button>
+            </Button>
           </div>
         )}
 
         {/* Delete current */}
         {active && (
-          <button
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={() => handleDelete(active.id)}
-            className="text-muted hover:text-red-400 cursor-pointer shrink-0"
+            aria-label="Delete attachment"
+            className="shrink-0 px-1 hover:text-error"
           >
             <Trash2 size={13} />
-          </button>
+          </Button>
         )}
 
         {/* Upload */}
-        <button
+        <Button
+          variant="ghost"
+          size="sm"
           onClick={() => inputRef.current?.click()}
           disabled={uploading}
-          className="flex items-center gap-1 text-xs text-muted hover:text-foreground disabled:opacity-50 cursor-pointer shrink-0"
+          className="shrink-0"
         >
           <Upload size={12} />
           {uploading ? 'Uploading…' : hasFiles ? 'Add' : 'Upload'}
-        </button>
+        </Button>
       </div>
 
       {/* ── Content area ── */}
@@ -321,7 +313,7 @@ function AttachmentPanel({ reviewId }) {
           className={cn(
             'py-8 flex items-center justify-center text-xs transition-colors cursor-pointer',
             dropActive
-              ? 'text-accent bg-accent/5'
+              ? 'text-accent bg-accent-tint'
               : 'text-muted hover:text-foreground'
           )}
         >
@@ -380,78 +372,75 @@ function NewReviewModal({ onClose, onCreated }) {
   }
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
-      onClick={e => e.target === e.currentTarget && onClose()}
+    <Modal
+      title="New Review"
+      onClose={onClose}
+      width="max-w-md"
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button
+            variant="primary"
+            size="lg"
+            onClick={submit}
+            disabled={submitting || !form.canonical_asset_id}
+          >
+            {submitting ? 'Creating…' : 'Create Review'}
+          </Button>
+        </>
+      }
     >
-      <div className="bg-surface border border-border rounded-xl shadow-2xl w-full max-w-md p-6 flex flex-col gap-4">
-        <div className="flex items-center justify-between">
-          <h2 className="text-foreground font-semibold">New Review</h2>
-          <button onClick={onClose} className="text-muted hover:text-foreground cursor-pointer"><X size={16} /></button>
-        </div>
-
-        <div className="flex flex-col gap-1">
-          <label className="text-muted text-xs">Asset *</label>
+      <div className="flex flex-col gap-4">
+        <Field label="Asset *">
           {loadingAssets ? (
-            <p className="text-muted text-xs py-1">Loading…</p>
+            <div className="flex items-center gap-2 py-1">
+              <Spinner size={14} />
+              <span className="text-muted text-xs">Loading…</span>
+            </div>
           ) : (
-            <select
+            <Select
+              size="lg"
               value={form.canonical_asset_id}
               onChange={e => setForm(f => ({ ...f, canonical_asset_id: e.target.value }))}
-              className="bg-surface-2 border border-border rounded-md px-3 py-2 text-foreground text-sm outline-none focus:border-accent cursor-pointer"
             >
               <option value="">Select an asset…</option>
               {assets.map(a => <option key={a.id} value={a.id}>{a.name || a.id}</option>)}
-            </select>
+            </Select>
           )}
-        </div>
+        </Field>
 
-        <div className="flex flex-col gap-1">
-          <label className="text-muted text-xs">Title</label>
-          <input
+        <Field label="Title">
+          <Input
+            size="lg"
             type="text"
             value={form.title}
             onChange={e => setForm(f => ({ ...f, title: e.target.value }))}
             placeholder="Short summary…"
-            className="bg-surface-2 border border-border rounded-md px-3 py-2 text-foreground text-sm outline-none focus:border-accent"
           />
-        </div>
+        </Field>
 
-        <div className="flex flex-col gap-1">
-          <label className="text-muted text-xs">Description</label>
-          <textarea
+        <Field label="Description">
+          <Textarea
             value={form.description}
             onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
             rows={3}
             placeholder="Describe the review…"
-            className="bg-surface-2 border border-border rounded-md px-3 py-2 text-foreground text-sm outline-none focus:border-accent resize-none"
+            className="resize-none"
           />
-        </div>
+        </Field>
 
-        <div className="flex flex-col gap-1">
-          <label className="text-muted text-xs">Status</label>
-          <select
+        <Field label="Status">
+          <Select
+            size="lg"
             value={form.status}
             onChange={e => setForm(f => ({ ...f, status: e.target.value }))}
-            className="bg-surface-2 border border-border rounded-md px-3 py-2 text-foreground text-sm outline-none focus:border-accent cursor-pointer"
           >
             <option value="">None</option>
             {STATUS_OPTS.map(s => <option key={s} value={s}>{s}</option>)}
-          </select>
-        </div>
-
-        <div className="flex justify-end gap-2 pt-2 border-t border-border">
-          <button onClick={onClose} className="px-4 py-2 rounded-md border border-border text-muted text-sm hover:text-foreground cursor-pointer">Cancel</button>
-          <button
-            onClick={submit}
-            disabled={submitting || !form.canonical_asset_id}
-            className="px-4 py-2 rounded-md bg-accent text-white text-sm font-medium hover:bg-accent-hover cursor-pointer disabled:opacity-40"
-          >
-            {submitting ? 'Creating…' : 'Create Review'}
-          </button>
-        </div>
+          </Select>
+        </Field>
       </div>
-    </div>
+    </Modal>
   )
 }
 
@@ -540,13 +529,8 @@ export default function Reviews() {
       {/* ── Left panel ── */}
       <div className="w-72 flex flex-col border-r border-border shrink-0">
         <div className="flex items-center justify-between p-3 border-b border-border shrink-0">
-          <button onClick={load} className="text-muted text-xs hover:text-foreground cursor-pointer">Refresh</button>
-          <button
-            onClick={() => setShowNew(true)}
-            className="px-2.5 py-1.5 rounded-md bg-accent text-white text-xs font-medium hover:bg-accent-hover cursor-pointer"
-          >
-            + New Review
-          </button>
+          <Button variant="ghost" size="sm" onClick={load}>Refresh</Button>
+          <Button variant="primary" onClick={() => setShowNew(true)}>+ New Review</Button>
         </div>
 
         {allStatuses.length > 0 && (
@@ -561,14 +545,18 @@ export default function Reviews() {
         )}
 
         <div className="flex-1 overflow-y-auto">
-          {loading && <p className="text-muted text-xs p-4">Loading…</p>}
+          {loading && (
+            <div className="flex justify-center py-6">
+              <Spinner />
+            </div>
+          )}
           {!loading && filtered.length === 0 && (
-            <p className="text-muted text-xs p-4">
-              {reviews.length ? 'No reviews match filters.' : 'No reviews yet.'}
-            </p>
+            <EmptyState
+              icon={ClipboardList}
+              title={reviews.length ? 'No reviews match filters.' : 'No reviews yet.'}
+            />
           )}
           {filtered.map(r => {
-            const style    = STATUS_STYLE[r.status] || { color: '#6b748a', bg: 'rgba(107,116,138,0.12)' }
             const date     = r.created_at ? new Date(r.created_at).toLocaleDateString() : '—'
             const isActive = selectedId === r.id
             return (
@@ -576,8 +564,10 @@ export default function Reviews() {
                 key={r.id}
                 onClick={() => { setSelectedId(r.id); setEditing(false) }}
                 className={cn(
-                  'px-3 py-3 border-b border-border cursor-pointer transition-colors',
-                  isActive ? 'bg-surface-2' : 'hover:bg-surface-2'
+                  'px-3 py-3 border-b border-border-soft cursor-pointer transition-colors',
+                  isActive
+                    ? 'bg-accent-tint text-foreground shadow-[inset_2px_0_0_var(--color-accent)]'
+                    : 'hover:bg-surface-2'
                 )}
               >
                 <p className="text-foreground text-sm font-medium truncate mb-0.5">
@@ -591,14 +581,9 @@ export default function Reviews() {
                 )}
                 <div className="flex items-center gap-2 flex-wrap">
                   {r.status ? (
-                    <span
-                      className="px-2 py-0.5 rounded-full text-xs font-medium"
-                      style={{ color: style.color, background: style.bg }}
-                    >
-                      {r.status}
-                    </span>
+                    <StatusDot label={r.status} className="text-xs text-foreground" />
                   ) : (
-                    <span className="px-2 py-0.5 rounded-full text-xs text-muted border border-border/50">No status</span>
+                    <span className="text-xs text-faint">No status</span>
                   )}
                   <span className="text-muted text-xs">{date}</span>
                 </div>
@@ -612,7 +597,7 @@ export default function Reviews() {
       <div className="flex-1 overflow-y-auto">
         {!selected ? (
           <div className="flex items-center justify-center h-full">
-            <p className="text-muted text-sm">Select a review to see details.</p>
+            <EmptyState icon={ClipboardList} title="Select a review to see details." />
           </div>
         ) : (
           <div className="p-6 flex flex-col gap-5">
@@ -626,7 +611,7 @@ export default function Reviews() {
                     value={editForm.title}
                     onChange={e => setEditForm(f => ({ ...f, title: e.target.value }))}
                     placeholder="Review title…"
-                    className="w-full bg-transparent border-b border-accent text-foreground text-lg font-semibold outline-none pb-0.5"
+                    className="w-full bg-transparent border-b border-accent text-foreground text-lg font-semibold outline-none pb-0.5 placeholder:text-faint"
                   />
                 ) : (
                   <h2 className="text-foreground text-lg font-semibold truncate">
@@ -640,33 +625,27 @@ export default function Reviews() {
               <div className="flex items-center gap-2 shrink-0">
                 {editing ? (
                   <>
-                    <button
-                      onClick={() => setEditing(false)}
-                      className="text-muted text-xs hover:text-foreground cursor-pointer"
-                    >
+                    <Button variant="ghost" size="sm" onClick={() => setEditing(false)}>
                       Cancel
-                    </button>
-                    <button
-                      onClick={() => saveEdit(selected)}
-                      className="px-3 py-1.5 rounded-md bg-accent text-white text-xs font-medium hover:bg-accent-hover cursor-pointer"
-                    >
+                    </Button>
+                    <Button variant="primary" size="sm" onClick={() => saveEdit(selected)}>
                       Save
-                    </button>
+                    </Button>
                   </>
                 ) : (
                   <>
-                    <button
-                      onClick={() => openEdit(selected)}
-                      className="text-muted text-xs hover:text-foreground cursor-pointer"
-                    >
+                    <Button variant="ghost" size="sm" onClick={() => openEdit(selected)}>
                       Edit
-                    </button>
-                    <button
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
                       onClick={() => deleteReview(selected)}
-                      className="text-muted hover:text-red-400 transition-colors cursor-pointer"
+                      aria-label="Delete review"
+                      className="px-1 hover:text-error"
                     >
                       <Trash2 size={14} />
-                    </button>
+                    </Button>
                   </>
                 )}
               </div>
@@ -680,48 +659,41 @@ export default function Reviews() {
 
             {/* Review fields */}
             <div className="rounded-lg border border-border px-4 py-3">
-              <p className="text-foreground text-xs font-semibold uppercase tracking-wide mb-1">Review</p>
+              <SectionLabel className="mb-1">Review</SectionLabel>
               <div className="flex flex-col">
                 {editing ? (
                   <>
-                    <div className="py-2 border-b border-border/50">
-                      <label className="text-muted text-xs block mb-1">Description</label>
-                      <textarea
+                    <Field label="Description" className="py-2 border-b border-border-soft">
+                      <Textarea
                         value={editForm.description}
                         onChange={e => setEditForm(f => ({ ...f, description: e.target.value }))}
                         rows={4}
-                        className="w-full bg-surface-2 border border-border rounded-md px-3 py-2 text-foreground text-sm outline-none focus:border-accent resize-none"
+                        className="w-full resize-none"
                       />
-                    </div>
+                    </Field>
                     <div className="flex items-center gap-3 py-2">
-                      <span className="text-muted text-xs w-28 shrink-0">Status</span>
-                      <select
+                      <span className="text-faint text-xs w-28 shrink-0">Status</span>
+                      <Select
                         value={editForm.status}
                         onChange={e => setEditForm(f => ({ ...f, status: e.target.value }))}
-                        className="bg-surface-2 border border-border rounded-md px-2 py-1 text-foreground text-sm outline-none focus:border-accent cursor-pointer"
                       >
                         <option value="">None</option>
                         {STATUS_OPTS.map(o => <option key={o} value={o}>{o}</option>)}
                         {selected.status && !STATUS_OPTS.includes(selected.status) && (
                           <option value={selected.status}>{selected.status}</option>
                         )}
-                      </select>
+                      </Select>
                     </div>
                   </>
                 ) : (
                   <>
                     <FieldRow label="Description" value={selected.description} span="full" />
                     <div className="flex items-center gap-3 py-2">
-                      <span className="text-muted text-xs w-28 shrink-0">Status</span>
+                      <span className="text-faint text-xs w-28 shrink-0">Status</span>
                       {selected.status ? (
-                        (() => {
-                          const s = STATUS_STYLE[selected.status]
-                          return s
-                            ? <span className="text-xs font-medium px-2 py-0.5 rounded-full" style={{ color: s.color, background: s.bg }}>{selected.status}</span>
-                            : <span className="text-foreground text-sm">{selected.status}</span>
-                        })()
+                        <StatusDot label={selected.status} className="text-xs text-foreground" />
                       ) : (
-                        <span className="text-border text-sm">—</span>
+                        <span className="text-faint text-sm">—</span>
                       )}
                     </div>
                   </>

@@ -1,4 +1,5 @@
-import { useScenarioWizard, STEPS, STEP_LABELS, computeNumReleases } from '../../hooks/useScenarioWizard'
+import { useScenarioWizard, STEPS, STEP_LABELS } from '../../hooks/useScenarioWizard'
+import { Button, Card, Field, Input, Select, Spinner } from '../ui'
 
 export default function ScenarioWizard({ onGenerate }) {
   const wiz = useScenarioWizard({ onGenerate })
@@ -6,7 +7,7 @@ export default function ScenarioWizard({ onGenerate }) {
   if (wiz.loading) {
     return (
       <div className="flex flex-col flex-1 items-center justify-center gap-2 text-muted text-sm">
-        <div className="w-4 h-4 border-2 border-border border-t-accent rounded-full animate-spin" />
+        <Spinner />
         Loading matrix…
       </div>
     )
@@ -53,18 +54,19 @@ export default function ScenarioWizard({ onGenerate }) {
         {/* Navigation */}
         <div className="flex justify-between items-center pt-2">
           {wiz.step > 0 ? (
-            <button onClick={wiz.back} className="text-sm text-muted hover:text-foreground transition-colors">
+            <Button variant="ghost" onClick={wiz.back}>
               Back
-            </button>
+            </Button>
           ) : <span />}
           {wiz.step < STEPS.length - 1 && (
-            <button
+            <Button
+              variant="primary"
+              size="lg"
               onClick={wiz.next}
               disabled={!wiz.stepValid(wiz.step)}
-              className="text-sm bg-accent text-white rounded px-5 py-2 hover:bg-accent/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             >
               Next
-            </button>
+            </Button>
           )}
         </div>
 
@@ -86,17 +88,18 @@ function StepBar({ step, labels, goTo, stepValid }) {
         return (
           <div key={i} className="flex items-center gap-1 flex-1">
             <button
+              type="button"
               onClick={() => clickable && goTo(i)}
               className={`flex items-center gap-1.5 text-xs font-medium transition-colors ${
-                active ? 'text-accent' : done ? 'text-muted hover:text-foreground' : 'text-border cursor-default'
+                active ? 'text-accent' : done ? 'text-muted hover:text-foreground cursor-pointer' : 'text-faint cursor-default'
               }`}
             >
               <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] border shrink-0 ${
                 active
-                  ? 'border-accent text-accent bg-accent/10'
+                  ? 'border-accent text-accent bg-accent-tint'
                   : done
                   ? 'border-muted text-muted bg-surface-2'
-                  : 'border-border text-border'
+                  : 'border-border text-faint'
               }`}>
                 {done ? '✓' : i + 1}
               </span>
@@ -138,9 +141,10 @@ function StepMode({ form, set }) {
         {options.map(opt => (
           <button
             key={opt.value}
+            type="button"
             onClick={() => set('scenario_category', opt.value)}
-            className={`flex items-start gap-4 text-left p-4 rounded-xl border transition-all ${
-              form.scenario_category === opt.value ? 'border-accent bg-accent/5' : 'border-border hover:border-muted'
+            className={`flex items-start gap-4 text-left p-4 rounded-lg border cursor-pointer transition-all ${
+              form.scenario_category === opt.value ? 'border-accent bg-accent-tint' : 'border-border hover:border-muted'
             }`}
           >
             <span className={`text-xl mt-0.5 shrink-0 ${form.scenario_category === opt.value ? 'text-accent' : 'text-muted'}`}>
@@ -157,16 +161,15 @@ function StepMode({ form, set }) {
       </div>
 
       {form.scenario_category === 'target_date' && (
-        <div className="flex flex-col gap-1.5">
-          <label className="text-xs text-muted font-medium">Target ship date</label>
-          <input
+        <Field label="Target ship date">
+          <Input
             type="date"
+            size="lg"
             value={form.target_date}
             onChange={e => set('target_date', e.target.value)}
             min={new Date().toISOString().split('T')[0]}
-            className="border border-border rounded-lg px-3 py-2 text-sm bg-surface text-foreground focus:outline-none focus:border-accent"
           />
-        </div>
+        </Field>
       )}
     </div>
   )
@@ -201,10 +204,11 @@ function StepRhythm({ form, set, numReleases }) {
         ].map(opt => (
           <button
             key={String(opt.single)}
+            type="button"
             onClick={() => set('is_single_release', opt.single)}
-            className={`flex-1 px-3 py-2.5 rounded-lg border text-sm text-center transition-all ${
+            className={`flex-1 px-3 py-2.5 rounded-lg border text-sm text-center cursor-pointer transition-all ${
               isSingle === opt.single
-                ? 'border-accent bg-accent/5 text-foreground font-medium'
+                ? 'border-accent bg-accent-tint text-foreground font-medium'
                 : 'border-border text-muted hover:border-muted'
             }`}
           >
@@ -216,53 +220,53 @@ function StepRhythm({ form, set, numReleases }) {
       {!isSingle && (
         <>
           {/* Release interval */}
-          <div className="flex flex-col gap-1.5">
-            <label className="text-xs text-muted font-medium">Release every</label>
+          <Field label="Release every">
             <div className="flex items-center gap-2">
-              <input
+              <Input
                 type="number"
+                size="lg"
                 min={1}
                 max={52}
                 value={form.release_interval_value}
                 onChange={e => set('release_interval_value', Math.max(1, parseInt(e.target.value) || 1))}
-                className="w-20 border border-border rounded-lg px-3 py-2 text-sm bg-surface text-foreground text-center focus:outline-none focus:border-accent"
+                className="w-20 text-center"
               />
-              <select
+              <Select
+                size="lg"
                 value={form.release_interval_unit}
                 onChange={e => set('release_interval_unit', e.target.value)}
-                className="border border-border rounded-lg px-3 py-2 text-sm bg-surface text-foreground focus:outline-none focus:border-accent"
               >
                 {INTERVAL_UNITS.map(u => (
                   <option key={u.value} value={u.value}>{u.label}</option>
                 ))}
-              </select>
+              </Select>
             </div>
-          </div>
+          </Field>
 
           {/* Horizon — only shown for earliest_ship; target_date derives from the date */}
           {!isTargetDate && (
-            <div className="flex flex-col gap-1.5">
-              <label className="text-xs text-muted font-medium">Planning horizon</label>
+            <Field label="Planning horizon">
               <div className="flex items-center gap-2">
-                <input
+                <Input
                   type="number"
+                  size="lg"
                   min={1}
                   max={120}
                   value={form.horizon_value}
                   onChange={e => set('horizon_value', Math.max(1, parseInt(e.target.value) || 1))}
-                  className="w-20 border border-border rounded-lg px-3 py-2 text-sm bg-surface text-foreground text-center focus:outline-none focus:border-accent"
+                  className="w-20 text-center"
                 />
-                <select
+                <Select
+                  size="lg"
                   value={form.horizon_unit}
                   onChange={e => set('horizon_unit', e.target.value)}
-                  className="border border-border rounded-lg px-3 py-2 text-sm bg-surface text-foreground focus:outline-none focus:border-accent"
                 >
                   {HORIZON_UNITS.map(u => (
                     <option key={u.value} value={u.value}>{u.label}</option>
                   ))}
-                </select>
+                </Select>
               </div>
-            </div>
+            </Field>
           )}
 
           {/* Derived release count */}
@@ -281,7 +285,7 @@ function StepRhythm({ form, set, numReleases }) {
 
 // ── Step 3: Release shape ─────────────────────────────────────────────────────
 
-function StepShapes({ form, profiles, numReleases, perReleaseCounts, totalAssets, setShapeField, setShapeProfile, addShape, removeShape }) {
+function StepShapes({ form, profiles, perReleaseCounts, totalAssets, setShapeField, setShapeProfile, addShape, removeShape }) {
   const perReleaseTotal = Object.values(perReleaseCounts).reduce((s, n) => s + n, 0)
 
   return (
@@ -310,15 +314,16 @@ function StepShapes({ form, profiles, numReleases, perReleaseCounts, totalAssets
       ))}
 
       <button
+        type="button"
         onClick={addShape}
-        className="flex items-center gap-1.5 text-xs text-muted hover:text-foreground border border-dashed border-border rounded-lg px-4 py-2.5 transition-colors w-full justify-center"
+        className="flex items-center gap-1.5 text-xs text-muted hover:text-foreground border border-dashed border-border rounded-lg px-4 py-2.5 cursor-pointer transition-colors w-full justify-center"
       >
         + Add product type
       </button>
 
       {/* Per-release summary */}
       {perReleaseTotal > 0 && (
-        <div className="text-xs text-muted space-y-0.5 pt-1 border-t border-border">
+        <div className="text-xs text-muted space-y-0.5 pt-1 border-t border-border-soft">
           <p className="font-medium text-foreground mb-1">Per release:</p>
           {Object.entries(perReleaseCounts).map(([p, n]) => (
             <div key={p} className="flex gap-3">
@@ -337,58 +342,58 @@ function ShapeCard({ shape, profiles, canRemove, onNameChange, onCountChange, on
   const every      = Math.max(shape.every_n_releases || 1, 1)
 
   return (
-    <div className="flex flex-col gap-4 p-4 border border-border rounded-xl bg-surface">
+    <Card className="flex flex-col gap-4">
       {/* Shape header */}
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
-        <input
+        <Input
           value={shape.name}
           onChange={e => onNameChange(e.target.value)}
           placeholder="Product type name"
-          className="flex-1 min-w-[120px] border border-border rounded px-2.5 py-1.5 text-sm bg-transparent text-foreground focus:outline-none focus:border-accent"
+          className="flex-1 min-w-[120px]"
         />
-        <span className="text-xs text-muted shrink-0">×</span>
-        <input
+        <span className="text-xs text-faint shrink-0">×</span>
+        <Input
           type="number"
           min={1}
           max={99}
           value={shape.count_per_release}
           onChange={e => onCountChange(e.target.value)}
-          className="w-14 border border-border rounded px-2 py-1.5 text-sm bg-transparent text-foreground text-center focus:outline-none focus:border-accent"
+          className="w-14 text-center"
         />
-        <span className="text-xs text-muted shrink-0">per release, every</span>
-        <input
+        <span className="text-xs text-faint shrink-0">per release, every</span>
+        <Input
           type="number"
           min={1}
           max={999}
           value={every}
           onChange={e => onEveryChange(e.target.value)}
-          className="w-14 border border-border rounded px-2 py-1.5 text-sm bg-transparent text-foreground text-center focus:outline-none focus:border-accent"
+          className="w-14 text-center"
         />
-        <span className="text-xs text-muted shrink-0">release{every !== 1 ? 's' : ''}</span>
+        <span className="text-xs text-faint shrink-0">release{every !== 1 ? 's' : ''}</span>
         {canRemove && (
-          <button onClick={onRemove} className="text-xs text-muted hover:text-red-400 transition-colors ml-auto shrink-0">
+          <Button variant="ghost" size="sm" onClick={onRemove} className="ml-auto shrink-0 hover:text-error">
             Remove
-          </button>
+          </Button>
         )}
       </div>
 
       {/* Profile counts */}
       {profiles.length === 0 ? (
-        <p className="text-xs text-muted italic">No profiles in estimation matrix.</p>
+        <p className="text-xs text-faint italic">No profiles in estimation matrix.</p>
       ) : (
         <div className="flex flex-col gap-2">
           {profiles.map(profile => (
             <div key={profile} className="flex items-center gap-2">
-              <span className="flex-1 text-xs text-muted font-mono bg-surface-2 border border-border rounded px-2 py-1">
+              <span className="flex-1 text-xs text-muted font-mono bg-surface-2 border border-border-soft rounded-md px-2 py-1">
                 {profile}
               </span>
-              <input
+              <Input
                 type="number"
                 min={0}
                 max={9999}
                 value={shape.profiles[profile] ?? 0}
                 onChange={e => onProfileChange(profile, parseInt(e.target.value) || 0)}
-                className="w-20 border border-border rounded px-2 py-1.5 text-sm bg-transparent text-foreground text-right focus:outline-none focus:border-accent"
+                className="w-20 text-right"
               />
             </div>
           ))}
@@ -396,12 +401,12 @@ function ShapeCard({ shape, profiles, canRemove, onNameChange, onCountChange, on
       )}
 
       {shapeTotal > 0 && (
-        <p className="text-xs text-muted">
+        <p className="text-xs text-faint">
           {shapeTotal} asset{shapeTotal !== 1 ? 's' : ''} per instance
           {every > 1 && ` · appears every ${every} releases`}
         </p>
       )}
-    </div>
+    </Card>
   )
 }
 
@@ -419,7 +424,7 @@ function StepGenerate({ form, numReleases, perReleaseCounts, totalAssets, crafts
       <SectionHeader>Generate</SectionHeader>
 
       {/* Summary */}
-      <div className="flex flex-col gap-3 p-4 bg-surface-2 border border-border rounded-xl text-sm">
+      <div className="flex flex-col gap-3 p-4 bg-surface-2 border border-border rounded-lg text-sm">
         <SummaryRow label="Mode">{modeLabel}</SummaryRow>
         <SummaryRow label="Releases">{numReleases}</SummaryRow>
         <SummaryRow label="Per release">
@@ -435,19 +440,20 @@ function StepGenerate({ form, numReleases, perReleaseCounts, totalAssets, crafts
         <div className="flex flex-col gap-3">
           <div>
             <label className="text-xs text-muted font-medium">Craft caps <span className="font-normal">(optional)</span></label>
-            <p className="text-[11px] text-muted mt-0.5">Max assets of each craft active simultaneously. Leave blank for uncapped.</p>
+            <p className="text-[11px] text-faint mt-0.5">Max assets of each craft active simultaneously. Leave blank for uncapped.</p>
           </div>
           <div className="grid grid-cols-2 gap-2">
             {crafts.map(craft => (
               <div key={craft} className="flex items-center gap-2">
                 <span className="flex-1 text-xs text-muted">{craft}</span>
-                <input
+                <Input
                   type="number"
+                  size="sm"
                   min={1}
                   placeholder="∞"
                   value={craftCaps[craft] ?? ''}
                   onChange={e => setCap(craft, e.target.value)}
-                  className="w-16 border border-border rounded px-2 py-1 text-sm bg-surface text-foreground text-right focus:outline-none focus:border-accent"
+                  className="w-16 text-right"
                 />
               </div>
             ))}
@@ -465,10 +471,11 @@ function StepGenerate({ form, numReleases, perReleaseCounts, totalAssets, crafts
           ].map(opt => (
             <button
               key={opt.value}
+              type="button"
               onClick={() => setGenMode(opt.value)}
-              className={`flex-1 px-3 py-2.5 rounded-lg border text-xs text-left transition-all ${
+              className={`flex-1 px-3 py-2.5 rounded-lg border text-xs text-left cursor-pointer transition-all ${
                 genMode === opt.value
-                  ? 'border-accent bg-accent/5 text-foreground'
+                  ? 'border-accent bg-accent-tint text-foreground'
                   : 'border-border text-muted hover:border-muted'
               }`}
             >
@@ -479,15 +486,17 @@ function StepGenerate({ form, numReleases, perReleaseCounts, totalAssets, crafts
         </div>
       </div>
 
-      {error && <p className="text-xs text-red-400">{error}</p>}
+      {error && <p className="text-xs text-error">{error}</p>}
 
-      <button
+      <Button
+        variant="primary"
+        size="lg"
         onClick={onSubmit}
         disabled={submitting || totalAssets === 0}
-        className="w-full py-3 rounded-xl bg-accent text-white font-semibold text-sm hover:bg-accent/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+        className="w-full"
       >
         {submitting ? 'Starting…' : 'Generate scenario'}
-      </button>
+      </Button>
     </div>
   )
 }
