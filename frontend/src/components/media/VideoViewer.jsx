@@ -1,4 +1,5 @@
-import { Loader2, Clock } from 'lucide-react'
+import { Clock } from 'lucide-react'
+import { Spinner } from '../ui'
 import { useMediaUrl } from '../../hooks/useMediaUrl'
 
 export default function VideoViewer({ proxyUrl, filename }) {
@@ -16,7 +17,7 @@ export default function VideoViewer({ proxyUrl, filename }) {
   if (loading) {
     return (
       <div className="flex items-center justify-center w-full h-full">
-        <Loader2 className="text-muted animate-spin" size={24} />
+        <Spinner size={24} />
       </div>
     )
   }

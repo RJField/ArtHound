@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react'
+import { AlertTriangle, Database } from 'lucide-react'
 import { apiFetch } from '../lib/api'
+import { Modal, Button, Select, Spinner, EmptyState, SectionLabel, Pill, Table, Th, Tr, Td } from './ui'
 
 const BUCKETS = [
   { value: 'scheduling',    label: 'Scheduling' },
@@ -35,42 +37,34 @@ export default function FieldMappingModal({ onClose, inline = false }) {
 
   useEffect(() => {
     const controller = new AbortController()
-    load(controller.signal)
+    Promise.all([
+      apiFetch('/api/sync/field-mapping', { signal: controller.signal }),
+      apiFetch('/api/sync/schema-drift').catch(() => ({ events: [] })),
+    ])
+      .then(([data, drift]) => {
+        setDriftEvents(drift.events || [])
+        setSourceType(data.source_type ?? 'airtable')
+        setMappings(data.mappings)
+        setSlots(data.slots)
+        setUpdatedAt(data.updated_at)
+
+        const a = {}
+        const b = {}
+        for (const m of data.mappings) {
+          if (m.arthound_slot) a[m.arthound_slot] = m.source_field_id
+          b[m.source_field_id] = {
+            meta_bucket:       m.meta_bucket       ?? 'custom',
+            display_tier:      m.display_tier      ?? 'secondary',
+            ingest_suppressed: m.ingest_suppressed ?? false,
+          }
+        }
+        setAssignments(a)
+        setBuckets(b)
+      })
+      .catch(e => { if (e.name !== 'AbortError') setError(e.message) })
+      .finally(() => setLoading(false))
     return () => controller.abort()
   }, [])
-
-  async function load(signal) {
-    setLoading(true)
-    setError(null)
-    try {
-      const [data, drift] = await Promise.all([
-        apiFetch('/api/sync/field-mapping', signal ? { signal } : {}),
-        apiFetch('/api/sync/schema-drift').catch(() => ({ events: [] })),
-      ])
-      setDriftEvents(drift.events || [])
-      setSourceType(data.source_type ?? 'airtable')
-      setMappings(data.mappings)
-      setSlots(data.slots)
-      setUpdatedAt(data.updated_at)
-
-      const a = {}
-      const b = {}
-      for (const m of data.mappings) {
-        if (m.arthound_slot) a[m.arthound_slot] = m.source_field_id
-        b[m.source_field_id] = {
-          meta_bucket:       m.meta_bucket       ?? 'custom',
-          display_tier:      m.display_tier      ?? 'secondary',
-          ingest_suppressed: m.ingest_suppressed ?? false,
-        }
-      }
-      setAssignments(a)
-      setBuckets(b)
-    } catch (e) {
-      if (e.name !== 'AbortError') setError(e.message)
-    } finally {
-      setLoading(false)
-    }
-  }
 
   function setSlotAssignment(slot, fieldId) {
     setAssignments(prev => {
@@ -173,175 +167,169 @@ export default function FieldMappingModal({ onClose, inline = false }) {
 
   const body = (
     <>
-      {/* Body */}
-      <div className={inline ? 'px-6 py-4' : 'flex-1 overflow-auto px-6 py-4'}>
-        {loading && <p className="text-muted text-sm">Loading…</p>}
-        {error   && <p className="text-error text-sm">{error}</p>}
-
-        {!loading && !error && mappings.length === 0 && (
-          <p className="text-muted text-sm">
-            No source fields found — run a sync first to populate the mapping table.
-          </p>
-        )}
-
-        {!loading && !error && driftEvents.length > 0 && (
-          <div className="flex items-start gap-3 bg-surface-2 border border-border rounded-lg px-4 py-3 mb-5">
-            <span className="text-error text-sm shrink-0 mt-px">!</span>
-            <div>
-              <p className="text-foreground text-sm font-medium mb-1">
-                {driftEvents.length} field{driftEvents.length !== 1 ? 's' : ''} changed since last review
-              </p>
-              <ul className="text-muted text-xs space-y-0.5">
-                {driftEvents.map((e, i) => (
-                  <li key={i}>
-                    <span className="text-foreground">{e.field_name}</span>
-                    {e.signal === 'field_added'        && ` — new field (${e.new_type})`}
-                    {e.signal === 'field_removed'      && ' — removed from source'}
-                    {e.signal === 'field_type_changed' && ` — type changed (${e.old_type} → ${e.new_type})`}
-                  </li>
-                ))}
-              </ul>
-              <p className="text-muted text-xs mt-1.5">Review classification below, then save to dismiss.</p>
-            </div>
-          </div>
-        )}
-
-        {!loading && !error && mappings.length > 0 && (
-          <>
-            {/* ── Slot assignments ── */}
-            <p className="text-muted text-xs font-medium uppercase tracking-wide mb-3">Slot assignments</p>
-            <table className="w-full text-sm border-collapse mb-8">
-              <thead>
-                <tr className="border-b border-border">
-                  <th className="text-left text-muted font-normal pb-2 w-1/2">ArtHound slot</th>
-                  <th className="text-left text-muted font-normal pb-2 w-1/2">Source field</th>
-                </tr>
-              </thead>
-              <tbody>
-                {slots.map(s => (
-                  <tr key={s.slot} className="border-b border-border/50">
-                    <td className="py-2 pr-4 text-foreground">{s.label}</td>
-                    <td className="py-2">
-                      <select
-                        value={assignments[s.slot] ?? ''}
-                        onChange={e => setSlotAssignment(s.slot, e.target.value)}
-                        className="w-full bg-surface-2 border border-border rounded-md px-2 py-1.5 text-foreground text-sm outline-none focus:border-accent"
-                      >
-                        <option value="">— unmapped —</option>
-                        {mappings.map(m => (
-                          <option key={m.source_field_id} value={m.source_field_id}>
-                            {m.source_field_name}
-                          </option>
-                        ))}
-                      </select>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-
-            {/* ── Field classification ── */}
-            <p className="text-muted text-xs font-medium uppercase tracking-wide mb-3">Field classification</p>
-            <table className="w-full text-sm border-collapse">
-              <thead>
-                <tr className="border-b border-border">
-                  <th className="text-left text-muted font-normal pb-2">Field</th>
-                  <th className="text-left text-muted font-normal pb-2 w-36">Bucket</th>
-                  <th className="text-center text-muted font-normal pb-2 w-12">Skip</th>
-                </tr>
-              </thead>
-              <tbody>
-                {sortedMappings.map(m => {
-                  const b          = buckets[m.source_field_id] || {}
-                  const suppressed = b.ingest_suppressed ?? false
-                  const slotKey    = fieldToSlot[m.source_field_id]
-                  return (
-                    <tr
-                      key={m.source_field_id}
-                      className={`border-b border-border/50 transition-opacity ${suppressed ? 'opacity-40' : ''}`}
-                    >
-                      <td className="py-2 pr-4">
-                        <div className="flex items-center gap-2">
-                          <span className="text-foreground">{m.source_field_name}</span>
-                          {slotKey && (
-                            <span className="text-accent text-xs">→ {slotKey}</span>
-                          )}
-                        </div>
-                        {m.source_field_type && (
-                          <span className="text-muted text-xs">{m.source_field_type}</span>
-                        )}
-                      </td>
-                      <td className="py-2 pr-4">
-                        <select
-                          value={b.meta_bucket ?? 'custom'}
-                          onChange={e => setBucketForField(m.source_field_id, e.target.value)}
-                          disabled={suppressed}
-                          className="w-full bg-surface-2 border border-border rounded-md px-2 py-1 text-foreground text-xs outline-none focus:border-accent disabled:opacity-40 cursor-pointer disabled:cursor-default"
-                        >
-                          {BUCKETS.map(bkt => (
-                            <option key={bkt.value} value={bkt.value}>{bkt.label}</option>
-                          ))}
-                        </select>
-                      </td>
-                      <td className="py-2 text-center">
-                        <input
-                          type="checkbox"
-                          checked={suppressed}
-                          onChange={e => setSuppressed(m.source_field_id, e.target.checked)}
-                          className="accent-accent cursor-pointer"
-                        />
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </>
-        )}
-      </div>
-
-      {/* Footer */}
-      <div className="flex items-center justify-between gap-4 px-6 py-4 border-t border-border shrink-0">
-        <div className="flex gap-2">
-          <button
-            onClick={save}
-            disabled={busy || mappings.length === 0}
-            className="px-3 py-1.5 rounded-md bg-accent text-white text-xs font-medium hover:bg-accent-hover transition-colors cursor-pointer disabled:opacity-40"
-          >
-            {saving ? 'Saving…' : 'Save mapping'}
-          </button>
-          <button
-            onClick={resync}
-            disabled={busy}
-            className="px-3 py-1.5 rounded-md bg-surface-2 text-foreground text-xs hover:bg-surface-3 transition-colors cursor-pointer disabled:opacity-40"
-          >
-            {syncing ? 'Syncing…' : 'Re-sync'}
-          </button>
+      {loading && (
+        <div className="flex items-center gap-2 text-muted text-sm">
+          <Spinner size={14} /> Loading…
         </div>
+      )}
+      {error && <p className="text-error text-sm">{error}</p>}
 
-        <p className="text-muted text-xs truncate">
-          {status ?? (updatedAt ? `Last saved: ${new Date(updatedAt).toLocaleString()}` : '')}
-        </p>
+      {!loading && !error && mappings.length === 0 && (
+        <EmptyState
+          icon={Database}
+          title="No source fields found"
+          hint="Run a sync first to populate the mapping table."
+        />
+      )}
+
+      {!loading && !error && driftEvents.length > 0 && (
+        <div className="flex items-start gap-3 bg-warning-tint border border-border rounded-lg px-4 py-3 mb-5">
+          <AlertTriangle size={14} className="text-warning shrink-0 mt-0.5" />
+          <div>
+            <p className="text-foreground text-sm font-medium mb-1">
+              {driftEvents.length} field{driftEvents.length !== 1 ? 's' : ''} changed since last review
+            </p>
+            <ul className="text-muted text-xs space-y-0.5">
+              {driftEvents.map((e, i) => (
+                <li key={i}>
+                  <span className="text-foreground">{e.field_name}</span>
+                  {e.signal === 'field_added'        && ` — new field (${e.new_type})`}
+                  {e.signal === 'field_removed'      && ' — removed from source'}
+                  {e.signal === 'field_type_changed' && ` — type changed (${e.old_type} → ${e.new_type})`}
+                </li>
+              ))}
+            </ul>
+            <p className="text-faint text-xs mt-1.5">Review classification below, then save to dismiss.</p>
+          </div>
+        </div>
+      )}
+
+      {!loading && !error && mappings.length > 0 && (
+        <>
+          {/* ── Slot assignments ── */}
+          <SectionLabel className="mb-3">Slot assignments</SectionLabel>
+          <Table className="mb-8">
+            <thead>
+              <tr>
+                <Th className="w-1/2">ArtHound slot</Th>
+                <Th className="w-1/2">Source field</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {slots.map(s => (
+                <Tr key={s.slot}>
+                  <Td primary className="font-normal text-foreground">{s.label}</Td>
+                  <Td className="py-1 overflow-visible">
+                    <Select
+                      value={assignments[s.slot] ?? ''}
+                      onChange={e => setSlotAssignment(s.slot, e.target.value)}
+                      className="w-full"
+                    >
+                      <option value="">— unmapped —</option>
+                      {mappings.map(m => (
+                        <option key={m.source_field_id} value={m.source_field_id}>
+                          {m.source_field_name}
+                        </option>
+                      ))}
+                    </Select>
+                  </Td>
+                </Tr>
+              ))}
+            </tbody>
+          </Table>
+
+          {/* ── Field classification ── */}
+          <SectionLabel className="mb-3">Field classification</SectionLabel>
+          <Table>
+            <thead>
+              <tr>
+                <Th>Field</Th>
+                <Th className="w-36">Bucket</Th>
+                <Th className="w-12 text-center">Skip</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {sortedMappings.map(m => {
+                const b          = buckets[m.source_field_id] || {}
+                const suppressed = b.ingest_suppressed ?? false
+                const slotKey    = fieldToSlot[m.source_field_id]
+                return (
+                  <Tr
+                    key={m.source_field_id}
+                    className={`transition-opacity ${suppressed ? 'opacity-40' : ''}`}
+                  >
+                    <Td primary className="h-auto py-1.5 whitespace-normal font-normal text-foreground">
+                      <div className="flex items-center gap-2">
+                        <span>{m.source_field_name}</span>
+                        {slotKey && <Pill tone="accent">→ {slotKey}</Pill>}
+                      </div>
+                      {m.source_field_type && (
+                        <span className="text-faint text-xs font-mono">{m.source_field_type}</span>
+                      )}
+                    </Td>
+                    <Td className="h-auto py-1.5 overflow-visible">
+                      <Select
+                        value={b.meta_bucket ?? 'custom'}
+                        onChange={e => setBucketForField(m.source_field_id, e.target.value)}
+                        disabled={suppressed}
+                        className="w-full"
+                      >
+                        {BUCKETS.map(bkt => (
+                          <option key={bkt.value} value={bkt.value}>{bkt.label}</option>
+                        ))}
+                      </Select>
+                    </Td>
+                    <Td className="h-auto py-1.5 text-center">
+                      <input
+                        type="checkbox"
+                        checked={suppressed}
+                        onChange={e => setSuppressed(m.source_field_id, e.target.checked)}
+                        className="accent-accent cursor-pointer"
+                      />
+                    </Td>
+                  </Tr>
+                )
+              })}
+            </tbody>
+          </Table>
+        </>
+      )}
+    </>
+  )
+
+  const footer = (
+    <>
+      <div className="flex gap-2">
+        <Button
+          variant="primary"
+          onClick={save}
+          disabled={busy || mappings.length === 0}
+        >
+          {saving ? 'Saving…' : 'Save mapping'}
+        </Button>
+        <Button onClick={resync} disabled={busy}>
+          {syncing ? 'Syncing…' : 'Re-sync'}
+        </Button>
       </div>
+
+      <p className="flex-1 min-w-0 text-faint text-xs truncate text-right">
+        {status ?? (updatedAt ? `Last saved: ${new Date(updatedAt).toLocaleString()}` : '')}
+      </p>
     </>
   )
 
   if (inline) {
-    return <div className="flex flex-col">{body}</div>
+    return (
+      <div className="flex flex-col">
+        <div className="px-6 py-4">{body}</div>
+        <div className="flex items-center gap-2 px-6 py-4 border-t border-border-soft">{footer}</div>
+      </div>
+    )
   }
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
-      onClick={e => e.target === e.currentTarget && onClose()}
-    >
-      <div className="bg-surface border border-border rounded-xl w-full max-w-2xl max-h-[85vh] flex flex-col">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-border shrink-0">
-          <h2 className="text-foreground text-base font-semibold">Field Mapping</h2>
-          <button onClick={onClose} className="text-muted hover:text-foreground text-xl cursor-pointer leading-none">×</button>
-        </div>
-        {body}
-      </div>
-    </div>
+    <Modal title="Field Mapping" onClose={onClose} width="max-w-2xl" footer={footer}>
+      {body}
+    </Modal>
   )
 }

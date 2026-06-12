@@ -5,30 +5,32 @@
   --font-sans: "Geist", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 
-  /* ── Surfaces ───────────────────────────────────────────────────────── */
-  --color-background:   #0d0a1a;
-  --color-surface:      #161229;
-  --color-surface-2:    #1f1a3a;
-  --color-surface-3:    #2a2350;
-  --color-overlay:      rgba(0, 0, 0, 0.60);
+  /* ── Surfaces: near-neutral graphite with a faint cool cast ────────── */
+  --color-background:   #131217;
+  --color-surface:      #18171d;
+  --color-surface-2:    #201f27;
+  --color-surface-3:    #2a2932;
+  --color-overlay:      rgba(8, 7, 12, 0.65);
 
-  /* ── Borders ────────────────────────────────────────────────────────── */
-  --color-border:           #3a2f6b;
-  --color-border-soft:      #2a2350;
+  /* ── Borders: 3-tier system (structural / internal / hairline) ─────── */
+  --color-border:           #2e2d38;
+  --color-border-soft:      rgba(255, 255, 255, 0.07);
+  --color-border-faint:     rgba(255, 255, 255, 0.04);
   --color-border-on-accent: rgba(124, 106, 244, 0.50);
 
-  /* ── Foreground ─────────────────────────────────────────────────────── */
-  --color-foreground:   #ece6ff;
-  --color-muted:        #a89cd6;
-  --color-disabled:     #6b62a3;
+  /* ── Foreground: 3 explicit text tiers ─────────────────────────────── */
+  --color-foreground:   #e9e8ef;
+  --color-muted:        #a3a1b0;
+  --color-faint:        #6f6d7c;
+  --color-disabled:     #6f6d7c;
   --color-on-accent:    #ffffff;
-  --color-link:         #b6a8ff;
+  --color-link:         #9b8ef8;
 
-  /* ── Brand / action ─────────────────────────────────────────────────── */
+  /* ── Brand / action: the only saturated chrome in the app ──────────── */
   --color-accent:         #7c6af4;
   --color-accent-hover:   #9b8ef8;
   --color-accent-tint:    rgba(124, 106, 244, 0.10);
-  --color-accent-tint-2:  rgba(124, 106, 244, 0.20);
+  --color-accent-tint-2:  rgba(124, 106, 244, 0.22);
   --color-accent-deep:    #4d3ad6;
 
   /* ── Status ─────────────────────────────────────────────────────────── */
@@ -57,6 +59,7 @@
   --ah-shadow-glow: 0 0 0 1px rgba(124, 106, 244, 0.55), 0 8px 24px rgba(124, 106, 244, 0.35);
   --ah-ring-focus:  0 0 0 2px rgba(124, 106, 244, 0.55);
 
+  /* Two radii: controls 6px (rounded-md), panels/modals 8px (rounded-lg) */
   --ah-radius-sm:   4px;
   --ah-radius-md:   6px;
   --ah-radius-lg:   8px;
@@ -80,7 +83,8 @@ body {
   background: var(--color-background);
   color: var(--color-foreground);
   font-family: var(--font-sans);
-  font-size: 14px;
+  font-size: 13px;
+  line-height: 1.45;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   font-feature-settings: "cv11", "ss01";
@@ -100,11 +104,12 @@ h1, h2, h3, h4 {
 .pill {
   display: inline-flex;
   align-items: center;
-  padding: 3px 10px;
+  padding: 1px 8px;
   border-radius: var(--ah-radius-pill);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 500;
-  line-height: 1.4;
+  line-height: 1.5;
+  white-space: nowrap;
 }
 .pill-success { background: var(--color-success-tint);  color: var(--color-success); }
 .pill-info    { background: var(--color-info-tint);     color: var(--color-info); }

@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ArtHound redesign — Studio Home</title>
+<link rel="stylesheet" href="mock.css">
+<style>
+  .page { max-width: 920px; margin: 0 auto; padding: 28px 24px 80px; }
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+  .stat { padding: 12px 14px; cursor: pointer; transition: border-color 120ms; }
+  .stat:hover { border-color: var(--accent); }
+  .stat .v { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .stat .d { font-size: 11.5px; color: var(--faint); margin-top: 2px; }
+  .twocol { display:grid; grid-template-columns: 1.5fr 1fr; gap: 10px; margin-top: 10px; }
+  .feeditem { display:flex; gap:10px; padding: 7px 0; border-bottom: 1px solid var(--border-faint); font-size: 12.5px; align-items: baseline; }
+  .feeditem:last-child { border-bottom:none; }
+  .feeditem time { color: var(--faint); font-size: 11.5px; flex-shrink:0; width: 52px; font-variant-numeric: tabular-nums; }
+  .bot { display:flex; gap:10px; padding: 9px 0; border-bottom: 1px solid var(--border-faint); align-items:center; cursor:pointer; }
+  .bot:last-child { border-bottom:none; }
+  .bot:hover .bn { color: var(--accent-hover); }
+  .bot .ic { width:28px; height:28px; border-radius:6px; background:var(--surface-2); border:1px solid var(--border); display:flex; align-items:center; justify-content:center; font-size:13px; flex-shrink:0; }
+</style>
+</head>
+<body>
+  <div class="topbar">
+    <div class="row gap-2" style="margin-right:16px">
+      <div style="width:22px;height:22px;border-radius:6px;background:var(--accent);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px;color:#fff">A</div>
+      <strong style="font-size:13px">ArtHound</strong>
+    </div>
+    <a class="nav-link is-active">Home</a>
+    <a class="nav-link">Assets</a>
+    <a class="nav-link">Reviews</a>
+    <a class="nav-link">Vendors</a>
+    <a class="nav-link">Org</a>
+    <a class="nav-link">Scenario</a>
+    <div class="grow"></div>
+    <span class="pill pill-success">Synced · 2m ago</span>
+    <button class="btn btn-ghost">Sync</button>
+    <button class="btn btn-ghost">robin@arthound.io ▾</button>
+  </div>
+
+  <div class="page">
+    <div class="row" style="justify-content:space-between; margin-bottom:18px">
+      <div>
+        <div class="t-display">Ironleaf Studio</div>
+        <div class="t-small muted" style="margin-top:2px">Airtable · last full sync Jun 11, 06:00 · delta 14:32 (0.8s)</div>
+      </div>
+      <div class="row gap-2">
+        <button class="btn btn-secondary">Delta sync</button>
+        <button class="btn btn-secondary">Full sync</button>
+      </div>
+    </div>
+
+    <div class="stats">
+      <div class="card stat"><div class="t-label">Assets</div><div class="v">412</div><div class="d">218 in Hollow Crown</div></div>
+      <div class="card stat"><div class="t-label">Open work</div><div class="v">137</div><div class="d">12 blocked</div></div>
+      <div class="card stat"><div class="t-label">Reviews pending</div><div class="v">9</div><div class="d">3 awaiting vendor</div></div>
+      <div class="card stat"><div class="t-label">Active dispatches</div><div class="v">4</div><div class="d">2 vendors</div></div>
+    </div>
+
+    <div class="twocol">
+      <div class="card card-pad">
+        <div class="row" style="justify-content:space-between; margin-bottom:8px">
+          <span class="t-title" style="font-size:13px">Activity</span>
+          <button class="btn btn-ghost" style="height:22px">View all</button>
+        </div>
+        <div class="feeditem"><time>14:32</time><span><strong>Delta sync</strong> — 6 assets updated, 1 new work item</span></div>
+        <div class="feeditem"><time>13:10</time><span>Forge &amp; Filament ingested dispatch <span class="t-mono">DSP-114</span> (8 assets)</span></div>
+        <div class="feeditem"><time>11:47</time><span>A. Reyes requested changes on <strong>ENV_Throne_Hall</strong> — Lighting pass 2</span></div>
+        <div class="feeditem"><time>10:02</time><span>Workflow step <strong>Blockout → Highpoly</strong> dependency added</span></div>
+        <div class="feeditem"><time>09:15</time><span>14 work items generated for <strong>Hollow Crown — DLC 1</strong></span></div>
+        <div class="feeditem"><time>Jun 10</time><span>Estimate share from <strong>Forge &amp; Filament</strong> updated (rate card v7)</span></div>
+      </div>
+
+      <div class="card card-pad">
+        <div class="t-title" style="font-size:13px; margin-bottom:4px">ScentHounds</div>
+        <div class="bot"><div class="ic">#</div><div class="grow"><div class="bn" style="font-weight:500">NumberBot</div><div class="t-small faint">Counts, rollups, status math</div></div><span class="pill pill-accent">Ask</span></div>
+        <div class="bot"><div class="ic">¶</div><div class="grow"><div class="bn" style="font-weight:500">LoreBot</div><div class="t-small faint">Naming &amp; description drafting</div></div><span class="pill pill-accent">Ask</span></div>
+        <div class="bot" style="opacity:.55; cursor:default"><div class="ic">◔</div><div class="grow"><div class="bn" style="font-weight:500">ScheduleBot</div><div class="t-small faint">Capacity &amp; timeline questions</div></div><span class="pill pill-neutral">Soon</span></div>
+        <div class="bot" style="opacity:.55; cursor:default"><div class="ic">✓</div><div class="grow"><div class="bn" style="font-weight:500">ReviewBot</div><div class="t-small faint">Review summaries &amp; chase-ups</div></div><span class="pill pill-neutral">Soon</span></div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

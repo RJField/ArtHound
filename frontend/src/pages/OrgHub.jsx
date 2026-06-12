@@ -5,61 +5,11 @@ import { apiFetch } from '../lib/api'
 import { getSupabase } from '../lib/supabase'
 import { useAuth } from '../contexts/AuthContext'
 import { cn } from '../lib/utils'
+import { Button, Input, Select, Field, Modal, Pill, Tabs, Card, EmptyState, Spinner } from '../components/ui'
 import EstimateWizardModal from '../components/EstimateWizardModal'
 import FieldMappingModal from '../components/FieldMappingModal'
 
-// ── Shared primitives ─────────────────────────────────────────────────────────
-
 const TABS = ['Members', 'Estimates', 'Workflows', 'Settings']
-
-function TabBar({ active, onChange }) {
-  return (
-    <div className="flex gap-1 border-b border-border shrink-0 px-6">
-      {TABS.map(t => (
-        <button
-          key={t}
-          onClick={() => onChange(t)}
-          className={cn(
-            'px-3 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors',
-            active === t
-              ? 'border-accent text-foreground'
-              : 'border-transparent text-muted hover:text-foreground',
-          )}
-        >
-          {t}
-        </button>
-      ))}
-    </div>
-  )
-}
-
-function Overlay({ onClose, children }) {
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
-      onClick={e => e.target === e.currentTarget && onClose()}
-    >
-      <div className="bg-surface border border-border rounded-xl p-6 w-full max-w-md">
-        {children}
-      </div>
-    </div>
-  )
-}
-
-function Field({ label, children }) {
-  return (
-    <div className="flex flex-col gap-1">
-      <label className="text-muted text-xs">{label}</label>
-      {children}
-    </div>
-  )
-}
-
-const input        = () => 'bg-surface-2 border border-border rounded-lg px-3 py-2 text-foreground text-sm outline-none focus:border-accent w-full'
-const btnPrimary   = () => 'px-3 py-1.5 rounded-md bg-accent text-white text-xs font-medium hover:bg-accent-hover transition-colors cursor-pointer disabled:opacity-40'
-const btnDanger    = () => 'px-3 py-1.5 rounded-md bg-error text-white text-xs font-medium hover:opacity-80 transition-opacity cursor-pointer disabled:opacity-40'
-const btnSecondary = () => 'px-3 py-1.5 rounded-md bg-surface-2 text-foreground text-xs hover:bg-surface-3 transition-colors cursor-pointer disabled:opacity-40'
-const btnGhost     = () => 'px-3 py-1.5 rounded-md text-muted text-xs hover:text-foreground transition-colors cursor-pointer'
 
 // ── Members tab ───────────────────────────────────────────────────────────────
 
@@ -103,49 +53,42 @@ function AuditLogSection() {
   }
 
   return (
-    <div className="flex flex-col gap-3 p-5 rounded-xl bg-surface border border-border">
+    <Card className="flex flex-col gap-3">
       <button
+        type="button"
         onClick={toggle}
-        className="flex items-center justify-between text-left w-full"
+        className="flex items-center justify-between text-left w-full cursor-pointer"
       >
-        <h2 className="text-foreground text-sm font-semibold">Activity log</h2>
+        <h3 className="text-foreground text-sm font-semibold">Activity log</h3>
         <span className="text-muted text-xs">{open ? 'Hide' : 'Show'}</span>
       </button>
 
       {open && (
         <div className="flex flex-col">
-          {loading && <p className="text-muted text-xs py-2">Loading…</p>}
+          {loading && <div className="flex justify-center py-3"><Spinner /></div>}
           {!loading && entries?.length === 0 && (
-            <p className="text-muted text-xs py-2">No activity recorded yet.</p>
+            <EmptyState title="No activity recorded yet" className="py-6" />
           )}
           {!loading && entries?.map(e => (
-            <div key={e.id} className="flex items-start justify-between gap-4 py-2.5 border-t border-border first:border-t-0">
+            <div key={e.id} className="flex items-start justify-between gap-4 py-2.5 border-t border-border-soft first:border-t-0">
               <div className="flex flex-col min-w-0">
                 <span className="text-foreground text-sm">{auditLabel(e)}</span>
                 <span className="text-muted text-xs mt-0.5">by {e.actor_email || e.actor_id.slice(0, 8) + '…'}</span>
               </div>
-              <span className="text-muted text-xs shrink-0 mt-0.5">
+              <span className="text-faint text-xs shrink-0 mt-0.5">
                 {new Date(e.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
               </span>
             </div>
           ))}
         </div>
       )}
-    </div>
+    </Card>
   )
 }
 
 function RoleBadge({ role }) {
-  const colours = {
-    owner: 'bg-accent/10 text-accent border-accent/20',
-    admin: 'bg-surface-2 text-foreground border-border',
-    user:  'bg-surface-2 text-muted border-border',
-  }
-  return (
-    <span className={`text-xs px-2 py-0.5 rounded-full border ${colours[role] ?? colours.user}`}>
-      {ROLE_LABELS[role] ?? role}
-    </span>
-  )
+  const tone = role === 'owner' || role === 'admin' ? 'accent' : 'neutral'
+  return <Pill tone={tone}>{ROLE_LABELS[role] ?? role}</Pill>
 }
 
 function MembersTab() {
@@ -236,7 +179,7 @@ function MembersTab() {
     }
   }
 
-  if (loading) return <div className="flex items-center justify-center py-24"><p className="text-muted text-sm">Loading…</p></div>
+  if (loading) return <div className="flex items-center justify-center py-24"><Spinner /></div>
   if (!hub) return null
 
   const { org, members, pending_requests } = hub
@@ -246,7 +189,7 @@ function MembersTab() {
     <div className="flex flex-col gap-6 p-6 max-w-2xl mx-auto w-full">
 
       {/* Org info + invite code */}
-      <div className="flex flex-col gap-4 p-5 rounded-xl bg-surface border border-border">
+      <Card className="flex flex-col gap-4">
         <div>
           <h2 className="text-foreground text-base font-semibold">{org.name}</h2>
           <p className="text-muted text-xs capitalize mt-0.5">
@@ -257,98 +200,90 @@ function MembersTab() {
         <div className="flex flex-col gap-2">
           <p className="text-muted text-xs">Invite code</p>
           <div className="flex items-center gap-2">
-            <code className="flex-1 px-3 py-2 rounded-lg bg-surface-2 border border-border text-foreground text-sm font-mono tracking-widest">
+            <code className="flex-1 px-3 py-1.5 rounded-md bg-surface-2 border border-border text-foreground text-sm font-mono tracking-widest">
               {org.invite_code}
             </code>
-            <button
-              onClick={copyCode}
-              className="px-3 py-2 rounded-lg border border-border text-muted text-xs hover:text-foreground hover:border-foreground transition-colors cursor-pointer shrink-0"
-            >
+            <Button size="lg" onClick={copyCode} className="shrink-0">
               {copied ? 'Copied!' : 'Copy'}
-            </button>
+            </Button>
             {isAdmin && (
-              <button
-                onClick={regenerateCode}
-                disabled={regen}
-                className="px-3 py-2 rounded-lg border border-border text-muted text-xs hover:text-foreground hover:border-foreground transition-colors cursor-pointer shrink-0 disabled:opacity-40"
-              >
+              <Button size="lg" onClick={regenerateCode} disabled={regen} className="shrink-0">
                 {regen ? 'Regenerating…' : 'Regenerate'}
-              </button>
+              </Button>
             )}
           </div>
-          <p className="text-muted text-xs">Share this code with people you want to invite. They'll request access and an admin must approve them.</p>
+          <p className="text-faint text-xs">Share this code with people you want to invite. They'll request access and an admin must approve them.</p>
         </div>
-      </div>
+      </Card>
 
       {/* Pending join requests */}
       {isAdmin && pending_requests.length > 0 && (
-        <div className="flex flex-col gap-3 p-5 rounded-xl bg-surface border border-border">
-          <h2 className="text-foreground text-sm font-semibold">
-            Pending requests
-            <span className="ml-2 text-xs px-1.5 py-0.5 rounded-full bg-surface-2 text-muted">{pending_requests.length}</span>
-          </h2>
+        <Card
+          title={<>Pending requests <span className="ml-1 text-faint text-xs font-normal tabular-nums">{pending_requests.length}</span></>}
+        >
           <div className="flex flex-col gap-2">
             {pending_requests.map(req => (
-              <div key={req.id} className="flex items-center justify-between gap-3 py-2 border-t border-border first:border-t-0">
+              <div key={req.id} className="flex items-center justify-between gap-3 py-2 border-t border-border-soft first:border-t-0">
                 <div className="flex flex-col min-w-0">
                   <span className="text-foreground text-sm truncate">{req.email || req.user_id}</span>
-                  <span className="text-muted text-xs">{new Date(req.created_at).toLocaleDateString()}</span>
+                  <span className="text-faint text-xs">{new Date(req.created_at).toLocaleDateString()}</span>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
-                  <button onClick={() => acceptRequest(req.id)} className="px-3 py-1.5 rounded-md bg-accent text-white text-xs font-medium hover:bg-accent-hover transition-colors cursor-pointer">Accept</button>
-                  <button onClick={() => declineRequest(req.id)} className="px-3 py-1.5 rounded-md border border-border text-muted text-xs hover:text-foreground hover:border-foreground transition-colors cursor-pointer">Decline</button>
+                  <Button variant="primary" size="sm" onClick={() => acceptRequest(req.id)}>Accept</Button>
+                  <Button variant="secondary" size="sm" onClick={() => declineRequest(req.id)}>Decline</Button>
                 </div>
               </div>
             ))}
           </div>
-        </div>
+        </Card>
       )}
 
       {/* Members list */}
-      <div className="flex flex-col gap-3 p-5 rounded-xl bg-surface border border-border">
-        <h2 className="text-foreground text-sm font-semibold">Members</h2>
+      <Card title="Members">
         <div className="flex flex-col">
           {members.map(m => {
             const canChange = isAdmin && !m.is_self && m.member_role !== 'owner'
             const canRemove = isAdmin && !m.is_self && m.member_role !== 'owner'
               && (myRole === 'owner' || m.member_role === 'user')
             return (
-              <div key={m.user_id} className="flex items-center gap-3 py-3 border-t border-border first:border-t-0">
+              <div key={m.user_id} className="flex items-center gap-3 py-3 border-t border-border-soft first:border-t-0">
                 <div className="flex flex-col flex-1 min-w-0">
                   <div className="flex items-center gap-2">
                     <span className="text-foreground text-sm truncate">{m.email || m.user_id}</span>
                     {m.is_self && <span className="text-muted text-xs">(you)</span>}
                   </div>
-                  <span className="text-muted text-xs">{new Date(m.joined_at).toLocaleDateString()}</span>
+                  <span className="text-faint text-xs">{new Date(m.joined_at).toLocaleDateString()}</span>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
                   {canChange ? (
-                    <select
+                    <Select
+                      size="sm"
                       value={m.member_role}
                       onChange={e => changeRole(m.user_id, e.target.value)}
-                      className="bg-surface-2 border border-border rounded-md px-2 py-1 text-xs text-foreground outline-none focus:border-accent cursor-pointer"
                     >
                       <option value="user">Member</option>
                       <option value="admin">Admin</option>
                       {myRole === 'owner' && <option value="owner">Owner (transfer)</option>}
-                    </select>
+                    </Select>
                   ) : (
                     <RoleBadge role={m.member_role} />
                   )}
                   {canRemove && (
-                    <button
+                    <Button
+                      variant="ghost"
+                      size="sm"
                       onClick={() => removeMember(m.user_id, m.email)}
-                      className="px-2 py-1 rounded-md border border-border text-muted text-xs hover:text-error hover:border-error transition-colors cursor-pointer"
+                      className="hover:text-error hover:bg-error-tint"
                     >
                       Remove
-                    </button>
+                    </Button>
                   )}
                 </div>
               </div>
             )
           })}
         </div>
-      </div>
+      </Card>
 
       {/* Activity log — admin only */}
       {isAdmin && <AuditLogSection />}
@@ -421,12 +356,12 @@ function MatrixCell({ stepId, colName, variableFields, initialValue, linkId = nu
         onKeyDown={handleKeyDown}
         disabled={saving}
         className={cn(
-          'w-14 text-center text-xs bg-transparent rounded px-1 py-1.5 outline-none',
+          'w-14 text-center text-xs bg-transparent rounded-md px-1 py-1.5 outline-none',
           'border border-transparent hover:border-border focus:border-accent',
-          'text-foreground placeholder:text-muted [appearance:textfield]',
+          'text-foreground placeholder:text-faint [appearance:textfield]',
           '[&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none',
           // per-link mode: accent ring on override cells, muted text on inherited (base) cells
-          linkId && isOverride && 'bg-accent/10 text-accent ring-1 ring-inset ring-accent/40',
+          linkId && isOverride && 'bg-accent-tint text-accent ring-1 ring-inset ring-accent/40',
           linkId && !isOverride && 'text-muted',
           saving && 'opacity-40 cursor-wait',
         )}
@@ -436,9 +371,9 @@ function MatrixCell({ stepId, colName, variableFields, initialValue, linkId = nu
 }
 
 function renderTags(arr) {
-  if (!arr?.length) return <span className="text-muted text-xs">—</span>
+  if (!arr?.length) return <span className="text-faint text-xs">—</span>
   return arr.map((v, i) => (
-    <span key={i} className="inline-block text-xs bg-surface-2 border border-border text-foreground px-1.5 py-0.5 rounded mr-0.5 mb-0.5">{v}</span>
+    <Pill key={i} tone="neutral" className="mr-0.5 mb-0.5">{v}</Pill>
   ))
 }
 
@@ -484,14 +419,18 @@ function MatrixTable({ reloadKey, linkId = null }) {
     return () => cancelAnimationFrame(raf)
   }, [data])
 
-  if (loading) return <p className="text-muted text-sm py-4">Loading…</p>
+  if (loading) return <div className="flex justify-center py-6"><Spinner /></div>
   if (error)   return <p className="text-error text-sm py-4">{error}</p>
   if (!data)   return null
 
   const { variableFields = [], combinations = [], work = [], attributeFields = [] } = data
 
-  if (!combinations.length) return <p className="text-muted text-sm py-4">No estimate combinations configured — run Setup first.</p>
-  if (!work.length)         return <p className="text-muted text-sm py-4">No workflow steps found — add steps in Workflows first.</p>
+  if (!combinations.length) {
+    return <EmptyState title="No estimate combinations configured" hint="Run Setup first." />
+  }
+  if (!work.length) {
+    return <EmptyState title="No workflow steps found" hint="Add steps in Workflows first." />
+  }
 
   const groupSpans = []
   if (variableFields.length > 1) {
@@ -506,7 +445,7 @@ function MatrixTable({ reloadKey, linkId = null }) {
     })
   }
   const hasGroups = groupSpans.length > 1
-  const fixedCls = 'mat-fixed sticky bg-surface z-10 border-r border-border/40'
+  const fixedCls = 'mat-fixed sticky bg-surface z-10 border-r border-border-soft'
 
   return (
     <div className="overflow-x-auto rounded-lg border border-border">
@@ -522,7 +461,7 @@ function MatrixTable({ reloadKey, linkId = null }) {
                 ))}
                 <th className={cn(fixedCls, 'text-left font-normal text-muted py-2 px-3 min-w-24')} rowSpan={2}>Depends On</th>
                 {groupSpans.map((g, i) => (
-                  <th key={i} colSpan={g.span} className="text-center font-medium text-foreground py-2 px-3 border-b border-border/60">{g.label}</th>
+                  <th key={i} colSpan={g.span} className="text-center font-medium text-foreground py-2 px-3 border-b border-border-soft">{g.label}</th>
                 ))}
               </tr>
               <tr className="border-b border-border bg-surface-2">
@@ -549,7 +488,7 @@ function MatrixTable({ reloadKey, linkId = null }) {
         </thead>
         <tbody>
           {work.map(t => (
-            <tr key={t.name} className="border-b border-border/30 hover:bg-surface-2/40">
+            <tr key={t.name} className="border-b border-border-faint hover:bg-surface-2/40">
               <td className={cn(fixedCls, 'py-1.5 px-2 text-muted text-center')}>{t.step}</td>
               <td className={cn(fixedCls, 'py-1.5 px-3 text-foreground font-medium')}>{t.name}</td>
               {attributeFields.map(f => (
@@ -620,34 +559,27 @@ function EstimatesTab() {
     }
   }
 
-  const btn = 'px-3 py-1.5 rounded-md text-xs font-medium cursor-pointer border transition-colors'
-
   return (
     <div className="flex flex-col gap-4 p-4 flex-1 min-h-0 overflow-hidden">
       <div className="flex items-center gap-2 flex-wrap shrink-0">
-        <button onClick={handleSetupClick} className={cn(btn, 'border-accent text-accent hover:bg-accent/10')}>
+        <Button variant="primary" onClick={handleSetupClick}>
           Setup
-        </button>
+        </Button>
         {isAdmin && (
-          <button
-            onClick={handleRandomize}
-            disabled={randomizing}
-            className={cn(btn, 'border-border text-muted hover:text-foreground hover:border-foreground/40 disabled:opacity-40 disabled:cursor-wait')}
-          >
+          <Button variant="secondary" onClick={handleRandomize} disabled={randomizing}>
             {randomizing ? 'Randomizing…' : 'Randomize'}
-          </button>
+          </Button>
         )}
         {isVendor && links.length > 0 && (
-          <select
+          <Select
             value={selectedLinkId ?? ''}
             onChange={e => setSelectedLinkId(e.target.value || null)}
-            className={cn(btn, 'border-border text-foreground bg-surface hover:border-foreground/40')}
           >
             <option value="">Base matrix (all studios)</option>
             {links.map(l => (
               <option key={l.id} value={l.id}>{l.studio?.name || 'Studio'}</option>
             ))}
-          </select>
+          </Select>
         )}
       </div>
       {selectedLinkId && (
@@ -745,32 +677,43 @@ function StepFormModal({ steps, editStep, onClose, onSaved }) {
   }
 
   return (
-    <Overlay onClose={onClose}>
-      <form onSubmit={handleSave} className="flex flex-col gap-4 w-full max-w-md">
-        <h2 className="text-foreground text-base font-semibold">
-          {isEdit ? 'Edit Workflow Step' : 'Add Workflow Step'}
-        </h2>
-
+    <Modal
+      title={isEdit ? 'Edit Workflow Step' : 'Add Workflow Step'}
+      onClose={onClose}
+      width="max-w-md"
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button variant="primary" size="lg" type="submit" form="step-form" disabled={busy}>
+            {busy ? 'Saving…' : 'Save'}
+          </Button>
+        </>
+      }
+    >
+      <form id="step-form" onSubmit={handleSave} className="flex flex-col gap-4">
         <Field label="Name">
-          <input
+          <Input
             autoFocus
+            size="lg"
             value={name}
             onChange={e => setName(e.target.value)}
-            className={input()}
+            className="w-full"
           />
         </Field>
 
         <Field label="Craft">
-          <input
+          <Input
+            size="lg"
             value={craft}
             onChange={e => setCraft(e.target.value)}
             placeholder="e.g. Animation, Lighting…"
-            className={input()}
+            className="w-full"
           />
         </Field>
 
         {others.length > 0 && (
-          <Field label="Depends on">
+          <div className="flex flex-col gap-1">
+            <span className="text-xs text-muted">Depends on</span>
             <div className="flex flex-col gap-1 max-h-40 overflow-y-auto">
               {others.map(s => (
                 <label key={s.id} className="flex items-center gap-2 cursor-pointer">
@@ -784,17 +727,10 @@ function StepFormModal({ steps, editStep, onClose, onSaved }) {
                 </label>
               ))}
             </div>
-          </Field>
+          </div>
         )}
-
-        <div className="flex gap-2 justify-end pt-2">
-          <button type="button" onClick={onClose} className={btnGhost()}>Cancel</button>
-          <button type="submit" disabled={busy} className={btnPrimary()}>
-            {busy ? 'Saving…' : 'Save'}
-          </button>
-        </div>
       </form>
-    </Overlay>
+    </Modal>
   )
 }
 
@@ -806,17 +742,21 @@ function ConfirmModal({ message, onClose, onConfirm }) {
     finally { setBusy(false) }
   }
   return (
-    <Overlay onClose={onClose}>
-      <div className="flex flex-col gap-5 w-full max-w-sm">
-        <p className="text-foreground text-sm">{message}</p>
-        <div className="flex gap-2 justify-end">
-          <button onClick={onClose} className={btnGhost()}>Cancel</button>
-          <button onClick={handle} disabled={busy} className={btnDanger()}>
+    <Modal
+      title="Confirm removal"
+      onClose={onClose}
+      width="max-w-sm"
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button variant="danger" size="lg" onClick={handle} disabled={busy}>
             {busy ? 'Removing…' : 'Remove'}
-          </button>
-        </div>
-      </div>
-    </Overlay>
+          </Button>
+        </>
+      }
+    >
+      <p className="text-foreground text-sm">{message}</p>
+    </Modal>
   )
 }
 
@@ -921,30 +861,22 @@ function WorkflowsTab() {
     <div className="flex flex-col gap-4 p-6 max-w-4xl mx-auto w-full">
       {/* Toolbar */}
       <div className="flex items-center gap-2">
-        <button onClick={() => setModal('add')} className={btnSecondary()}>+ Add</button>
-        <button
-          onClick={() => setModal('edit')}
-          disabled={selected.size !== 1}
-          className={btnSecondary()}
-        >
+        <Button variant="secondary" onClick={() => setModal('add')}>+ Add</Button>
+        <Button variant="secondary" onClick={() => setModal('edit')} disabled={selected.size !== 1}>
           Edit
-        </button>
-        <button
-          onClick={() => setModal('remove')}
-          disabled={noneSelected}
-          className={btnSecondary()}
-        >
+        </Button>
+        <Button variant="secondary" onClick={() => setModal('remove')} disabled={noneSelected}>
           {removeLabel}
-        </button>
+        </Button>
         <div className="flex-1" />
-        <button onClick={downloadCsv} className={btnGhost()}>Download CSV</button>
+        <Button variant="ghost" onClick={downloadCsv}>Download CSV</Button>
       </div>
 
       {/* List */}
-      {loading && <p className="text-muted text-sm">Loading…</p>}
+      {loading && <div className="flex justify-center py-10"><Spinner /></div>}
 
       {!loading && steps.length === 0 && (
-        <p className="text-muted text-sm">No workflow steps yet — click + Add to create one.</p>
+        <EmptyState title="No workflow steps yet" hint="Click + Add to create one." />
       )}
 
       {!loading && steps.length > 0 && (
@@ -967,7 +899,7 @@ function WorkflowsTab() {
                   <span className="text-foreground text-sm font-medium">
                     {craft === '—' ? 'Unassigned' : craft}
                   </span>
-                  <span className="text-muted text-xs">{groupSteps.length} step{groupSteps.length !== 1 ? 's' : ''}</span>
+                  <span className="text-faint text-xs tabular-nums">{groupSteps.length} step{groupSteps.length !== 1 ? 's' : ''}</span>
                 </div>
                 <div className="flex flex-col gap-1">
                   {groupSteps.map(s => (
@@ -978,7 +910,7 @@ function WorkflowsTab() {
                         'flex items-start gap-3 px-4 py-3 rounded-lg border cursor-pointer transition-colors',
                         selected.has(s.id)
                           ? 'border-accent bg-surface-2'
-                          : 'border-border bg-surface hover:border-border hover:bg-surface-2'
+                          : 'border-border bg-surface hover:bg-surface-2'
                       )}
                     >
                       <input
@@ -992,11 +924,9 @@ function WorkflowsTab() {
                         <span className="text-foreground text-sm font-medium">{s.name}</span>
                         {s.depends_on.length > 0 && (
                           <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
-                            <span className="text-muted text-xs">Needs</span>
+                            <span className="text-faint text-xs">Needs</span>
                             {s.depends_on.map(d => (
-                              <span key={d.id} className="px-2 py-0.5 rounded-full bg-surface-3 text-muted text-xs">
-                                {d.name}
-                              </span>
+                              <Pill key={d.id} tone="neutral">{d.name}</Pill>
                             ))}
                           </div>
                         )}
@@ -1056,7 +986,12 @@ export default function OrgHub() {
       <div className="flex items-center justify-between px-6 py-3 border-b border-border shrink-0">
         <span className="text-foreground font-semibold text-sm">Organisation</span>
       </div>
-      <TabBar active={activeTab} onChange={setTab} />
+      <Tabs
+        tabs={TABS.map(t => ({ id: t, label: t }))}
+        active={activeTab}
+        onChange={setTab}
+        className="px-6 shrink-0"
+      />
       <div className="flex-1 min-h-0 overflow-y-auto">
         {activeTab === 'Members'   && <MembersTab />}
         {activeTab === 'Estimates' && <EstimatesTab />}

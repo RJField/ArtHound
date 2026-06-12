@@ -3,6 +3,8 @@ import { toast } from 'sonner'
 import { makeRecordResolver } from '../../../lib/api'
 import { fmtDate, formatRawFields } from '../../../lib/fields'
 import { cn } from '../../../lib/utils'
+import { priorityColor } from '../../../lib/statusColors'
+import { EmptyState, StatusDot } from '../../ui'
 import DetailModal from '../../DetailModal'
 
 const SLOT_ORDER = [
@@ -35,29 +37,34 @@ function getSlotValue(asset, slotKey) {
   }
 }
 
+// Key-value row matching the <KV> vocabulary; hand-written because rows can be
+// click-to-drill (linked records), which KV does not forward.
 function FieldRow({ f, onDrill }) {
   const display  = f.value != null && f.value !== '' ? String(f.value) : '—'
   const isLinked = f.type === 'linked-record' && f.resolve
   const isLink   = f.type === 'link' && f.href
+  const isStatus = f.type === 'status' && display !== '—'
 
   return (
     <div
       onClick={isLinked ? () => onDrill(f) : undefined}
       className={cn(
-        'flex items-start gap-3 py-1.5',
+        'flex items-start gap-3 py-1.5 border-b border-border-faint last:border-b-0',
         isLinked && display !== '—' && 'cursor-pointer group'
       )}
     >
-      <span className="text-muted text-xs w-24 shrink-0 pt-0.5">{f.label}</span>
+      <span className="text-faint text-xs w-24 shrink-0 pt-0.5">{f.label}</span>
       <span className={cn(
         'text-xs flex-1 break-words',
-        display === '—'                       ? 'text-border'    : 'text-foreground',
-        isLinked && display !== '—'           ? 'text-p2 group-hover:underline' : '',
+        display === '—'                       ? 'text-faint'    : 'text-foreground',
+        isLinked && display !== '—'           ? 'text-link group-hover:underline' : '',
       )}>
         {isLink ? (
-          <a href={f.href} target="_blank" rel="noopener" className="text-p2 hover:underline">
+          <a href={f.href} target="_blank" rel="noopener" className="text-link hover:underline">
             {display}
           </a>
+        ) : isStatus ? (
+          <StatusDot label={display} color={f.statusColor} />
         ) : (
           <>
             {display}
@@ -89,6 +96,12 @@ export default function DetailsTab({ asset, schema }) {
           type: 'linked-record',
           resolve: makeRecordResolver('products', asset.productId, value),
         }]
+      }
+      if (slotKey === 'status') {
+        return [{ label, value, type: 'status' }]
+      }
+      if (slotKey === 'priority') {
+        return [{ label, value, type: 'status', statusColor: priorityColor(asset.priority) }]
       }
       return [{ label, value }]
     })
@@ -134,10 +147,10 @@ export default function DetailsTab({ asset, schema }) {
   return (
     <div className="h-full overflow-y-auto px-4 py-3">
       {!hasAny && (
-        <p className="text-muted text-xs">No fields available.</p>
+        <EmptyState title="No fields available." />
       )}
 
-      <div className="flex flex-col divide-y divide-border/40">
+      <div className="flex flex-col">
         {visibleFields.map((f, i) => (
           <FieldRow key={i} f={f} onDrill={openDrill} />
         ))}
@@ -147,9 +160,9 @@ export default function DetailsTab({ asset, schema }) {
         <>
           <button
             onClick={() => setShowMore(v => !v)}
-            className="mt-2 w-full text-left text-muted text-xs hover:text-foreground transition-colors py-1.5 flex items-center gap-1"
+            className="mt-2 w-full text-left text-muted text-xs hover:text-foreground transition-colors py-1.5 flex items-center gap-1 cursor-pointer"
           >
-            <span className="text-border">{showMore ? '↑' : '↓'}</span>
+            <span className="text-faint">{showMore ? '↑' : '↓'}</span>
             {showMore
               ? 'Show fewer fields'
               : `${secondaryMeta.length} more field${secondaryMeta.length !== 1 ? 's' : ''}`
@@ -157,7 +170,7 @@ export default function DetailsTab({ asset, schema }) {
           </button>
 
           {showMore && (
-            <div className="flex flex-col divide-y divide-border/40">
+            <div className="flex flex-col">
               {secondaryMeta.map((f, i) => (
                 <FieldRow key={i} f={f} onDrill={openDrill} />
               ))}

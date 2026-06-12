@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
-import { cn } from '../../lib/utils'
+import { Boxes, MousePointerClick } from 'lucide-react'
 import { fmtDate } from '../../lib/fields'
+import { priorityColor } from '../../lib/statusColors'
+import { Button, Dropdown, EmptyState, SectionLabel, Spinner, StatusDot, Table, Th, Tr, Td } from '../ui'
 
 // ── Cell value resolver ──────────────────────────────────────────────────────
 
@@ -26,75 +27,72 @@ function getCellValue(asset, col) {
   return String(v)
 }
 
+function CellContent({ asset, col, val }) {
+  if (val == null) return <span className="text-faint">—</span>
+  if (col.source === 'slot' && col.slotKey === 'status') {
+    return <StatusDot label={val} />
+  }
+  if (col.source === 'slot' && col.slotKey === 'priority') {
+    return <StatusDot label={val} color={priorityColor(asset.priority)} />
+  }
+  return val
+}
+
 // ── Column picker dropdown ───────────────────────────────────────────────────
 
 function ColumnPicker({ schema, visibleColumnIds, onToggle }) {
-  const [open, setOpen] = useState(false)
-  const ref = useRef(null)
-
-  useEffect(() => {
-    if (!open) return
-    function onOutside(e) {
-      if (ref.current && !ref.current.contains(e.target)) setOpen(false)
-    }
-    document.addEventListener('mousedown', onOutside)
-    return () => document.removeEventListener('mousedown', onOutside)
-  }, [open])
-
   if (!schema) return null
 
   const slotCols = schema.columns.filter(c => c.source === 'slot')
   const metaCols = schema.columns.filter(c => c.source === 'meta')
 
   return (
-    <div ref={ref} className="relative">
-      <button
-        onClick={() => setOpen(v => !v)}
-        className="text-muted text-xs hover:text-foreground cursor-pointer px-1.5 py-1 rounded transition-colors hover:bg-surface-2"
-      >
-        Columns
-      </button>
-
-      {open && (
-        <div className="absolute right-0 top-full mt-1 z-20 bg-surface border border-border rounded-lg shadow-lg p-3 w-52 flex flex-col gap-0.5 max-h-80 overflow-y-auto">
-          {slotCols.length > 0 && (
-            <p className="text-muted text-xs font-medium uppercase tracking-wide mb-1">Standard</p>
-          )}
-          {slotCols.map(col => {
-            const pinned = col.id === 'slot:name'
-            return (
-              <label key={col.id} className={cn('flex items-center gap-2 py-0.5', pinned ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer')}>
-                <input
-                  type="checkbox"
-                  checked={visibleColumnIds.includes(col.id)}
-                  disabled={pinned}
-                  onChange={() => onToggle(col.id)}
-                  className="accent-accent"
-                />
-                <span className="text-foreground text-xs">{col.label}</span>
-              </label>
-            )
-          })}
-
-          {metaCols.length > 0 && (
-            <>
-              <p className="text-muted text-xs font-medium uppercase tracking-wide mt-2 mb-1">Source Fields</p>
-              {metaCols.map(col => (
-                <label key={col.id} className="flex items-center gap-2 py-0.5 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={visibleColumnIds.includes(col.id)}
-                    onChange={() => onToggle(col.id)}
-                    className="accent-accent"
-                  />
-                  <span className="text-foreground text-xs truncate">{col.label}</span>
-                </label>
-              ))}
-            </>
-          )}
-        </div>
+    <Dropdown
+      align="right"
+      width="w-52"
+      panelClassName="p-3 flex flex-col gap-0.5 max-h-80 overflow-y-auto"
+      trigger={({ toggle }) => (
+        <Button variant="ghost" size="md" onClick={toggle}>
+          Columns
+        </Button>
       )}
-    </div>
+    >
+      {slotCols.length > 0 && (
+        <SectionLabel className="mb-1">Standard</SectionLabel>
+      )}
+      {slotCols.map(col => {
+        const pinned = col.id === 'slot:name'
+        return (
+          <label key={col.id} className={pinned ? 'flex items-center gap-2 py-0.5 opacity-50 cursor-not-allowed' : 'flex items-center gap-2 py-0.5 cursor-pointer'}>
+            <input
+              type="checkbox"
+              checked={visibleColumnIds.includes(col.id)}
+              disabled={pinned}
+              onChange={() => onToggle(col.id)}
+              className="accent-accent"
+            />
+            <span className="text-foreground text-xs">{col.label}</span>
+          </label>
+        )
+      })}
+
+      {metaCols.length > 0 && (
+        <>
+          <SectionLabel className="mt-2 mb-1">Source Fields</SectionLabel>
+          {metaCols.map(col => (
+            <label key={col.id} className="flex items-center gap-2 py-0.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={visibleColumnIds.includes(col.id)}
+                onChange={() => onToggle(col.id)}
+                className="accent-accent"
+              />
+              <span className="text-foreground text-xs truncate">{col.label}</span>
+            </label>
+          ))}
+        </>
+      )}
+    </Dropdown>
   )
 }
 
@@ -117,7 +115,7 @@ export default function AssetGrid({
     <div className="flex flex-col flex-1 overflow-hidden border-r border-border">
 
       {/* Toolbar */}
-      <div className="flex items-center gap-2 px-3 py-2 border-b border-border shrink-0">
+      <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-surface shrink-0">
         <input
           type="checkbox"
           checked={allSelected}
@@ -139,37 +137,34 @@ export default function AssetGrid({
       {/* Scrollable table */}
       <div className="flex-1 overflow-auto">
         {!selectedProductId && (
-          <p className="text-muted text-xs p-3">Select a product</p>
+          <EmptyState icon={MousePointerClick} title="Select a product" />
         )}
         {selectedProductId && loading && (
-          <p className="text-muted text-xs p-3">Loading…</p>
+          <div className="flex justify-center py-6">
+            <Spinner />
+          </div>
         )}
         {selectedProductId && !loading && assets.length === 0 && (
-          <p className="text-muted text-xs p-3">No assets for this product</p>
+          <EmptyState icon={Boxes} title="No assets for this product" />
         )}
         {assets.length > 0 && (
-          <table className="w-full text-xs border-collapse">
-            <thead className="sticky top-0 bg-surface z-10">
-              <tr className="border-b border-border">
-                <th className="w-8 px-2 py-1.5" />
+          <Table>
+            <thead>
+              <tr>
+                <Th className="w-8 px-2" />
                 {visibleColumns.map(col => (
-                  <th key={col.id} className="px-2 py-1.5 text-left text-muted font-medium whitespace-nowrap">
-                    {col.label}
-                  </th>
+                  <Th key={col.id}>{col.label}</Th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {assets.map(a => (
-                <tr
+                <Tr
                   key={a.id}
+                  selected={focusedId === a.id}
                   onClick={() => onFocusAsset(a.id)}
-                  className={cn(
-                    'border-b border-border/50 cursor-pointer transition-colors',
-                    focusedId === a.id ? 'bg-surface-2' : 'hover:bg-surface-2/60'
-                  )}
                 >
-                  <td className="w-8 px-2 py-1.5">
+                  <Td className="w-8 px-2">
                     <input
                       type="checkbox"
                       checked={selectedIds.has(a.id)}
@@ -177,50 +172,50 @@ export default function AssetGrid({
                       onChange={e => onToggleAsset(a.id, e.target.checked)}
                       className="accent-accent"
                     />
-                  </td>
+                  </Td>
                   {visibleColumns.map(col => {
                     const val = getCellValue(a, col)
                     return (
-                      <td key={col.id} className="px-2 py-1.5 max-w-[200px]">
-                        <span className={cn('block truncate', val ? 'text-foreground' : 'text-border')}>
-                          {val ?? '—'}
-                        </span>
-                      </td>
+                      <Td key={col.id} primary={col.id === 'slot:name'} className="max-w-[200px]">
+                        <CellContent asset={a} col={col} val={val} />
+                      </Td>
                     )
                   })}
-                </tr>
+                </Tr>
               ))}
             </tbody>
-          </table>
+          </Table>
         )}
       </div>
 
       {/* Selection actions — studio only */}
       {(onGenerate || onSend) && (
-        <div className="border-t border-border px-3 py-2 flex flex-col gap-2 shrink-0">
+        <div className="border-t border-border px-3 py-2 flex flex-col gap-2 shrink-0 bg-surface">
           <div className="flex items-center gap-1.5">
-            <span className="text-muted text-xs flex-1">
+            <span className="text-muted text-xs flex-1 tabular-nums">
               {selectedIds.size === 0 ? 'None selected' : `${selectedIds.size} selected`}
             </span>
           </div>
           <div className="flex gap-1.5">
             {onGenerate && (
-              <button
+              <Button
+                size="md"
                 onClick={onGenerate}
                 disabled={genBusy || selectedIds.size === 0}
-                className="flex-1 px-2 py-1.5 rounded-md bg-surface-2 text-foreground text-xs hover:bg-surface-3 cursor-pointer disabled:opacity-40 transition-colors"
+                className="flex-1"
               >
                 {genBusy ? 'Generating…' : 'Generate Work'}
-              </button>
+              </Button>
             )}
             {onSend && (
-              <button
+              <Button
+                variant="primary"
+                size="md"
                 onClick={onSend}
                 disabled={selectedIds.size === 0}
-                className="px-2 py-1.5 rounded-md bg-accent text-white text-xs hover:bg-accent-hover cursor-pointer disabled:opacity-40 transition-colors"
               >
                 Send
-              </button>
+              </Button>
             )}
           </div>
           {genResult && (

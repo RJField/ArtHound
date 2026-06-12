@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Navigate, useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { apiFetch } from '../lib/api'
+import { Button, Field, Input, Pill } from '../components/ui'
 
 const HANDLE_RE = /^[a-z0-9][a-z0-9_-]{2,31}$/
 const HANDLE_HINT = 'Lowercase letters, numbers, hyphens and underscores only. 3–32 characters.'
@@ -14,10 +15,6 @@ function errMsg(detail) {
   if (detail === 'ALREADY_MEMBER')      return 'You already belong to an organisation.'
   return detail || 'Something went wrong. Please try again.'
 }
-
-const inputCls   = 'bg-surface-2 border border-border rounded-lg px-3 py-2 text-foreground text-sm outline-none focus:border-accent'
-const btnPrimary = 'px-4 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:bg-accent-hover transition-colors cursor-pointer disabled:opacity-50'
-const btnBack    = 'text-muted hover:text-foreground cursor-pointer text-sm'
 
 /**
  * Post-login onboarding for an authenticated user who has no org yet (RLS migration §0c, Option C).
@@ -90,7 +87,7 @@ export default function Onboarding() {
 
   return (
     <div className="flex flex-col items-center justify-center flex-1 min-h-screen px-4 py-12">
-      <div className="bg-surface border border-border rounded-xl p-8 w-full max-w-sm flex flex-col gap-5">
+      <div className="bg-surface border border-border rounded-lg p-8 w-full max-w-sm flex flex-col gap-5">
 
         {/* CHOICE — no stashed intent (legacy / stranded account) */}
         {mode === 'choice' && (
@@ -123,40 +120,35 @@ export default function Onboarding() {
           <form onSubmit={submitCreate} className="flex flex-col gap-4">
             <div className="flex items-center gap-2">
               {initialMode === 'choice' && (
-                <button type="button" onClick={() => { setError(null); setMode('choice') }} className={btnBack}>←</button>
+                <Button variant="ghost" size="sm" onClick={() => { setError(null); setMode('choice') }}>←</Button>
               )}
               <h1 className="text-foreground text-lg font-semibold">Create your organisation</h1>
-              <span className="ml-auto text-xs px-2 py-0.5 rounded-full bg-surface-2 text-muted">{roleLabel}</span>
+              <Pill tone="neutral" className="ml-auto">{roleLabel}</Pill>
             </div>
-            <div className="flex flex-col gap-1">
-              <label className="text-muted text-xs">{role === 'vendor' ? 'Vendor / company name' : 'Studio name'}</label>
-              <input
+            <Field label={role === 'vendor' ? 'Vendor / company name' : 'Studio name'}>
+              <Input
+                size="lg"
                 type="text" value={orgName} onChange={e => setOrgName(e.target.value)}
                 required autoFocus placeholder={role === 'vendor' ? 'Acme VFX' : 'Acme Studio'}
-                className={inputCls}
               />
-            </div>
+            </Field>
             {role === 'vendor' && (
-              <div className="flex flex-col gap-1">
-                <label className="text-muted text-xs">Handle</label>
-                <div className="flex items-center bg-surface-2 border border-border rounded-lg px-3 py-2 focus-within:border-accent">
+              <Field label="Handle" error={handleError} hint={HANDLE_HINT}>
+                <div className="flex items-center h-8 bg-surface-2 border border-border rounded-md px-3 focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/25 transition-colors">
                   <span className="text-muted text-sm select-none mr-0.5">@</span>
                   <input
                     type="text" value={handle}
                     onChange={e => { setHandle(e.target.value.toLowerCase()); setHandleError(null) }}
                     required placeholder="acme-vfx"
-                    className="bg-transparent text-foreground text-sm outline-none flex-1 min-w-0"
+                    className="bg-transparent text-foreground text-sm outline-none flex-1 min-w-0 placeholder:text-faint"
                   />
                 </div>
-                {handleError
-                  ? <p className="text-error text-xs mt-0.5">{handleError}</p>
-                  : <p className="text-muted text-xs mt-0.5">{HANDLE_HINT}</p>}
-              </div>
+              </Field>
             )}
             {error && <p className="text-error text-xs">{error}</p>}
-            <button type="submit" disabled={busy || !orgName.trim()} className={btnPrimary}>
+            <Button type="submit" variant="primary" size="lg" disabled={busy || !orgName.trim()}>
               {busy ? 'Creating…' : 'Create organisation'}
-            </button>
+            </Button>
           </form>
         )}
 
@@ -165,26 +157,25 @@ export default function Onboarding() {
           <form onSubmit={submitJoin} className="flex flex-col gap-4">
             <div className="flex items-center gap-2">
               {initialMode === 'choice' && (
-                <button type="button" onClick={() => { setError(null); setMode('choice') }} className={btnBack}>←</button>
+                <Button variant="ghost" size="sm" onClick={() => { setError(null); setMode('choice') }}>←</Button>
               )}
               <h1 className="text-foreground text-lg font-semibold">Join an organisation</h1>
             </div>
             <p className="text-muted text-sm">
               Ask an admin at the organisation you're joining for their invite code.
             </p>
-            <div className="flex flex-col gap-1">
-              <label className="text-muted text-xs">Invite code</label>
-              <input
+            <Field label="Invite code" error={error}>
+              <Input
+                size="lg"
                 type="text" value={inviteCode}
                 onChange={e => { setInviteCode(e.target.value.toUpperCase()); setError(null) }}
                 required autoFocus placeholder="ABCD1234" maxLength={8}
-                className={`${inputCls} tracking-widest font-mono uppercase`}
+                className="tracking-widest font-mono uppercase"
               />
-            </div>
-            {error && <p className="text-error text-xs">{error}</p>}
-            <button type="submit" disabled={busy || !inviteCode.trim()} className={btnPrimary}>
+            </Field>
+            <Button type="submit" variant="primary" size="lg" disabled={busy || !inviteCode.trim()}>
               {busy ? 'Submitting…' : 'Request access'}
-            </button>
+            </Button>
           </form>
         )}
 

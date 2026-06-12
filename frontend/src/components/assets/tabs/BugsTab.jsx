@@ -1,7 +1,6 @@
+import { Bug } from 'lucide-react'
+import { EmptyState } from '../../ui'
+
 export default function BugsTab() {
-  return (
-    <div className="p-4">
-      <p className="text-muted text-xs">Bug tracking coming soon.</p>
-    </div>
-  )
+  return <EmptyState icon={Bug} title="Bug tracking coming soon." />
 }

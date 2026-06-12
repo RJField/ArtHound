@@ -1,4 +1,5 @@
 import { useScenario } from '../hooks/useScenario'
+import { Button, Pill } from '../components/ui'
 import ScenarioWizard from '../components/scenario/ScenarioWizard'
 import ScenarioChat from '../components/scenario/ScenarioChat'
 import ScenarioViewer from '../components/scenario/ScenarioViewer'
@@ -23,23 +24,17 @@ export default function ScenarioPlanner() {
         <div className="flex items-center gap-2">
           <span className="text-foreground font-semibold text-sm">◈ Scenario Planner</span>
           {scenario.stage === 'discussion' && scenario.hasData && (
-            <span className="text-xs text-muted bg-surface-2 border border-border rounded px-2 py-0.5">
-              {scenario.work.length} work items
-            </span>
+            <Pill tone="neutral">{scenario.work.length} work items</Pill>
           )}
           {scenario.scenarioCategory && (
-            <span className="text-xs text-muted bg-surface-2 border border-border rounded px-2 py-0.5">
+            <Pill tone="neutral">
               {scenario.scenarioCategory === 'earliest_ship' ? '→ earliest ship' : '◎ target date'}
-            </span>
+            </Pill>
           )}
         </div>
-        <button
-          onClick={scenario.dismiss}
-          title="Dismiss and start a new scenario"
-          className="text-xs text-muted hover:text-foreground border border-border rounded px-3 py-1.5 transition-colors"
-        >
+        <Button onClick={scenario.dismiss} title="Dismiss and start a new scenario">
           ← New scenario
-        </button>
+        </Button>
       </div>
 
       {/* Discussion chat — only shown post-generation */}
@@ -76,8 +71,12 @@ export default function ScenarioPlanner() {
       <div className="flex items-center justify-between px-6 py-3 border-t border-border shrink-0">
         <span />
         <div className="flex items-center gap-2">
-          <DisabledButton label="Export to CSV" />
-          <DisabledButton label="Write to Source" />
+          <Button size="lg" disabled title="Available in a future update">
+            Export to CSV
+          </Button>
+          <Button size="lg" disabled title="Available in a future update">
+            Write to Source
+          </Button>
         </div>
       </div>
     </main>
@@ -90,32 +89,5 @@ function ScenarioHeader() {
     <div className="flex items-center justify-between px-6 py-3 border-b border-border shrink-0">
       <span className="text-foreground font-semibold text-sm">◈ Scenario Planner</span>
     </div>
-  )
-}
-
-function DisabledButton({ label }) {
-  return (
-    <button
-      disabled
-      title="Available in a future update"
-      className="text-sm text-muted border border-border rounded px-4 py-2 opacity-40 cursor-not-allowed"
-    >
-      {label}
-    </button>
-  )
-}
-
-function MatrixMissingGate() {
-  return (
-    <main className="flex-1 flex flex-col items-center justify-center gap-3 text-center p-8">
-      <p className="text-foreground font-medium">Estimation matrix required</p>
-      <p className="text-muted text-sm max-w-sm">
-        Scenario planning uses your estimation matrix to generate realistic work estimates.
-        Set up your matrix in Estimates before using this feature.
-      </p>
-      <a href="/org?tab=estimates" className="text-sm text-accent hover:text-accent/80 transition-colors">
-        Go to Estimates →
-      </a>
-    </main>
   )
 }

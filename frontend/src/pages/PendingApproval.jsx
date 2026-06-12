@@ -1,4 +1,5 @@
 import { useAuth } from '../contexts/AuthContext'
+import { Button } from '../components/ui'
 
 export default function PendingApproval() {
   const { pendingOrg, signOut } = useAuth()
@@ -26,16 +27,13 @@ export default function PendingApproval() {
           )}
         </div>
 
-        <p className="text-muted text-xs">
+        <p className="text-faint text-xs">
           There's nothing else you need to do — just check back after an admin has reviewed your request.
         </p>
 
-        <button
-          onClick={signOut}
-          className="mt-2 px-4 py-2 rounded-lg border border-border text-muted text-sm hover:text-foreground hover:border-foreground transition-colors cursor-pointer"
-        >
+        <Button size="lg" onClick={signOut} className="mt-2">
           Sign out
-        </button>
+        </Button>
       </div>
     </div>
   )

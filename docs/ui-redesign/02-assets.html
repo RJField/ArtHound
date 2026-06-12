@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ArtHound redesign — Assets (3-panel)</title>
+<link rel="stylesheet" href="mock.css">
+<style>
+  html, body { height: 100%; overflow: hidden; }
+  .shell { display: flex; flex-direction: column; height: 100vh; }
+  .main { display: flex; flex: 1; min-height: 0; }
+
+  .sidebar { width: 200px; flex-shrink: 0; border-right: 1px solid var(--border); display: flex; flex-direction: column; background: var(--surface); }
+  .sidebar-head { padding: 10px 12px 6px; display:flex; align-items:center; justify-content:space-between; }
+  .side-item { display:flex; align-items:center; justify-content:space-between; padding: 5px 12px; font-size: 12.5px; color: var(--muted); cursor: pointer; }
+  .side-item:hover { background: var(--surface-2); color: var(--fg); }
+  .side-item.is-active { background: var(--accent-tint); color: var(--fg); box-shadow: inset 2px 0 0 var(--accent); }
+  .side-item .count { font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; }
+
+  .center { flex: 1; min-width: 0; display: flex; flex-direction: column; border-right: 1px solid var(--border); }
+  .toolbar { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--surface); flex-shrink: 0; }
+  .gridwrap { flex: 1; overflow: auto; background: var(--surface); }
+  .statusbar { display:flex; align-items:center; gap:12px; padding: 5px 12px; border-top: 1px solid var(--border); background: var(--surface); font-size: 11.5px; color: var(--faint); flex-shrink:0; }
+
+  .detail { width: 380px; flex-shrink: 0; display: flex; flex-direction: column; background: var(--surface); }
+  .detail-head { padding: 14px 16px 0; }
+  .detail-body { flex: 1; overflow-y: auto; padding: 12px 16px; }
+
+  .selbar { display:flex; align-items:center; gap:8px; padding: 6px 12px; background: var(--accent-tint); border-bottom: 1px solid var(--border); font-size: 12.5px; flex-shrink:0; }
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <div class="topbar">
+    <div class="row gap-2" style="margin-right:16px">
+      <div style="width:22px;height:22px;border-radius:6px;background:var(--accent);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px;color:#fff">A</div>
+      <strong style="font-size:13px">ArtHound</strong>
+    </div>
+    <a class="nav-link">Home</a>
+    <a class="nav-link is-active">Assets</a>
+    <a class="nav-link">Reviews</a>
+    <a class="nav-link">Vendors</a>
+    <a class="nav-link">Org</a>
+    <a class="nav-link">Scenario</a>
+    <div class="grow"></div>
+    <span class="pill pill-success">Synced · 2m ago</span>
+    <button class="btn btn-ghost">Sync</button>
+    <button class="btn btn-ghost">robin@arthound.io ▾</button>
+  </div>
+
+  <div class="main">
+
+    <div class="sidebar">
+      <div class="sidebar-head">
+        <span class="t-label">Products</span>
+        <button class="btn btn-ghost" style="height:22px;padding:0 6px">Schema</button>
+      </div>
+      <div class="side-item"><span>All products</span><span class="count">412</span></div>
+      <div class="side-item is-active"><span>Hollow Crown</span><span class="count">218</span></div>
+      <div class="side-item"><span>Hollow Crown — DLC 1</span><span class="count">64</span></div>
+      <div class="side-item"><span>Skyward Vale</span><span class="count">97</span></div>
+      <div class="side-item"><span>Prototype: Emberline</span><span class="count">21</span></div>
+      <div class="side-item"><span>No product</span><span class="count">12</span></div>
+    </div>
+
+    <div class="center">
+      <div class="toolbar">
+        <input class="input" placeholder="Search assets… ( / )" style="width:170px">
+        <select class="select"><option>Type: All</option></select>
+        <select class="select"><option>Status: All</option></select>
+        <select class="select"><option>Priority: All</option></select>
+        <div class="grow"></div>
+        <button class="btn btn-ghost">Columns ▾</button>
+        <button class="btn btn-secondary">Generate</button>
+        <button class="btn btn-primary">Send to vendor</button>
+      </div>
+
+      <div class="selbar">
+        <span><strong>3 selected</strong></span>
+        <button class="btn btn-ghost" style="height:22px">Generate work</button>
+        <button class="btn btn-ghost" style="height:22px">Send to vendor</button>
+        <div class="grow"></div>
+        <button class="btn btn-ghost" style="height:22px">Clear</button>
+      </div>
+
+      <div class="gridwrap">
+        <table class="table">
+          <thead>
+            <tr>
+              <th style="width:30px"><input type="checkbox" class="check"></th>
+              <th>Name</th>
+              <th>Type</th>
+              <th>Status</th>
+              <th>Pri</th>
+              <th>Asset #</th>
+              <th>Team</th>
+              <th>Reviews</th>
+              <th>Updated</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td><input type="checkbox" class="check" checked></td><td class="td-primary">CHR_Knight_Captain</td><td class="muted">Character</td><td><span class="pill pill-info">In Progress</span></td><td><span class="pill pill-success">P1</span></td><td class="t-mono faint">HC-0042</td><td class="muted">Char A</td><td class="t-num muted">3</td><td class="muted">Jun 10</td></tr>
+            <tr class="is-selected"><td><input type="checkbox" class="check" checked></td><td class="td-primary">ENV_Throne_Hall</td><td class="muted">Environment</td><td><span class="pill pill-warning">Review</span></td><td><span class="pill pill-success">P1</span></td><td class="t-mono faint">HC-0018</td><td class="muted">Env Core</td><td class="t-num muted">5</td><td class="muted">Jun 10</td></tr>
+            <tr><td><input type="checkbox" class="check" checked></td><td class="td-primary">PRP_Greatsword_Royal</td><td class="muted">Prop</td><td><span class="pill pill-error">Blocked</span></td><td><span class="pill pill-warning">P3</span></td><td class="t-mono faint">HC-0107</td><td class="muted">Props</td><td class="t-num muted">1</td><td class="muted">Jun 9</td></tr>
+            <tr><td><input type="checkbox" class="check"></td><td class="td-primary">CHR_Squire_Variant_B</td><td class="muted">Character</td><td><span class="pill pill-success">Done</span></td><td><span class="pill pill-warning">P3</span></td><td class="t-mono faint">HC-0043</td><td class="muted">Char A</td><td class="t-num muted">2</td><td class="muted">Jun 9</td></tr>
+            <tr><td><input type="checkbox" class="check"></td><td class="td-primary">VFX_Banner_Tear</td><td class="muted">VFX</td><td><span class="pill pill-info">In Progress</span></td><td><span class="pill" style="background:rgba(249,115,22,.12);color:#f97316">P4</span></td><td class="t-mono faint">HC-0211</td><td class="muted">VFX</td><td class="t-num muted">0</td><td class="muted">Jun 8</td></tr>
+            <tr><td><input type="checkbox" class="check"></td><td class="td-primary">ENV_Courtyard_Night</td><td class="muted">Environment</td><td><span class="pill pill-neutral">Draft</span></td><td><span class="pill pill-info">P2</span></td><td class="t-mono faint">HC-0019</td><td class="muted">Env Core</td><td class="t-num muted">0</td><td class="muted">Jun 8</td></tr>
+            <tr><td><input type="checkbox" class="check"></td><td class="td-primary">CHR_Herald_Of_Ash</td><td class="muted">Character</td><td><span class="pill pill-info">In Progress</span></td><td><span class="pill pill-success">P1</span></td><td class="t-mono faint">HC-0044</td><td class="muted">Char B</td><td class="t-num muted">4</td><td class="muted">Jun 8</td></tr>
+            <tr><td><input type="checkbox" class="check"></td><td class="td-primary">PRP_Lantern_Set_03</td><td class="muted">Prop</td><td><span class="pill pill-success">Done</span></td><td><span class="pill pill-error">P5</span></td><td class="t-mono faint">HC-0108</td><td class="muted">Props</td><td class="t-num muted">1</td><td class="muted">Jun 7</td></tr>
+            <tr><td><input type="checkbox" class="check"></td><td class="td-primary">ENV_Undercroft</td><td class="muted">Environment</td><td><span class="pill pill-warning">Review</span></td><td><span class="pill pill-info">P2</span></td><td class="t-mono faint">HC-0020</td><td class="muted">Env Core</td><td class="t-num muted">2</td><td class="muted">Jun 7</td></tr>
+            <tr><td><input type="checkbox" class="check"></td><td class="td-primary">WPN_Crossbow_Heavy</td><td class="muted">Weapon</td><td><span class="pill pill-info">In Progress</span></td><td><span class="pill pill-warning">P3</span></td><td class="t-mono faint">HC-0310</td><td class="muted">Props</td><td class="t-num muted">0</td><td class="muted">Jun 6</td></tr>
+            <tr><td><input type="checkbox" class="check"></td><td class="td-primary">CHR_Banner_Knight_LOD</td><td class="muted">Character</td><td><span class="pill pill-neutral">Draft</span></td><td><span class="pill" style="background:rgba(249,115,22,.12);color:#f97316">P4</span></td><td class="t-mono faint">HC-0045</td><td class="muted">Char B</td><td class="t-num muted">0</td><td class="muted">Jun 6</td></tr>
+            <tr><td><input type="checkbox" class="check"></td><td class="td-primary">VFX_Ember_Drift</td><td class="muted">VFX</td><td><span class="pill pill-success">Done</span></td><td><span class="pill pill-info">P2</span></td><td class="t-mono faint">HC-0212</td><td class="muted">VFX</td><td class="t-num muted">3</td><td class="muted">Jun 5</td></tr>
+            <tr><td><input type="checkbox" class="check"></td><td class="td-primary">ENV_Great_Gate</td><td class="muted">Environment</td><td><span class="pill pill-info">In Progress</span></td><td><span class="pill pill-success">P1</span></td><td class="t-mono faint">HC-0021</td><td class="muted">Env Core</td><td class="t-num muted">1</td><td class="muted">Jun 5</td></tr>
+            <tr><td><input type="checkbox" class="check"></td><td class="td-primary">PRP_Feast_Table</td><td class="muted">Prop</td><td><span class="pill pill-warning">Review</span></td><td><span class="pill pill-warning">P3</span></td><td class="t-mono faint">HC-0109</td><td class="muted">Props</td><td class="t-num muted">2</td><td class="muted">Jun 4</td></tr>
+            <tr><td><input type="checkbox" class="check"></td><td class="td-primary">CHR_Queen_Regent</td><td class="muted">Character</td><td><span class="pill pill-info">In Progress</span></td><td><span class="pill pill-success">P1</span></td><td class="t-mono faint">HC-0046</td><td class="muted">Char A</td><td class="t-num muted">6</td><td class="muted">Jun 4</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="statusbar">
+        <span>218 assets · 15 shown</span>
+        <span>Filtered by: Hollow Crown</span>
+        <div class="grow"></div>
+        <span>Last delta sync 14:32 · 0.8s</span>
+      </div>
+    </div>
+
+    <div class="detail">
+      <div class="detail-head">
+        <div class="row" style="justify-content:space-between">
+          <div class="t-title">ENV_Throne_Hall</div>
+          <button class="btn btn-ghost" style="height:24px;padding:0 8px">⋯</button>
+        </div>
+        <div class="row gap-1" style="margin:8px 0 10px; flex-wrap:wrap">
+          <span class="pill pill-neutral">Environment</span>
+          <span class="pill pill-success">P1</span>
+          <span class="pill pill-warning">Review</span>
+          <span class="pill pill-neutral t-mono" style="font-family:var(--mono)">HC-0018</span>
+        </div>
+        <div class="tabs">
+          <button class="tab is-active">Details</button>
+          <button class="tab">Files <span class="faint">4</span></button>
+          <button class="tab">Work <span class="faint">7</span></button>
+          <button class="tab">Reviews <span class="faint">5</span></button>
+          <button class="tab">Bugs</button>
+        </div>
+      </div>
+      <div class="detail-body">
+        <div class="t-label" style="margin-bottom:4px">Production</div>
+        <div class="kv"><span class="k">Product</span><span class="v">Hollow Crown</span></div>
+        <div class="kv"><span class="k">Team</span><span class="v">Env Core</span></div>
+        <div class="kv"><span class="k">Dev name</span><span class="v">throne_hall_int</span></div>
+        <div class="kv"><span class="k">Project date</span><span class="v t-num">2026-08-14</span></div>
+        <div class="kv"><span class="k">Vendor</span><span class="v">Forge & Filament <span class="pill pill-accent" style="margin-left:6px">Dispatched</span></span></div>
+
+        <div class="t-label" style="margin:16px 0 4px">Source fields</div>
+        <div class="kv"><span class="k">Concept link</span><span class="v" style="color:var(--accent-hover)">figma.com/file/HC-env…</span></div>
+        <div class="kv"><span class="k">Polycount cap</span><span class="v t-num">120,000</span></div>
+        <div class="kv"><span class="k">Texel density</span><span class="v t-num">512 px/m</span></div>
+        <div class="kv"><span class="k">Set dressing</span><span class="v">Required — pass 2 of 3</span></div>
+        <div class="kv"><span class="k">Notes</span><span class="v muted" style="white-space:normal">Lighting review pending; banner cloth sim to match VFX_Banner_Tear.</span></div>
+
+        <div class="t-label" style="margin:16px 0 6px">Latest review</div>
+        <div class="card card-pad" style="padding:10px 12px">
+          <div class="row" style="justify-content:space-between">
+            <span style="font-weight:500">Lighting pass 2</span>
+            <span class="pill pill-warning">Pending</span>
+          </div>
+          <div class="t-small muted" style="margin-top:4px">“North windows blowing out the dais — pull exposure or add interior occluders.”</div>
+          <div class="t-small faint" style="margin-top:6px">A. Reyes · Jun 9</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+</body>
+</html>
