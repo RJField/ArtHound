@@ -340,7 +340,20 @@ function NewReviewModal({ onClose, onCreated, isVendor }) {
     description: '',
     status: '',
     link_id: '',
+    step_def_id: '',
   })
+  const [linkSteps, setLinkSteps] = useState([])
+
+  // When a link is chosen, offer its protocol steps as the fulfilment tag.
+  // (step_def_id is reset in the link Select's onChange, not here — lint: no sync setState in effects.)
+  useEffect(() => {
+    if (!form.link_id) return
+    const controller = new AbortController()
+    apiFetch(`/api/reviews/requirements?linkId=${encodeURIComponent(form.link_id)}`, { signal: controller.signal })
+      .then(data => setLinkSteps(data?.steps ?? []))
+      .catch(err => { if (err.name !== 'AbortError') setLinkSteps([]) })
+    return () => controller.abort()
+  }, [form.link_id])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -371,6 +384,7 @@ function NewReviewModal({ onClose, onCreated, isVendor }) {
           description: form.description || null,
           status:      form.status      || null,
           link_id:     form.link_id     || null,
+          step_def_id: form.step_def_id || null,
         }),
       })
       toast.success(form.link_id ? 'Cross-org review created' : 'Review created')
@@ -456,12 +470,28 @@ function NewReviewModal({ onClose, onCreated, isVendor }) {
             <Select
               size="lg"
               value={form.link_id}
-              onChange={e => setForm(f => ({ ...f, link_id: e.target.value }))}
+              onChange={e => {
+                setForm(f => ({ ...f, link_id: e.target.value, step_def_id: '' }))
+                setLinkSteps([])
+              }}
             >
               <option value="">No — internal review</option>
               {links.map(l => (
                 <option key={l.id} value={l.id}>{l.studio?.name || l.studio_id}</option>
               ))}
+            </Select>
+          </Field>
+        )}
+
+        {form.link_id && linkSteps.length > 0 && (
+          <Field label="Fulfils requirement (optional)">
+            <Select
+              size="lg"
+              value={form.step_def_id}
+              onChange={e => setForm(f => ({ ...f, step_def_id: e.target.value }))}
+            >
+              <option value="">None — ad-hoc submission</option>
+              {linkSteps.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
             </Select>
           </Field>
         )}

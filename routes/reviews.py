@@ -201,12 +201,36 @@ class ReviewCreate(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
     status: Optional[str] = None
-    link_id: Optional[str] = None  # set → ad-hoc cross-org review on that link
+    link_id: Optional[str] = None  # set → cross-org review on that link
+    step_def_id: Optional[str] = None  # protocol step this submission fulfils (requires link_id)
 
 
 class PromoteRequest(BaseModel):
     link_id: str
     trim: Optional[dict] = None  # {"fields": {...}, "comment_ids": [...], "attachment_ids": [...]}
+    step_def_id: Optional[str] = None  # protocol step this promotion fulfils
+
+
+class StepDefIn(BaseModel):
+    id: Optional[str] = None  # present = update existing; absent = create
+    name: str
+    description: Optional[str] = None
+
+
+class ProtocolCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    steps: list[StepDefIn] = []
+
+
+class ProtocolUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    steps: Optional[list[StepDefIn]] = None  # full ordered list; omitted steps are archived
+
+
+class LinkProtocolRequest(BaseModel):
+    protocol_def_id: Optional[str] = None  # null clears the link's protocol
 
 
 class StatusRequest(BaseModel):
@@ -429,6 +453,354 @@ async def delete_trim_template(
     return {"ok": True}
 
 
+# ── Review protocols (studio-defined required submissions, P2) ────────────────
+# Org-scoped review_workflow_def + ordered review_step_def rows; the link references ONE def as its
+# sanctioned protocol. v1 authoring is studio-side. Literal paths — registered before /{review_id}.
+
+DEFAULT_PROTOCOL = {
+    "name": "Delivery Review",
+    "description": "Default submission sequence for vendor deliveries.",
+    "steps": [
+        {"name": "WIP Review", "description": "Work-in-progress check before final delivery."},
+        {"name": "Final Delivery", "description": "Formal delivery submission for studio sign-off."},
+    ],
+}
+
+
+async def _fetch_protocol_steps(def_ids: list[str]) -> dict:
+    """archived_at-null steps for the given defs, sorted, grouped by workflow_def_id."""
+    if not def_ids:
+        return {}
+    r = await db_client.get(
+        _url("/rest/v1/review_step_def"),
+        params={
+            "select": "id,workflow_def_id,name,description,sort",
+            "workflow_def_id": f"in.({','.join(def_ids)})",
+            "archived_at": "is.null",
+            "order": "sort.asc",
+        },
+        headers=_headers(),
+    )
+    grouped: dict = {}
+    if r.is_success:
+        for s in r.json():
+            grouped.setdefault(s["workflow_def_id"], []).append(s)
+    return grouped
+
+
+@router.get("/protocols")
+async def list_protocols(user: CurrentUser = Depends(get_current_user)):
+    studio_id = _require_studio_id(user)
+    r = await db_client.get(
+        _url("/rest/v1/review_workflow_def"),
+        params={
+            "select": "*",
+            "studio_id": f"eq.{studio_id}",
+            "archived_at": "is.null",
+            "order": "created_at.asc",
+        },
+        headers=_headers(),
+    )
+    if not r.is_success:
+        raise HTTPException(status_code=502, detail="Failed to fetch protocols")
+    defs = r.json()
+    steps = await _fetch_protocol_steps([d["id"] for d in defs])
+    return [{**d, "steps": steps.get(d["id"], [])} for d in defs]
+
+
+async def _insert_steps(def_id: str, steps: list[StepDefIn], start_sort: int = 0) -> None:
+    if not steps:
+        return
+    r = await db_client.post(
+        _url("/rest/v1/review_step_def"),
+        json=[
+            {
+                "workflow_def_id": def_id,
+                "name": s.name,
+                "description": s.description or None,
+                "sort": start_sort + i,
+            }
+            for i, s in enumerate(steps)
+        ],
+        headers=_headers({"Prefer": "return=minimal"}),
+    )
+    if not r.is_success:
+        raise HTTPException(status_code=502, detail="Failed to save protocol steps")
+
+
+@router.post("/protocols")
+async def create_protocol(body: ProtocolCreate, user: CurrentUser = Depends(get_current_user)):
+    studio_id = _require_studio_id(user)
+    if not body.name.strip():
+        raise HTTPException(status_code=422, detail="Protocol name is empty")
+    r = await db_client.post(
+        _url("/rest/v1/review_workflow_def"),
+        json={"studio_id": studio_id, "name": body.name, "description": body.description or None},
+        headers=_headers({"Prefer": "return=representation"}),
+    )
+    if not r.is_success or not r.json():
+        raise HTTPException(status_code=502, detail="Failed to create protocol")
+    d = r.json()[0]
+    await _insert_steps(d["id"], body.steps)
+    steps = await _fetch_protocol_steps([d["id"]])
+    return {**d, "steps": steps.get(d["id"], [])}
+
+
+@router.post("/protocols/seed-default")
+async def seed_default_protocol(user: CurrentUser = Depends(get_current_user)):
+    """Create the prescriptive baseline protocol for this studio (idempotent by name)."""
+    studio_id = _require_studio_id(user)
+    existing = await db_client.get(
+        _url("/rest/v1/review_workflow_def"),
+        params={
+            "select": "id",
+            "studio_id": f"eq.{studio_id}",
+            "name": f"eq.{DEFAULT_PROTOCOL['name']}",
+            "archived_at": "is.null",
+        },
+        headers=_headers(),
+    )
+    if existing.is_success and existing.json():
+        raise HTTPException(status_code=409, detail="Default protocol already exists")
+    return await create_protocol(
+        ProtocolCreate(
+            name=DEFAULT_PROTOCOL["name"],
+            description=DEFAULT_PROTOCOL["description"],
+            steps=[StepDefIn(**s) for s in DEFAULT_PROTOCOL["steps"]],
+        ),
+        user,
+    )
+
+
+@router.patch("/protocols/{protocol_id}")
+async def update_protocol(
+    protocol_id: str, body: ProtocolUpdate, user: CurrentUser = Depends(get_current_user)
+):
+    studio_id = _require_studio_id(user)
+
+    patch: dict = {}
+    if body.name is not None:
+        if not body.name.strip():
+            raise HTTPException(status_code=422, detail="Protocol name is empty")
+        patch["name"] = body.name
+    if body.description is not None:
+        patch["description"] = body.description or None
+    if patch:
+        from datetime import datetime, timezone
+        patch["updated_at"] = datetime.now(timezone.utc).isoformat()
+        r = await db_client.patch(
+            _url("/rest/v1/review_workflow_def"),
+            params={"id": f"eq.{protocol_id}", "studio_id": f"eq.{studio_id}", "archived_at": "is.null"},
+            json=patch,
+            headers=_headers({"Prefer": "return=representation"}),
+        )
+        if not r.is_success or not r.json():
+            raise HTTPException(status_code=404, detail="Protocol not found")
+    else:
+        # Ownership check even when only steps change.
+        r = await db_client.get(
+            _url("/rest/v1/review_workflow_def"),
+            params={"select": "id", "id": f"eq.{protocol_id}", "studio_id": f"eq.{studio_id}", "archived_at": "is.null"},
+            headers=_headers(),
+        )
+        if not r.is_success or not r.json():
+            raise HTTPException(status_code=404, detail="Protocol not found")
+
+    if body.steps is not None:
+        # Replace semantics on the ORDERED list: update kept steps (by id), archive omitted ones,
+        # insert new ones. Steps are archived, never deleted — tagged reviews keep their FK.
+        current = await _fetch_protocol_steps([protocol_id])
+        current_ids = {s["id"] for s in current.get(protocol_id, [])}
+        kept_ids = {s.id for s in body.steps if s.id}
+
+        for sort, s in enumerate(body.steps):
+            if s.id:
+                if s.id not in current_ids:
+                    raise HTTPException(status_code=422, detail="Unknown step id in list")
+                ur = await db_client.patch(
+                    _url("/rest/v1/review_step_def"),
+                    params={"id": f"eq.{s.id}", "workflow_def_id": f"eq.{protocol_id}"},
+                    json={"name": s.name, "description": s.description or None, "sort": sort},
+                    headers=_headers({"Prefer": "return=minimal"}),
+                )
+                if not ur.is_success:
+                    raise HTTPException(status_code=502, detail="Failed to update step")
+        new_steps = [(i, s) for i, s in enumerate(body.steps) if not s.id]
+        for sort, s in new_steps:
+            await _insert_steps(protocol_id, [s], start_sort=sort)
+        to_archive = current_ids - kept_ids
+        if to_archive:
+            from datetime import datetime, timezone
+            ar = await db_client.patch(
+                _url("/rest/v1/review_step_def"),
+                params={"id": f"in.({','.join(to_archive)})", "workflow_def_id": f"eq.{protocol_id}"},
+                json={"archived_at": datetime.now(timezone.utc).isoformat()},
+                headers=_headers({"Prefer": "return=minimal"}),
+            )
+            if not ar.is_success:
+                raise HTTPException(status_code=502, detail="Failed to archive removed steps")
+
+    steps = await _fetch_protocol_steps([protocol_id])
+    return {"id": protocol_id, "steps": steps.get(protocol_id, [])}
+
+
+@router.delete("/protocols/{protocol_id}")
+async def archive_protocol(protocol_id: str, user: CurrentUser = Depends(get_current_user)):
+    studio_id = _require_studio_id(user)
+    links = await db_client.get(
+        _url("/rest/v1/studio_vendor_links"),
+        params={"select": "id", "review_protocol_def_id": f"eq.{protocol_id}", "status": "eq.active", "limit": "1"},
+        headers=_headers(),
+    )
+    if links.is_success and links.json():
+        raise HTTPException(status_code=409, detail="Protocol is assigned to an active link — unassign it first")
+    from datetime import datetime, timezone
+    r = await db_client.patch(
+        _url("/rest/v1/review_workflow_def"),
+        params={"id": f"eq.{protocol_id}", "studio_id": f"eq.{studio_id}", "archived_at": "is.null"},
+        json={"archived_at": datetime.now(timezone.utc).isoformat()},
+        headers=_headers({"Prefer": "return=representation"}),
+    )
+    if not r.is_success or not r.json():
+        raise HTTPException(status_code=404, detail="Protocol not found")
+    return {"ok": True}
+
+
+@router.post("/links/{link_id}/protocol")
+async def set_link_protocol(
+    link_id: str, body: LinkProtocolRequest, user: CurrentUser = Depends(get_current_user)
+):
+    """Assign/clear the link's sanctioned protocol via the review_set_link_protocol DEFINER RPC
+    (links have no user write policy)."""
+    _require_studio_id(user)
+    r = await db_client.post(
+        _url("/rest/v1/rpc/review_set_link_protocol"),
+        json={"p_link_id": link_id, "p_def_id": body.protocol_def_id},
+        headers=_headers(),
+    )
+    if not r.is_success:
+        detail = "Failed to set link protocol"
+        try:
+            detail = r.json().get("message") or detail
+        except Exception:  # noqa: BLE001
+            pass
+        raise HTTPException(status_code=400, detail=detail)
+    return {"ok": True}
+
+
+# ── Requirements checklist (computed; both parties) ───────────────────────────
+
+@router.get("/requirements")
+async def get_requirements(
+    linkId: str = Query(...), user: CurrentUser = Depends(get_current_user)
+):
+    """Per dispatched asset on the link × each protocol step → the latest cross-org review tagged
+    with that step. fulfilled = a tagged review exists; complete = its status is 'Approved'.
+    Computed at read time — no materialized state. Tags outside the link's protocol are ignored."""
+    _resolve_org(user)
+
+    lr = await db_client.get(
+        _url("/rest/v1/studio_vendor_links"),
+        params={
+            "select": "id,studio_id,vendor_id,status,review_protocol_def_id,protocol_acknowledged_at",
+            "id": f"eq.{linkId}",
+        },
+        headers=_headers(),
+    )
+    if not lr.is_success or not lr.json():
+        raise HTTPException(status_code=404, detail="Link not found")
+    link = lr.json()[0]
+
+    if not link["review_protocol_def_id"]:
+        return {"protocol": None, "steps": [], "assets": [], "acknowledged_at": None}
+
+    dr = await db_client.get(
+        _url("/rest/v1/review_workflow_def"),
+        params={"select": "id,name,description", "id": f"eq.{link['review_protocol_def_id']}"},
+        headers=_headers(),
+    )
+    protocol = dr.json()[0] if dr.is_success and dr.json() else None
+    steps_by_def = await _fetch_protocol_steps([link["review_protocol_def_id"]])
+    steps = steps_by_def.get(link["review_protocol_def_id"], [])
+    step_ids = {s["id"] for s in steps}
+
+    # Live-dispatched assets on this link (visible to both parties via pd_sel).
+    pd = await db_client.get(
+        _url("/rest/v1/payload_dispatches"),
+        params={
+            "select": "payload_data",
+            "sender_studio_id": f"eq.{link['studio_id']}",
+            "recipient_vendor_id": f"eq.{link['vendor_id']}",
+            "revoked_at": "is.null",
+        },
+        headers=_headers(),
+    )
+    asset_ids: list[str] = []
+    seen: set = set()
+    if pd.is_success:
+        for dispatch in pd.json():
+            payload = dispatch.get("payload_data") or {}
+            entries = [a.get("asset_global_id") for a in (payload.get("assets") or [])]
+            entries.append(payload.get("asset_global_id"))
+            for aid in entries:
+                if aid and aid not in seen:
+                    seen.add(aid)
+                    asset_ids.append(aid)
+
+    # Tagged cross-org reviews on this link, newest first → first hit per (asset, step) wins.
+    rr = await db_client.get(
+        _url("/rest/v1/asset_reviews"),
+        params={
+            "select": "id,canonical_asset_id,step_def_id,status,created_at",
+            "link_id": f"eq.{linkId}",
+            "scope": "eq.cross_org",
+            "step_def_id": "not.is.null",
+            "order": "created_at.desc",
+        },
+        headers=_headers(),
+    )
+    latest: dict = {}
+    if rr.is_success:
+        for rv in rr.json():
+            if rv["step_def_id"] not in step_ids:
+                continue  # forged/foreign or archived-protocol tag — inert
+            key = (rv["canonical_asset_id"], rv["step_def_id"])
+            latest.setdefault(key, rv)
+
+    if user.role == "studio" and user.studio_id:
+        meta = await _fetch_studio_asset_meta(user.studio_id, asset_ids)
+    elif user.role == "vendor" and user.vendor_id:
+        meta = await _fetch_vendor_asset_meta(user.vendor_id, asset_ids)
+    else:
+        meta = {}
+
+    assets = []
+    for aid in asset_ids:
+        reqs = []
+        for s in steps:
+            rv = latest.get((aid, s["id"]))
+            reqs.append({
+                "step_def_id": s["id"],
+                "step_name": s["name"],
+                "review_id": rv["id"] if rv else None,
+                "review_status": rv["status"] if rv else None,
+                "fulfilled": rv is not None,
+                "complete": bool(rv and rv.get("status") == "Approved"),
+            })
+        assets.append({
+            "canonical_asset_id": aid,
+            "name": (meta.get(aid) or {}).get("name") or aid,
+            "requirements": reqs,
+        })
+
+    return {
+        "protocol": protocol,
+        "steps": steps,
+        "assets": assets,
+        "acknowledged_at": link.get("protocol_acknowledged_at"),
+    }
+
+
 # ── Review CRUD ───────────────────────────────────────────────────────────────
 
 @router.get("")
@@ -503,6 +875,30 @@ async def create_review(body: ReviewCreate, user: CurrentUser = Depends(get_curr
             raise HTTPException(status_code=404, detail="Asset not found")
         studio_id = ca_r.json()[0]["studio_id"]
 
+    # A fulfilment tag on an ad-hoc create must point at a live step of the link's protocol.
+    # (Defense beyond this check: the requirements computation ignores out-of-protocol tags.)
+    if body.step_def_id:
+        if not body.link_id:
+            raise HTTPException(status_code=422, detail="step_def_id requires link_id")
+        lk = await db_client.get(
+            _url("/rest/v1/studio_vendor_links"),
+            params={"select": "review_protocol_def_id", "id": f"eq.{body.link_id}"},
+            headers=_headers(),
+        )
+        proto_id = lk.json()[0]["review_protocol_def_id"] if lk.is_success and lk.json() else None
+        sd = await db_client.get(
+            _url("/rest/v1/review_step_def"),
+            params={
+                "select": "id",
+                "id": f"eq.{body.step_def_id}",
+                "workflow_def_id": f"eq.{proto_id}",
+                "archived_at": "is.null",
+            },
+            headers=_headers(),
+        ) if proto_id else None
+        if not (sd and sd.is_success and sd.json()):
+            raise HTTPException(status_code=422, detail="Step does not belong to this link's review protocol")
+
     r = await db_client.post(
         _url("/rest/v1/asset_reviews"),
         json={
@@ -512,6 +908,7 @@ async def create_review(body: ReviewCreate, user: CurrentUser = Depends(get_curr
             "author_org_id": org_id,
             "scope": "cross_org" if body.link_id else "internal",
             "link_id": body.link_id or None,
+            "step_def_id": body.step_def_id or None,
             "title": body.title or None,
             "description": body.description or None,
             "status": body.status or None,
@@ -634,6 +1031,7 @@ async def promote_review(
             "p_link_id": body.link_id,
             "p_trim": body.trim or {},
             "p_actor_email": user.email,
+            "p_step_def_id": body.step_def_id,
         },
         headers=_headers(),
     )

@@ -19,6 +19,19 @@ export default function PromoteModal({ review, onClose, onPromoted }) {
   const [selAttachments, setSelAttachments] = useState(new Set())
   const [templateName, setTemplateName]     = useState('')
   const [submitting, setSubmitting]         = useState(false)
+  const [steps, setSteps]                   = useState([])  // link protocol steps (fulfilment tag)
+  const [stepDefId, setStepDefId]           = useState('')
+
+  // The link's protocol steps drive the optional "fulfils requirement" tag.
+  // (stepDefId/steps are reset in the link Select's onChange — lint: no sync setState in effects.)
+  useEffect(() => {
+    if (!linkId) return
+    const controller = new AbortController()
+    apiFetch(`/api/reviews/requirements?linkId=${encodeURIComponent(linkId)}`, { signal: controller.signal })
+      .then(data => setSteps(data?.steps ?? []))
+      .catch(err => { if (err.name !== 'AbortError') setSteps([]) })
+    return () => controller.abort()
+  }, [linkId])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -82,6 +95,7 @@ export default function PromoteModal({ review, onClose, onPromoted }) {
         method: 'POST',
         body: JSON.stringify({
           link_id: linkId,
+          step_def_id: stepDefId || null,
           trim: {
             fields,
             comment_ids: [...selComments],
@@ -134,13 +148,26 @@ export default function PromoteModal({ review, onClose, onPromoted }) {
           </p>
 
           <Field label="Studio link *">
-            <Select size="lg" value={linkId} onChange={e => setLinkId(e.target.value)}>
+            <Select
+              size="lg"
+              value={linkId}
+              onChange={e => { setLinkId(e.target.value); setStepDefId(''); setSteps([]) }}
+            >
               <option value="">Select a link…</option>
               {links.map(l => (
                 <option key={l.id} value={l.id}>{l.studio?.name || l.studio_id}</option>
               ))}
             </Select>
           </Field>
+
+          {steps.length > 0 && (
+            <Field label="Fulfils requirement (optional)">
+              <Select size="lg" value={stepDefId} onChange={e => setStepDefId(e.target.value)}>
+                <option value="">None — ad-hoc submission</option>
+                {steps.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+              </Select>
+            </Field>
+          )}
 
           {templates.length > 0 && (
             <Field label="Apply template">
