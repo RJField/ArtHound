@@ -17,9 +17,9 @@ export default function CommentThread({ reviewId, scope = 'internal' }) {
 
   const [comments, setComments]   = useState(null)
   const [draft, setDraft]         = useState('')
-  // On a cross-org review you are commenting on the shared surface — shared is the
-  // expected default; internal is the explicit org-private exception.
-  const [lane, setLane]           = useState(crossOrg ? 'shared' : 'internal')
+  // Default-private everywhere: sharing a comment is always an explicit choice
+  // (lane picker on compose, or the one-way Share action after the fact).
+  const [lane, setLane]           = useState('internal')
   const [posting, setPosting]     = useState(false)
   const [editingId, setEditingId] = useState(null)
   const [editDraft, setEditDraft] = useState('')
@@ -184,8 +184,8 @@ export default function CommentThread({ reviewId, scope = 'internal' }) {
         <div className="flex items-center justify-end gap-2">
           {crossOrg && (
             <Select value={lane} onChange={e => setLane(e.target.value)} aria-label="Comment visibility">
-              <option value="shared">Shared</option>
               <option value="internal">Internal</option>
+              <option value="shared">Shared</option>
             </Select>
           )}
           <Button variant="primary" size="sm" onClick={post} disabled={posting || !draft.trim()}>
