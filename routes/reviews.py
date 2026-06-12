@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from lib.attachments import _storage_api_url, _storage_headers
 from lib.auth import CurrentUser, get_current_user
 from lib.db import db_client, _url, _headers
+from lib.system_auth import system_identity
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -38,6 +39,45 @@ def _require_studio_id(user: CurrentUser) -> str:
     if not user.studio_id:
         raise HTTPException(status_code=403, detail="No studio linked to this account")
     return user.studio_id
+
+
+# ── Event log ─────────────────────────────────────────────────────────────────
+
+async def _log_event(
+    review_id: str,
+    subject_type: str,
+    subject_id: Optional[str],
+    event_type: str,
+    user: CurrentUser,
+    org_type: str,
+    org_id: str,
+    detail: Optional[dict] = None,
+) -> None:
+    """Append to review_events as arthound_system (the table has no user INSERT policy by design).
+    Best-effort: an event-write failure is logged loudly but never fails the action it records."""
+    try:
+        async with system_identity():
+            r = await db_client.post(
+                _url("/rest/v1/review_events"),
+                json={
+                    "review_id": review_id,
+                    "subject_type": subject_type,
+                    "subject_id": subject_id,
+                    "event_type": event_type,
+                    "actor_user_id": user.id,
+                    "actor_org_type": org_type,
+                    "actor_org_id": org_id,
+                    "detail": detail or {},
+                },
+                headers=_headers({"Prefer": "return=minimal"}),
+            )
+            if not r.is_success:
+                log.error(
+                    "review event write failed review=%s type=%s: %s",
+                    review_id, event_type, r.text[:200],
+                )
+    except Exception as exc:
+        log.error("review event write failed review=%s type=%s: %s", review_id, event_type, exc)
 
 
 # ── Meta enrichment ───────────────────────────────────────────────────────────
@@ -159,6 +199,16 @@ class ReviewUpdate(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
     status: Optional[str] = None
+
+
+class CommentCreate(BaseModel):
+    body: str
+    visibility: str = "internal"
+
+
+class CommentUpdate(BaseModel):
+    body: Optional[str] = None
+    visibility: Optional[str] = None  # one-way: internal → shared only
 
 
 # ── Asset picker endpoint ─────────────────────────────────────────────────────
@@ -340,8 +390,20 @@ async def create_review(body: ReviewCreate, user: CurrentUser = Depends(get_curr
     rows = r.json()
     if not rows:
         raise HTTPException(status_code=502, detail="Review created but not returned")
+    review = rows[0]
 
-    enriched = await _enrich([rows[0]], user)
+    # Mirror the primary asset into the m2m junction (multi-asset reads go via review_assets).
+    jr = await db_client.post(
+        _url("/rest/v1/review_assets"),
+        json={"review_id": review["id"], "canonical_asset_id": body.canonical_asset_id},
+        headers=_headers({"Prefer": "return=minimal"}),
+    )
+    if not jr.is_success:
+        log.error("review_assets mirror insert failed review=%s: %s", review["id"], jr.text[:200])
+
+    await _log_event(review["id"], "review", review["id"], "created", user, org_type, org_id)
+
+    enriched = await _enrich([review], user)
     return enriched[0]
 
 
@@ -358,7 +420,7 @@ async def update_review(
     review_id: str, body: ReviewUpdate, user: CurrentUser = Depends(get_current_user)
 ):
     org_type, org_id = _resolve_org(user)
-    await _fetch_review(review_id, org_type, org_id)  # ownership check
+    existing = await _fetch_review(review_id, org_type, org_id)  # ownership check
 
     patch: dict = {}
     if body.title is not None:
@@ -379,6 +441,17 @@ async def update_review(
         )
         if not r.is_success:
             raise HTTPException(status_code=502, detail="Failed to update review")
+
+        if "status" in patch and patch["status"] != existing.get("status"):
+            await _log_event(
+                review_id, "review", review_id, "status_changed", user, org_type, org_id,
+                detail={"from": existing.get("status"), "to": patch["status"]},
+            )
+        else:
+            await _log_event(
+                review_id, "review", review_id, "updated", user, org_type, org_id,
+                detail={"fields": [k for k in patch if k != "updated_at"]},
+            )
     return {"ok": True}
 
 
@@ -401,6 +474,145 @@ async def delete_review(review_id: str, user: CurrentUser = Depends(get_current_
     if not r.json():
         raise HTTPException(status_code=404, detail="Review not found or you are not the creator")
     return {"ok": True}
+
+
+# ── Comment CRUD ──────────────────────────────────────────────────────────────
+# Visibility lanes (P0: internal only in practice — 'shared' requires a cross-org parent, which
+# lands in P1). RLS enforces lane + authorship; the route mirrors those checks for clean errors.
+
+@router.get("/{review_id}/comments")
+async def list_comments(review_id: str, user: CurrentUser = Depends(get_current_user)):
+    org_type, org_id = _resolve_org(user)
+    await _fetch_review(review_id, org_type, org_id)
+
+    r = await db_client.get(
+        _url("/rest/v1/review_comments"),
+        params={"select": "*", "review_id": f"eq.{review_id}", "order": "created_at.asc"},
+        headers=_headers(),
+    )
+    if not r.is_success:
+        raise HTTPException(status_code=502, detail="Failed to fetch comments")
+    return r.json()
+
+
+@router.post("/{review_id}/comments")
+async def create_comment(
+    review_id: str, body: CommentCreate, user: CurrentUser = Depends(get_current_user)
+):
+    org_type, org_id = _resolve_org(user)
+    review = await _fetch_review(review_id, org_type, org_id)
+
+    if not body.body.strip():
+        raise HTTPException(status_code=422, detail="Comment body is empty")
+    if body.visibility not in ("internal", "shared"):
+        raise HTTPException(status_code=422, detail="Invalid visibility")
+    if body.visibility == "shared" and review.get("scope") != "cross_org":
+        raise HTTPException(status_code=400, detail="Shared comments require a cross-org review")
+
+    r = await db_client.post(
+        _url("/rest/v1/review_comments"),
+        json={
+            "review_id": review_id,
+            "author_org_type": org_type,
+            "author_org_id": org_id,
+            "author_user_id": user.id,
+            "author_email": user.email,
+            "body": body.body,
+            "visibility": body.visibility,
+        },
+        headers=_headers({"Prefer": "return=representation"}),
+    )
+    if not r.is_success or not r.json():
+        raise HTTPException(status_code=502, detail="Failed to create comment")
+    comment = r.json()[0]
+
+    await _log_event(review_id, "comment", comment["id"], "comment_added", user, org_type, org_id)
+    return comment
+
+
+@router.patch("/{review_id}/comments/{comment_id}")
+async def update_comment(
+    review_id: str,
+    comment_id: str,
+    body: CommentUpdate,
+    user: CurrentUser = Depends(get_current_user),
+):
+    org_type, org_id = _resolve_org(user)
+    review = await _fetch_review(review_id, org_type, org_id)
+
+    patch: dict = {}
+    if body.body is not None:
+        if not body.body.strip():
+            raise HTTPException(status_code=422, detail="Comment body is empty")
+        patch["body"] = body.body
+    if body.visibility is not None:
+        if body.visibility != "shared":
+            raise HTTPException(status_code=400, detail="Visibility can only move internal → shared")
+        if review.get("scope") != "cross_org":
+            raise HTTPException(status_code=400, detail="Shared comments require a cross-org review")
+        patch["visibility"] = "shared"
+
+    if not patch:
+        return {"ok": True}
+
+    # edited_at / shared_at are stamped by the review_comment_guard trigger.
+    r = await db_client.patch(
+        _url("/rest/v1/review_comments"),
+        params={
+            "id": f"eq.{comment_id}",
+            "review_id": f"eq.{review_id}",
+            "author_user_id": f"eq.{user.id}",
+        },
+        json=patch,
+        headers=_headers({"Prefer": "return=representation"}),
+    )
+    if not r.is_success or not r.json():
+        raise HTTPException(status_code=404, detail="Comment not found or you are not the author")
+    comment = r.json()[0]
+
+    if "visibility" in patch:
+        await _log_event(review_id, "comment", comment_id, "comment_shared", user, org_type, org_id)
+    return comment
+
+
+@router.delete("/{review_id}/comments/{comment_id}")
+async def delete_comment(
+    review_id: str, comment_id: str, user: CurrentUser = Depends(get_current_user)
+):
+    org_type, org_id = _resolve_org(user)
+    await _fetch_review(review_id, org_type, org_id)
+
+    r = await db_client.delete(
+        _url("/rest/v1/review_comments"),
+        params={
+            "id": f"eq.{comment_id}",
+            "review_id": f"eq.{review_id}",
+            "author_user_id": f"eq.{user.id}",
+        },
+        headers=_headers({"Prefer": "return=representation"}),
+    )
+    if not r.is_success:
+        raise HTTPException(status_code=502, detail="Failed to delete comment")
+    if not r.json():
+        raise HTTPException(status_code=404, detail="Comment not found or you are not the author")
+    return {"ok": True}
+
+
+# ── Event history ─────────────────────────────────────────────────────────────
+
+@router.get("/{review_id}/events")
+async def list_events(review_id: str, user: CurrentUser = Depends(get_current_user)):
+    org_type, org_id = _resolve_org(user)
+    await _fetch_review(review_id, org_type, org_id)
+
+    r = await db_client.get(
+        _url("/rest/v1/review_events"),
+        params={"select": "*", "review_id": f"eq.{review_id}", "order": "created_at.asc"},
+        headers=_headers(),
+    )
+    if not r.is_success:
+        raise HTTPException(status_code=502, detail="Failed to fetch events")
+    return r.json()
 
 
 # ── Attachment CRUD ───────────────────────────────────────────────────────────
@@ -460,12 +672,19 @@ async def upload_attachment(
             "content_type": content_type,
             "file_size": len(data),
             "uploaded_by": user.email,
+            "uploaded_by_user_id": user.id,
         },
         headers=_headers({"Prefer": "return=representation"}),
     )
     if not r.is_success or not r.json():
         raise HTTPException(status_code=502, detail="Failed to save attachment record")
-    return r.json()[0]
+    attachment = r.json()[0]
+
+    await _log_event(
+        review_id, "attachment", attachment["id"], "attachment_added", user, org_type, org_id,
+        detail={"filename": attachment.get("filename")},
+    )
+    return attachment
 
 
 @router.get("/{review_id}/attachments/{attachment_id}/content")
@@ -524,7 +743,7 @@ async def delete_attachment(
     r = await db_client.get(
         _url("/rest/v1/review_attachments"),
         params={
-            "select": "id,storage_path,uploaded_by",
+            "select": "id,storage_path,uploaded_by,uploaded_by_user_id",
             "id": f"eq.{attachment_id}",
             "review_id": f"eq.{review_id}",
         },
@@ -534,7 +753,13 @@ async def delete_attachment(
         raise HTTPException(status_code=404, detail="Attachment not found")
 
     att = r.json()[0]
-    if att["uploaded_by"] != user.email:
+    # Spoof-resistant uploader check; email fallback only for legacy rows predating the column.
+    is_uploader = (
+        att.get("uploaded_by_user_id") == user.id
+        if att.get("uploaded_by_user_id")
+        else att["uploaded_by"] == user.email
+    )
+    if not is_uploader:
         raise HTTPException(status_code=403, detail="Only the uploader can delete this attachment")
 
     try:

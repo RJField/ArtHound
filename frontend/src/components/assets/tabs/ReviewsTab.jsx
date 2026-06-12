@@ -5,6 +5,7 @@ import { apiFetch, apiUpload, assetAttachmentUrl, reviewAttachmentUrl } from '..
 import { fmtDate, formatRawFields } from '../../../lib/fields'
 import { Button, EmptyState, Input, SectionLabel, Select, Spinner, StatusDot, Textarea } from '../../ui'
 import AttachmentGallery from '../../media/AttachmentGallery'
+import CommentThread from '../../reviews/CommentThread'
 
 // ── Per-review attachment list ─────────────────────────────────────────────────
 
@@ -218,6 +219,7 @@ function ReviewCard({ review, onDeleted }) {
             <p className="text-muted text-xs whitespace-pre-wrap">{review.description}</p>
           )}
           <ReviewAttachments reviewId={review.id} />
+          <CommentThread reviewId={review.id} />
         </div>
       )}
     </div>

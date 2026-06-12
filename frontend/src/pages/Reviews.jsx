@@ -7,6 +7,7 @@ import {
   Button, Dropdown, EmptyState, Field, Input, KV, Modal,
   SectionLabel, Select, Spinner, StatusDot, Textarea,
 } from '../components/ui'
+import CommentThread from '../components/reviews/CommentThread'
 import ImageViewer from '../components/media/ImageViewer'
 import VideoViewer from '../components/media/VideoViewer'
 import PdfViewer from '../components/media/PdfViewer'
@@ -701,6 +702,8 @@ export default function Reviews() {
               </div>
             </div>
 
+            {/* Comments */}
+            <CommentThread key={selected.id} reviewId={selected.id} />
 
           </div>
         )}
