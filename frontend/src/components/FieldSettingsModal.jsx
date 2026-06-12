@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react'
 import { apiFetch } from '../lib/api'
+import { Modal, Button, Spinner, SectionLabel } from './ui'
 
-export const BUILTIN_FIELDS = [
+const BUILTIN_FIELDS = [
   { key: 'name',        label: 'Name' },
   { key: 'devName',     label: 'Dev Name' },
   { key: 'itemType',    label: 'Item Type' },
@@ -12,7 +13,7 @@ export const BUILTIN_FIELDS = [
   { key: 'assetNumber', label: 'Asset #' },
 ]
 
-export const DEFAULT_BUILTINS = BUILTIN_FIELDS.map(f => f.key)
+const DEFAULT_BUILTINS = BUILTIN_FIELDS.map(f => f.key)
 
 const STORAGE_KEY = 'arthound:assetDetailFields'
 
@@ -21,15 +22,17 @@ const BUILTIN_AIRTABLE_NAMES = new Set([
   'Team (from Product)', 'Priority', 'Milestone 4 [Dates]',
 ])
 
-export function loadFieldSettings() {
+function loadFieldSettings() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (raw) return JSON.parse(raw)
-  } catch (_) {}
+  } catch {
+    /* corrupted settings — fall through to defaults */
+  }
   return null
 }
 
-export function saveFieldSettings(settings) {
+function saveFieldSettings(settings) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(settings))
 }
 
@@ -78,51 +81,51 @@ export default function FieldSettingsModal({ assets, onClose, onSaved }) {
   }
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
-      onClick={e => e.target === e.currentTarget && onClose()}
+    <Modal
+      title="Detail Fields"
+      onClose={onClose}
+      width="max-w-sm"
+      className="max-h-[80vh]"
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button variant="primary" size="lg" onClick={save}>Save</Button>
+        </>
+      }
     >
-      <div className="bg-surface border border-border rounded-xl w-full max-w-sm max-h-[80vh] flex flex-col">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-border shrink-0">
-          <h2 className="text-foreground text-base font-semibold">Detail Fields</h2>
-          <button onClick={onClose} className="text-muted hover:text-foreground text-xl cursor-pointer leading-none">×</button>
-        </div>
+      <div className="flex flex-col gap-5">
+        <section className="flex flex-col gap-2">
+          <SectionLabel>Default Fields</SectionLabel>
+          {BUILTIN_FIELDS.map(f => (
+            <label key={f.key} className="flex items-center gap-2 cursor-pointer border-b border-border-soft pb-2 last:border-b-0 last:pb-0">
+              <input type="checkbox" checked={builtins.has(f.key)} onChange={() => toggleBuiltin(f.key)} className="accent-accent" />
+              <span className="text-foreground text-sm">{f.label}</span>
+            </label>
+          ))}
+        </section>
 
-        <div className="flex-1 overflow-y-auto px-5 py-4 flex flex-col gap-5">
+        {addFields === null && (
+          <div className="flex items-center gap-2 text-faint text-xs">
+            <Spinner size={14} /> Loading fields…
+          </div>
+        )}
+
+        {addFields?.length > 0 && (
           <section className="flex flex-col gap-2">
-            <p className="text-muted text-xs font-medium uppercase tracking-wide">Default Fields</p>
-            {BUILTIN_FIELDS.map(f => (
-              <label key={f.key} className="flex items-center gap-2 cursor-pointer">
-                <input type="checkbox" checked={builtins.has(f.key)} onChange={() => toggleBuiltin(f.key)} className="accent-accent" />
-                <span className="text-foreground text-sm">{f.label}</span>
+            <SectionLabel>Additional Airtable Fields</SectionLabel>
+            {addFields.map(f => (
+              <label key={f.name} className="flex items-center gap-2 cursor-pointer border-b border-border-soft pb-2 last:border-b-0 last:pb-0">
+                <input type="checkbox" checked={extras.has(f.name)} onChange={() => toggleExtra(f.name)} className="accent-accent" />
+                <span className="text-foreground text-sm">{f.name}</span>
               </label>
             ))}
           </section>
+        )}
 
-          {addFields === null && <p className="text-muted text-xs">Loading fields…</p>}
-
-          {addFields?.length > 0 && (
-            <section className="flex flex-col gap-2">
-              <p className="text-muted text-xs font-medium uppercase tracking-wide">Additional Airtable Fields</p>
-              {addFields.map(f => (
-                <label key={f.name} className="flex items-center gap-2 cursor-pointer">
-                  <input type="checkbox" checked={extras.has(f.name)} onChange={() => toggleExtra(f.name)} className="accent-accent" />
-                  <span className="text-foreground text-sm">{f.name}</span>
-                </label>
-              ))}
-            </section>
-          )}
-
-          {addFields?.length === 0 && (
-            <p className="text-muted text-xs">No additional fields found.</p>
-          )}
-        </div>
-
-        <div className="flex justify-end gap-2 px-5 py-4 border-t border-border shrink-0">
-          <button onClick={onClose} className="px-3 py-1.5 rounded-md text-muted text-xs hover:text-foreground cursor-pointer">Cancel</button>
-          <button onClick={save}    className="px-3 py-1.5 rounded-md bg-accent text-white text-xs font-medium hover:bg-accent-hover cursor-pointer">Save</button>
-        </div>
+        {addFields?.length === 0 && (
+          <p className="text-faint text-xs">No additional fields found.</p>
+        )}
       </div>
-    </div>
+    </Modal>
   )
 }

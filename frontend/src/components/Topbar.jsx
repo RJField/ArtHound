@@ -1,8 +1,9 @@
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import { NavLink, useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { apiFetch } from '../lib/api'
 import UserModal from './UserModal'
+import { Button, Pill, Dropdown } from './ui'
 import { cn } from '../lib/utils'
 
 const STUDIO_NAV = [
@@ -28,6 +29,7 @@ export default function Topbar() {
   const [userOpen, setUserOpen]           = useState(false)
   const [syncing, setSyncing]             = useState(false)
   const [syncMsg, setSyncMsg]             = useState(null)
+  const accountToggleRef                  = useRef(() => {})
 
   const nav = role === 'vendor' ? VENDOR_NAV : STUDIO_NAV
 
@@ -63,9 +65,15 @@ export default function Topbar() {
     }
   }
 
+  const menuItemCls = 'w-full text-left px-3 py-1.5 text-xs text-muted hover:text-foreground hover:bg-surface-2 cursor-pointer transition-colors'
+
+  function closeAccountMenu() {
+    accountToggleRef.current()
+  }
+
   return (
     <>
-      <header className="h-12 flex items-center px-4 gap-4 border-b border-border bg-surface shrink-0">
+      <header className="h-11 flex items-center px-4 gap-4 border-b border-border bg-surface shrink-0">
         {/* Logo */}
         <div className="flex items-center gap-2 mr-2">
           <img src="/ArtHound_logo.png" alt="ArtHound" className="w-6 h-6 rounded object-cover" />
@@ -93,39 +101,46 @@ export default function Topbar() {
         {/* Right controls */}
         <div className="flex items-center gap-2">
           {(role === 'studio' || role === 'vendor') && (
-            <button
-              onClick={handleSync}
-              disabled={syncing}
-              className={cn(
-                'px-3 py-1.5 rounded-md text-xs transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed',
-                syncMsg === 'ok'  ? 'text-success' :
-                syncMsg === 'err' ? 'text-error' :
-                'text-muted hover:text-foreground hover:bg-surface-2'
-              )}
-            >
-              {syncing ? 'Syncing…' : syncMsg === 'ok' ? 'Synced ✓' : syncMsg === 'err' ? 'Failed' : 'Sync'}
-            </button>
+            <div className="flex items-center gap-1.5">
+              {syncing && <Pill tone="warning">Syncing…</Pill>}
+              {!syncing && syncMsg === 'ok'  && <Pill tone="success">Synced</Pill>}
+              {!syncing && syncMsg === 'err' && <Pill tone="error">Failed</Pill>}
+              <Button variant="ghost" size="sm" onClick={handleSync} disabled={syncing}>
+                Sync
+              </Button>
+            </div>
           )}
           {isPlatformAdmin && (
-            <button
-              onClick={() => navigate('/admin')}
-              className="px-3 py-1.5 rounded-md text-xs text-muted hover:text-foreground hover:bg-surface-2 transition-colors cursor-pointer"
-            >
+            <Button variant="ghost" size="sm" onClick={() => navigate('/admin')}>
               Platform Admin
-            </button>
+            </Button>
           )}
-          <button
-            onClick={() => setUserOpen(true)}
-            className="px-3 py-1.5 rounded-md text-xs text-muted hover:text-foreground hover:bg-surface-2 transition-colors cursor-pointer"
+          <Dropdown
+            width="w-44"
+            trigger={({ toggle }) => {
+              accountToggleRef.current = toggle
+              return (
+                <Button variant="ghost" size="sm" onClick={toggle}>
+                  Account
+                </Button>
+              )
+            }}
           >
-            Account
-          </button>
-          <button
-            onClick={signOut}
-            className="px-3 py-1.5 rounded-md text-xs text-muted hover:text-error transition-colors cursor-pointer"
-          >
-            Sign out
-          </button>
+            <button
+              type="button"
+              className={menuItemCls}
+              onClick={() => { closeAccountMenu(); setUserOpen(true) }}
+            >
+              Account settings
+            </button>
+            <button
+              type="button"
+              className={cn(menuItemCls, 'hover:text-error')}
+              onClick={() => { closeAccountMenu(); signOut() }}
+            >
+              Sign out
+            </button>
+          </Dropdown>
         </div>
       </header>
 

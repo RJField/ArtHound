@@ -1,8 +1,9 @@
-import { useState, useEffect, useRef, useLayoutEffect, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { toast } from 'sonner'
 import { apiFetch } from '../lib/api'
 import { cn } from '../lib/utils'
 import EstimateWizardModal from '../components/EstimateWizardModal'
+import { Button, Spinner } from '../components/ui'
 import { useAuth } from '../contexts/AuthContext'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -70,9 +71,9 @@ function MatrixCell({ stepId, colName, variableFields, initialValue }) {
         onKeyDown={handleKeyDown}
         disabled={saving}
         className={cn(
-          'w-14 text-center text-xs bg-transparent rounded px-1 py-1.5 outline-none',
+          'w-14 text-center text-xs bg-transparent rounded-md px-1 py-1.5 outline-none',
           'border border-transparent hover:border-border focus:border-accent',
-          'text-foreground placeholder:text-muted [appearance:textfield]',
+          'text-foreground placeholder:text-faint [appearance:textfield]',
           '[&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none',
           saving && 'opacity-40 cursor-wait',
         )}
@@ -84,9 +85,9 @@ function MatrixCell({ stepId, colName, variableFields, initialValue }) {
 // ── Matrix Table ──────────────────────────────────────────────────────────────
 
 function renderTags(arr) {
-  if (!arr?.length) return <span className="text-muted text-xs">—</span>
+  if (!arr?.length) return <span className="text-faint text-xs">—</span>
   return arr.map((v, i) => (
-    <span key={i} className="inline-block text-xs bg-surface-2 border border-border text-foreground px-1.5 py-0.5 rounded mr-0.5 mb-0.5">{v}</span>
+    <span key={i} className="inline-block text-xs bg-surface-2 border border-border-soft text-foreground px-1.5 py-0.5 rounded-md mr-0.5 mb-0.5">{v}</span>
   ))
 }
 
@@ -130,7 +131,7 @@ function MatrixTable({ reloadKey }) {
     return () => cancelAnimationFrame(raf)
   }, [data])
 
-  if (loading) return <p className="text-muted text-sm py-4">Loading…</p>
+  if (loading) return <div className="flex items-center gap-2 text-muted text-sm py-4"><Spinner size={14} /> Loading…</div>
   if (error)   return <p className="text-error text-sm py-4">{error}</p>
   if (!data)   return null
 
@@ -160,7 +161,7 @@ function MatrixTable({ reloadKey }) {
   }
   const hasGroups = groupSpans.length > 1
 
-  const fixedCls = 'mat-fixed sticky bg-surface z-10 border-r border-border/40'
+  const fixedCls = 'mat-fixed sticky bg-surface z-10 border-r border-border-soft'
 
   return (
     <div className="overflow-x-auto rounded-lg border border-border">
@@ -169,19 +170,19 @@ function MatrixTable({ reloadKey }) {
           {hasGroups ? (
             <>
               <tr className="border-b border-border bg-surface-2">
-                <th className={cn(fixedCls, 'text-left font-normal text-muted py-2 px-2 w-8')} rowSpan={2}>#</th>
-                <th className={cn(fixedCls, 'text-left font-normal text-muted py-2 px-3 min-w-36')} rowSpan={2}>Task</th>
+                <th className={cn(fixedCls, 'text-left font-normal text-faint py-2 px-2 w-8')} rowSpan={2}>#</th>
+                <th className={cn(fixedCls, 'text-left font-normal text-faint py-2 px-3 min-w-36')} rowSpan={2}>Task</th>
                 {attributeFields.map(f => (
-                  <th key={f} className={cn(fixedCls, 'text-left font-normal text-muted py-2 px-3')} rowSpan={2}>{f}</th>
+                  <th key={f} className={cn(fixedCls, 'text-left font-normal text-faint py-2 px-3')} rowSpan={2}>{f}</th>
                 ))}
-                <th className={cn(fixedCls, 'text-left font-normal text-muted py-2 px-3 min-w-24')} rowSpan={2}>Depends On</th>
+                <th className={cn(fixedCls, 'text-left font-normal text-faint py-2 px-3 min-w-24')} rowSpan={2}>Depends On</th>
                 {groupSpans.map((g, i) => (
-                  <th key={i} colSpan={g.span} className="text-center font-medium text-foreground py-2 px-3 border-b border-border/60">{g.label}</th>
+                  <th key={i} colSpan={g.span} className="text-center font-medium text-foreground py-2 px-3 border-b border-border-soft">{g.label}</th>
                 ))}
               </tr>
               <tr className="border-b border-border bg-surface-2">
                 {combinations.map(c => (
-                  <th key={c.colName} className="text-left font-normal text-muted py-1.5 px-3 whitespace-nowrap">
+                  <th key={c.colName} className="text-left font-normal text-faint py-1.5 px-3 whitespace-nowrap">
                     {c.key.split('|').slice(1).join(' | ')}
                   </th>
                 ))}
@@ -189,22 +190,22 @@ function MatrixTable({ reloadKey }) {
             </>
           ) : (
             <tr className="border-b border-border bg-surface-2">
-              <th className={cn(fixedCls, 'text-left font-normal text-muted py-2 px-2 w-8')}>#</th>
-              <th className={cn(fixedCls, 'text-left font-normal text-muted py-2 px-3 min-w-36')}>Task</th>
+              <th className={cn(fixedCls, 'text-left font-normal text-faint py-2 px-2 w-8')}>#</th>
+              <th className={cn(fixedCls, 'text-left font-normal text-faint py-2 px-3 min-w-36')}>Task</th>
               {attributeFields.map(f => (
-                <th key={f} className={cn(fixedCls, 'text-left font-normal text-muted py-2 px-3')}>{f}</th>
+                <th key={f} className={cn(fixedCls, 'text-left font-normal text-faint py-2 px-3')}>{f}</th>
               ))}
-              <th className={cn(fixedCls, 'text-left font-normal text-muted py-2 px-3 min-w-24')}>Depends On</th>
+              <th className={cn(fixedCls, 'text-left font-normal text-faint py-2 px-3 min-w-24')}>Depends On</th>
               {combinations.map(c => (
-                <th key={c.colName} className="text-left font-normal text-muted py-2 px-3 whitespace-nowrap" title={c.key}>{c.label}</th>
+                <th key={c.colName} className="text-left font-normal text-faint py-2 px-3 whitespace-nowrap" title={c.key}>{c.label}</th>
               ))}
             </tr>
           )}
         </thead>
         <tbody>
           {work.map(t => (
-            <tr key={t.name} className="border-b border-border/30 hover:bg-surface-2/40">
-              <td className={cn(fixedCls, 'py-1.5 px-2 text-muted text-center')}>{t.step}</td>
+            <tr key={t.name} className="border-b border-border-faint hover:bg-surface-2">
+              <td className={cn(fixedCls, 'py-1.5 px-2 text-muted text-center tabular-nums')}>{t.step}</td>
               <td className={cn(fixedCls, 'py-1.5 px-3 text-foreground font-medium')}>{t.name}</td>
               {attributeFields.map(f => (
                 <td key={f} className={cn(fixedCls, 'py-1.5 px-3')}>{renderTags((t.linkedValues || {})[f])}</td>
@@ -268,27 +269,18 @@ export default function Estimates() {
     }
   }
 
-  const btn = 'px-3 py-1.5 rounded-md text-xs font-medium cursor-pointer border transition-colors'
-
   return (
     <main className="flex-1 flex flex-col p-4 gap-4 overflow-hidden">
       {/* Toolbar */}
       <div className="flex items-center gap-2 flex-wrap shrink-0">
         <h1 className="text-foreground text-sm font-semibold mr-2">Estimates</h1>
-        <button
-          onClick={handleSetupClick}
-          className={cn(btn, 'border-accent text-accent hover:bg-accent/10')}
-        >
+        <Button variant="primary" onClick={handleSetupClick}>
           Setup
-        </button>
+        </Button>
         {isAdmin && (
-          <button
-            onClick={handleRandomize}
-            disabled={randomizing}
-            className={cn(btn, 'border-border text-muted hover:text-foreground hover:border-foreground/40 disabled:opacity-40 disabled:cursor-wait')}
-          >
+          <Button onClick={handleRandomize} disabled={randomizing}>
             {randomizing ? 'Randomizing…' : 'Randomize'}
-          </button>
+          </Button>
         )}
       </div>
 

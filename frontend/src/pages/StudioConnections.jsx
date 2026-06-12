@@ -1,10 +1,13 @@
 import { useState, useEffect, useCallback } from 'react'
 import { toast } from 'sonner'
+import { Building2 } from 'lucide-react'
 import { apiFetch } from '../lib/api'
-import { cn } from '../lib/utils'
 import ShareEstimatesModal from '../components/ShareEstimatesModal'
 import EstimateSnapshotView, { GRANULARITY_LABELS } from '../components/EstimateSnapshotView'
 import PageContainer from '../components/PageContainer'
+import {
+  Button, Select, Modal, Pill, Card, PageHeader, SectionLabel, EmptyState, Spinner,
+} from '../components/ui'
 
 const REVIEW_MODE_LABELS = {
   none:          'Simple delivery',
@@ -13,7 +16,16 @@ const REVIEW_MODE_LABELS = {
 }
 
 function Dot() {
-  return <span className="text-border">·</span>
+  return <span className="text-faint">·</span>
+}
+
+function SectionHeader({ title, count }) {
+  return (
+    <SectionLabel>
+      {title}
+      {count != null && <span className="text-faint tabular-nums"> ({count})</span>}
+    </SectionLabel>
+  )
 }
 
 // ── Invite preview + accept/reject + mapping setup ────────────────────────────
@@ -117,159 +129,155 @@ function AcceptInvitePanel({ invite, onAccepted, onRejected, onClose }) {
 
   const noSourceSetup = mappingData && !mappingData.source_type
 
+  const title =
+    step === 'preview' ? 'Connection invite'
+    : step === 'mapping' ? 'Set up field mapping'
+    : 'Connected'
+
+  let footer = null
+  if (step === 'preview' && !loadingPreview && preview) {
+    footer = (
+      <>
+        <Button variant="ghost" onClick={reject} disabled={!!acting}>
+          {acting === 'reject' ? 'Declining…' : 'Decline'}
+        </Button>
+        <Button variant="primary" size="lg" onClick={accept} disabled={!!acting}>
+          {acting === 'accept' ? 'Connecting…' : 'Accept & Connect'}
+        </Button>
+      </>
+    )
+  } else if (step === 'mapping' && !loadingMapping) {
+    footer = noSourceSetup ? (
+      <Button variant="primary" size="lg" onClick={skipMapping}>Continue</Button>
+    ) : (
+      <>
+        <Button variant="ghost" onClick={skipMapping} disabled={savingMapping}>
+          Skip for now
+        </Button>
+        <Button variant="primary" size="lg" onClick={saveMapping} disabled={savingMapping}>
+          {savingMapping ? 'Saving…' : 'Save mapping'}
+        </Button>
+      </>
+    )
+  } else if (step === 'done') {
+    footer = (
+      <Button variant="primary" size="lg" onClick={() => { onAccepted() }}>
+        Done
+      </Button>
+    )
+  }
+
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
-      onClick={e => e.target === e.currentTarget && step !== 'mapping' && onClose()}
+    <Modal
+      title={title}
+      onClose={step !== 'mapping' ? onClose : undefined}
+      width="max-w-md"
+      footer={footer}
     >
-      <div className="bg-surface border border-border rounded-xl w-full max-w-md flex flex-col max-h-[90vh]">
-        <div className="flex items-center justify-between px-5 pt-5 pb-0 shrink-0">
-          <h2 className="text-foreground text-base font-semibold">
-            {step === 'preview' && 'Connection invite'}
-            {step === 'mapping' && 'Set up field mapping'}
-            {step === 'done'    && 'Connected'}
-          </h2>
-          {step !== 'mapping' && (
-            <button onClick={onClose} className="text-muted hover:text-foreground text-xl cursor-pointer leading-none">×</button>
-          )}
-        </div>
+      <div className="flex flex-col gap-4">
 
-        <div className="px-5 pt-4 pb-5 flex flex-col gap-4 overflow-y-auto">
-
-          {/* ── Step 1: Preview ── */}
-          {step === 'preview' && (
-            loadingPreview ? (
-              <p className="text-muted text-sm">Loading invite details…</p>
-            ) : preview ? (
-              <>
-                <div className="px-3 py-2.5 rounded-lg bg-surface-2 border border-border">
-                  <div className="text-foreground text-sm font-medium">{preview.studio_name}</div>
-                  <div className="text-muted text-xs mt-0.5">
-                    {REVIEW_MODE_LABELS[preview.review_collaboration_mode] ?? preview.review_collaboration_mode}
-                  </div>
-                </div>
-
-                {preview.payload_templates?.length > 0 ? (
-                  <div className="flex flex-col gap-1.5">
-                    <p className="text-muted text-xs">Payload templates you'll receive:</p>
-                    <div className="flex flex-col gap-1">
-                      {preview.payload_templates.map(t => (
-                        <div key={t.id} className="flex items-center justify-between px-3 py-2 rounded-lg bg-surface-2 border border-border">
-                          <span className="text-foreground text-xs font-medium">{t.name}</span>
-                          <span className="text-muted text-xs">{t.field_schema?.length ?? 0} fields</span>
-                        </div>
-                      ))}
-                    </div>
-                    <p className="text-muted text-xs mt-1">
-                      After accepting you'll map these fields to your source tool.
-                    </p>
-                  </div>
-                ) : (
-                  <p className="text-muted text-xs">This studio hasn't defined payload templates yet.</p>
-                )}
-
-                <div className="flex justify-end gap-2">
-                  <button onClick={reject} disabled={!!acting} className="px-3 py-1.5 rounded-md text-muted text-xs hover:text-foreground cursor-pointer disabled:opacity-40">
-                    {acting === 'reject' ? 'Declining…' : 'Decline'}
-                  </button>
-                  <button onClick={accept} disabled={!!acting} className="px-3 py-1.5 rounded-md bg-accent text-white text-xs font-medium hover:bg-accent-hover cursor-pointer disabled:opacity-40">
-                    {acting === 'accept' ? 'Connecting…' : 'Accept & Connect'}
-                  </button>
-                </div>
-              </>
-            ) : (
-              <p className="text-muted text-sm">Could not load invite details.</p>
-            )
-          )}
-
-          {/* ── Step 2: Mapping ── */}
-          {step === 'mapping' && (
-            loadingMapping ? (
-              <p className="text-muted text-sm">Loading your source schema…</p>
-            ) : noSourceSetup ? (
-              <>
-                <p className="text-muted text-sm">
-                  Your source tool isn't connected yet. You can set up your field mapping later from the Studios page once your source is configured.
-                </p>
-                <div className="flex justify-end">
-                  <button onClick={skipMapping} className="px-3 py-1.5 rounded-md bg-accent text-white text-xs font-medium hover:bg-accent-hover cursor-pointer">
-                    Continue
-                  </button>
-                </div>
-              </>
-            ) : (
-              <>
-                <p className="text-muted text-xs">
-                  Map each payload field from <span className="text-foreground">{preview?.studio_name}</span> to a field in your source tool. You can update this at any time.
-                </p>
-
-                {mappingData?.payload_fields?.length > 0 ? (
-                  <div className="flex flex-col gap-0 border border-border rounded-lg overflow-hidden">
-                    <div className="grid px-3 py-2 bg-surface-2 border-b border-border" style={{ gridTemplateColumns: '1fr 1fr' }}>
-                      <span className="text-muted text-xs">Payload field</span>
-                      <span className="text-muted text-xs">Your source field</span>
-                    </div>
-                    <div className="flex flex-col divide-y divide-border max-h-64 overflow-y-auto">
-                      {mappingData.payload_fields.map(pf => (
-                        <div key={pf.key} className="grid items-center gap-3 px-3 py-2" style={{ gridTemplateColumns: '1fr 1fr' }}>
-                          <span className="text-foreground text-xs font-medium truncate">{pf.label}</span>
-                          <select
-                            value={fieldMappings[pf.key] ?? ''}
-                            onChange={e => setFieldMappings(prev => ({ ...prev, [pf.key]: e.target.value }))}
-                            className="w-full px-2 py-1.5 rounded-md border border-border bg-surface text-foreground text-xs focus:outline-none focus:border-accent"
-                          >
-                            <option value="">— skip —</option>
-                            {sourceFields.map(sf => (
-                              <option key={sf.id} value={sf.id}>{sf.name}</option>
-                            ))}
-                          </select>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ) : (
-                  <p className="text-muted text-xs">No fields to map yet.</p>
-                )}
-
-                <div className="flex justify-end gap-2">
-                  <button onClick={skipMapping} disabled={savingMapping} className="px-3 py-1.5 rounded-md text-muted text-xs hover:text-foreground cursor-pointer disabled:opacity-40">
-                    Skip for now
-                  </button>
-                  <button onClick={saveMapping} disabled={savingMapping} className="px-3 py-1.5 rounded-md bg-accent text-white text-xs font-medium hover:bg-accent-hover cursor-pointer disabled:opacity-40">
-                    {savingMapping ? 'Saving…' : 'Save mapping'}
-                  </button>
-                </div>
-              </>
-            )
-          )}
-
-          {/* ── Step 3: Done ── */}
-          {step === 'done' && (
+        {/* ── Step 1: Preview ── */}
+        {step === 'preview' && (
+          loadingPreview ? (
+            <div className="flex items-center gap-2 text-muted text-sm">
+              <Spinner size={14} /> Loading invite details…
+            </div>
+          ) : preview ? (
             <>
-              <p className="text-muted text-sm">
-                You're now connected to <span className="text-foreground font-medium">{preview?.studio_name}</span>.
-                Dispatches from this studio will appear in your inbox.
-              </p>
-              <div className="flex justify-end">
-                <button
-                  onClick={() => { onAccepted() }}
-                  className="px-3 py-1.5 rounded-md bg-accent text-white text-xs font-medium hover:bg-accent-hover cursor-pointer"
-                >
-                  Done
-                </button>
+              <div className="px-3 py-2.5 rounded-lg bg-surface-2 border border-border-soft">
+                <div className="text-foreground text-sm font-medium">{preview.studio_name}</div>
+                <div className="text-muted text-xs mt-0.5">
+                  {REVIEW_MODE_LABELS[preview.review_collaboration_mode] ?? preview.review_collaboration_mode}
+                </div>
               </div>
-            </>
-          )}
 
-        </div>
+              {preview.payload_templates?.length > 0 ? (
+                <div className="flex flex-col gap-1.5">
+                  <p className="text-faint text-xs">Payload templates you'll receive:</p>
+                  <div className="flex flex-col gap-1">
+                    {preview.payload_templates.map(t => (
+                      <div key={t.id} className="flex items-center justify-between px-3 py-2 rounded-lg bg-surface-2 border border-border-soft">
+                        <span className="text-foreground text-xs font-medium">{t.name}</span>
+                        <span className="text-muted text-xs">{t.field_schema?.length ?? 0} fields</span>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="text-faint text-xs mt-1">
+                    After accepting you'll map these fields to your source tool.
+                  </p>
+                </div>
+              ) : (
+                <p className="text-muted text-xs">This studio hasn't defined payload templates yet.</p>
+              )}
+            </>
+          ) : (
+            <p className="text-muted text-sm">Could not load invite details.</p>
+          )
+        )}
+
+        {/* ── Step 2: Mapping ── */}
+        {step === 'mapping' && (
+          loadingMapping ? (
+            <div className="flex items-center gap-2 text-muted text-sm">
+              <Spinner size={14} /> Loading your source schema…
+            </div>
+          ) : noSourceSetup ? (
+            <p className="text-muted text-sm">
+              Your source tool isn't connected yet. You can set up your field mapping later from the Studios page once your source is configured.
+            </p>
+          ) : (
+            <>
+              <p className="text-muted text-xs">
+                Map each payload field from <span className="text-foreground">{preview?.studio_name}</span> to a field in your source tool. You can update this at any time.
+              </p>
+
+              {mappingData?.payload_fields?.length > 0 ? (
+                <div className="flex flex-col gap-0 border border-border rounded-lg overflow-hidden">
+                  <div className="grid px-3 py-2 bg-surface-2 border-b border-border-soft" style={{ gridTemplateColumns: '1fr 1fr' }}>
+                    <span className="text-faint text-xs">Payload field</span>
+                    <span className="text-faint text-xs">Your source field</span>
+                  </div>
+                  <div className="flex flex-col divide-y divide-border-soft max-h-64 overflow-y-auto">
+                    {mappingData.payload_fields.map(pf => (
+                      <div key={pf.key} className="grid items-center gap-3 px-3 py-2" style={{ gridTemplateColumns: '1fr 1fr' }}>
+                        <span className="text-foreground text-xs font-medium truncate">{pf.label}</span>
+                        <Select
+                          value={fieldMappings[pf.key] ?? ''}
+                          onChange={e => setFieldMappings(prev => ({ ...prev, [pf.key]: e.target.value }))}
+                          className="w-full"
+                        >
+                          <option value="">— skip —</option>
+                          {sourceFields.map(sf => (
+                            <option key={sf.id} value={sf.id}>{sf.name}</option>
+                          ))}
+                        </Select>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <p className="text-muted text-xs">No fields to map yet.</p>
+              )}
+            </>
+          )
+        )}
+
+        {/* ── Step 3: Done ── */}
+        {step === 'done' && (
+          <p className="text-muted text-sm">
+            You're now connected to <span className="text-foreground font-medium">{preview?.studio_name}</span>.
+            Dispatches from this studio will appear in your inbox.
+          </p>
+        )}
+
       </div>
-    </div>
+    </Modal>
   )
 }
 
 // ── Cancel confirmation ───────────────────────────────────────────────────────
 
-function CancelLinkModal({ link, studioName, onConfirm, onClose }) {
+function CancelLinkModal({ studioName, onConfirm, onClose }) {
   const [cancelling, setCancelling] = useState(false)
 
   async function confirm() {
@@ -282,34 +290,25 @@ function CancelLinkModal({ link, studioName, onConfirm, onClose }) {
   }
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
-      onClick={e => e.target === e.currentTarget && onClose()}
-    >
-      <div className="bg-surface border border-border rounded-xl w-full max-w-sm flex flex-col gap-4 p-5">
-        <h2 className="text-foreground text-base font-semibold">Cancel connection?</h2>
-        <p className="text-muted text-sm">
-          This will disconnect you from{' '}
-          <span className="text-foreground font-medium">{studioName}</span>. All active dispatches
-          from this studio will be revoked. A new invite will be required to reconnect.
-        </p>
-        <div className="flex justify-end gap-2">
-          <button
-            onClick={onClose}
-            className="px-3 py-1.5 rounded-md text-muted text-xs hover:text-foreground cursor-pointer"
-          >
-            Keep connection
-          </button>
-          <button
-            onClick={confirm}
-            disabled={cancelling}
-            className="px-3 py-1.5 rounded-md bg-error text-white text-xs font-medium hover:bg-error/80 cursor-pointer disabled:opacity-40"
-          >
+    <Modal
+      title="Cancel connection?"
+      onClose={onClose}
+      width="max-w-sm"
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>Keep connection</Button>
+          <Button variant="danger" size="lg" onClick={confirm} disabled={cancelling}>
             {cancelling ? 'Cancelling…' : 'Cancel connection'}
-          </button>
-        </div>
-      </div>
-    </div>
+          </Button>
+        </>
+      }
+    >
+      <p className="text-muted text-sm">
+        This will disconnect you from{' '}
+        <span className="text-foreground font-medium">{studioName}</span>. All active dispatches
+        from this studio will be revoked. A new invite will be required to reconnect.
+      </p>
+    </Modal>
   )
 }
 
@@ -363,7 +362,7 @@ export default function StudioConnections() {
     }
   }, [])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => { load() }, [load]) // eslint-disable-line react-hooks/set-state-in-effect
 
   async function cancelLink() {
     const { link } = cancelTarget
@@ -391,22 +390,28 @@ export default function StudioConnections() {
   }
 
   return (
-    <PageContainer width="sm" className="p-6 gap-6">
-      <h1 className="text-foreground text-lg font-semibold">Studio Connections</h1>
+    <PageContainer width="lg" className="p-6 gap-6">
+      <PageHeader
+        title="Studio Connections"
+        subtitle="Studios you work with — incoming invites, active links, and shared estimates."
+      />
 
-      {loading && <p className="text-muted text-sm">Loading…</p>}
+      {loading && (
+        <div className="flex items-center gap-2 text-muted text-sm">
+          <Spinner /> Loading…
+        </div>
+      )}
 
       {/* Pending invites */}
       {!loading && invites.length > 0 && (
         <section className="flex flex-col gap-3">
-          <h2 className="text-muted text-xs font-medium uppercase tracking-wider">
-            Pending invites ({invites.length})
-          </h2>
+          <SectionHeader title="Pending invites" count={invites.length} />
           <div className="flex flex-col gap-2">
             {invites.map(inv => (
-              <div
+              <Card
                 key={inv.id}
-                className="flex items-center justify-between gap-4 px-4 py-3 rounded-lg border border-accent/30 bg-accent/5"
+                pad={false}
+                className="flex items-center justify-between gap-4 px-4 py-3 border-accent/30 bg-accent-tint"
               >
                 <div className="flex flex-col gap-0.5 min-w-0">
                   <span className="text-foreground text-sm font-medium truncate">{inv.studio_name}</span>
@@ -416,13 +421,14 @@ export default function StudioConnections() {
                     <span>Expires {new Date(inv.expires_at).toLocaleDateString()}</span>
                   </div>
                 </div>
-                <button
+                <Button
+                  variant="primary"
+                  className="shrink-0"
                   onClick={() => setPreviewInvite(inv)}
-                  className="px-3 py-1.5 rounded-md bg-accent text-white text-xs font-medium hover:bg-accent-hover transition-colors cursor-pointer shrink-0"
                 >
                   Review invite
-                </button>
-              </div>
+                </Button>
+              </Card>
             ))}
           </div>
         </section>
@@ -431,12 +437,15 @@ export default function StudioConnections() {
       {/* Active connections */}
       {!loading && (
         <section className="flex flex-col gap-3">
-          <h2 className="text-muted text-xs font-medium uppercase tracking-wider">
-            Active connections ({links.length})
-          </h2>
+          <SectionHeader title="Active connections" count={links.length} />
 
           {links.length === 0 && invites.length === 0 && (
-            <p className="text-muted text-sm">No studio connections yet. Ask a studio to invite you by your handle.</p>
+            <EmptyState
+              icon={Building2}
+              title="No studio connections yet"
+              hint="Ask a studio to invite you by your handle."
+              className="py-6"
+            />
           )}
 
           {links.length === 0 && invites.length > 0 && (
@@ -451,10 +460,7 @@ export default function StudioConnections() {
                 const tpl        = templates[link.studio_id]
                 const tplKnown   = link.studio_id in templates
                 return (
-                  <div
-                    key={link.id}
-                    className="flex items-center justify-between gap-4 px-4 py-3 rounded-lg border border-border bg-surface"
-                  >
+                  <Card key={link.id} pad={false} className="flex items-center justify-between gap-4 px-4 py-3">
                     <div className="flex flex-col gap-0.5 min-w-0">
                       <span className="text-foreground text-sm font-medium truncate">{studioName}</span>
                       <div className="flex items-center gap-2 text-xs text-muted">
@@ -465,28 +471,29 @@ export default function StudioConnections() {
                           <>
                             <Dot />
                             {tpl
-                              ? <span className="text-accent">Template saved</span>
-                              : <span>No mapping yet</span>
+                              ? <Pill tone="accent">Template saved</Pill>
+                              : <Pill tone="neutral">No mapping yet</Pill>
                             }
                           </>
                         )}
                       </div>
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
-                      <button
+                      <Button
+                        size="sm"
                         onClick={() => setShareTarget({ link_id: link.id, studio_name: studioName })}
-                        className="px-3 py-1 rounded-md bg-accent/10 text-accent text-xs hover:bg-accent/20 transition-colors cursor-pointer"
                       >
                         Share estimates
-                      </button>
-                      <button
+                      </Button>
+                      <Button
+                        variant="danger"
+                        size="sm"
                         onClick={() => setCancelTarget({ link, studioName })}
-                        className="px-3 py-1 rounded-md bg-error/10 text-error text-xs hover:bg-error/20 transition-colors cursor-pointer"
                       >
                         Cancel
-                      </button>
+                      </Button>
                     </div>
-                  </div>
+                  </Card>
                 )
               })}
             </div>
@@ -497,18 +504,13 @@ export default function StudioConnections() {
       {/* Shared estimates (outbox) */}
       {!loading && outbox.length > 0 && (
         <section className="flex flex-col gap-3">
-          <h2 className="text-muted text-xs font-medium uppercase tracking-wider">
-            Shared estimates ({outbox.length})
-          </h2>
+          <SectionHeader title="Shared estimates" count={outbox.length} />
           <div className="flex flex-col gap-2">
             {outbox.map(share => {
               const expanded = expandedShare === share.dispatch_id
               const revoked  = !!share.revoked_at
               return (
-                <div
-                  key={share.dispatch_id}
-                  className="flex flex-col rounded-lg border border-border bg-surface"
-                >
+                <Card key={share.dispatch_id} pad={false} className="flex flex-col">
                   <div className="flex items-center justify-between gap-4 px-4 py-3">
                     <div className="flex flex-col gap-0.5 min-w-0">
                       <div className="flex items-center gap-2">
@@ -523,7 +525,7 @@ export default function StudioConnections() {
                         <span>Shared {new Date(share.created_at).toLocaleDateString()}</span>
                         <Dot />
                         {revoked
-                          ? <span className="text-error">Revoked</span>
+                          ? <Pill tone="error">Revoked</Pill>
                           : share.expires_at
                             ? <span>Expires {new Date(share.expires_at).toLocaleDateString()}</span>
                             : <span>No expiry</span>
@@ -531,29 +533,27 @@ export default function StudioConnections() {
                       </div>
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
-                      <button
-                        onClick={() => setExpandedShare(expanded ? null : share.dispatch_id)}
-                        className="px-3 py-1 rounded-md bg-surface-2 text-foreground text-xs hover:bg-surface border border-border transition-colors cursor-pointer"
-                      >
+                      <Button size="sm" onClick={() => setExpandedShare(expanded ? null : share.dispatch_id)}>
                         {expanded ? 'Hide' : 'View'}
-                      </button>
+                      </Button>
                       {!revoked && (
-                        <button
+                        <Button
+                          variant="danger"
+                          size="sm"
                           onClick={() => revokeShare(share.dispatch_id)}
                           disabled={revoking === share.dispatch_id}
-                          className="px-3 py-1 rounded-md bg-error/10 text-error text-xs hover:bg-error/20 transition-colors cursor-pointer disabled:opacity-40"
                         >
                           {revoking === share.dispatch_id ? '…' : 'Revoke'}
-                        </button>
+                        </Button>
                       )}
                     </div>
                   </div>
                   {expanded && (
-                    <div className="px-4 pb-4 pt-1 border-t border-border">
+                    <div className="px-4 pb-4 pt-1 border-t border-border-soft">
                       <EstimateSnapshotView snapshot={share.snapshot} />
                     </div>
                   )}
-                </div>
+                </Card>
               )
             })}
           </div>
@@ -571,7 +571,6 @@ export default function StudioConnections() {
 
       {cancelTarget && (
         <CancelLinkModal
-          link={cancelTarget.link}
           studioName={cancelTarget.studioName}
           onConfirm={cancelLink}
           onClose={() => setCancelTarget(null)}

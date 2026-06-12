@@ -1,4 +1,7 @@
 import { useState, useCallback, useMemo } from 'react'
+import { X } from 'lucide-react'
+import { EmptyState, Input, Pill, Select, Skeleton, Spinner, StatusDot, Table, Tabs, Td, Th, Tr } from '../ui'
+import { craftColor } from '../../lib/statusColors'
 
 const TABS = ['Products', 'Assets', 'Work']
 
@@ -26,14 +29,12 @@ const WORK_COLS = [
 // Column hidden when that axis is the group key
 const GROUP_HIDE_COL = { product: null, asset: '_asset_name', craft: 'craft' }
 
-// Craft → bar colour (CSS hex so they work in inline styles)
-const CRAFT_COLOR = {
-  '3D':        '#7c3aed',
-  '2D':        '#3b82f6',
-  'Animation': '#22c55e',
-  'VFX':       '#f59e0b',
-}
-const CRAFT_COLOR_DEFAULT = '#6b7280'
+const GROUP_OPTIONS = [
+  { value: '',        label: 'No group' },
+  { value: 'product', label: 'Group: Product' },
+  { value: 'asset',   label: 'Group: Asset' },
+  { value: 'craft',   label: 'Group: Craft' },
+]
 
 export default function ScenarioViewer({
   products, assets, work, isGenerating, hasData,
@@ -120,72 +121,50 @@ export default function ScenarioViewer({
     ? WORK_COLS.filter(c => c.key !== GROUP_HIDE_COL[workGroup])
     : WORK_COLS
 
+  const tabItems = TABS.map(t => ({
+    id: t,
+    label: t,
+    count: hasData
+      ? (t === 'Work' && hasWorkFilters
+          ? `${filteredWork.length}/${work.length}`
+          : t === 'Products' ? products.length
+          : t === 'Assets'   ? assets.length
+          :                    work.length)
+      : undefined,
+  }))
+
   return (
     <div className="flex flex-col flex-1 min-h-0">
       {/* Tab bar */}
-      <div className="flex items-center border-b border-border px-6">
-        <div className="flex flex-1">
-          {TABS.map(t => {
-            const count = t === 'Work' && hasWorkFilters
-              ? `${filteredWork.length}/${work.length}`
-              : t === 'Products' ? products.length
-              : t === 'Assets'   ? assets.length
-              :                    work.length
-            return (
-              <button
-                key={t}
-                onClick={() => handleTabChange(t)}
-                className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
-                  tab === t
-                    ? 'border-accent text-foreground'
-                    : 'border-transparent text-muted hover:text-foreground'
-                }`}
-              >
-                {t}
-                {hasData && (
-                  <span className="ml-1.5 text-xs text-muted">({count})</span>
-                )}
-              </button>
-            )
-          })}
-        </div>
+      <div className="flex items-center gap-2 border-b border-border px-6">
+        <Tabs tabs={tabItems} active={tab} onChange={handleTabChange} className="flex-1 border-b-0" />
 
         {/* Work tab controls */}
         {tab === 'Work' && hasData && work.length > 0 && (
-          <div className="flex items-center gap-2 mr-3">
+          <div className="flex items-center gap-2">
             {/* Group by — table view only */}
             {workView === 'table' && (
-              <div className="flex items-center gap-1 p-0.5 bg-surface-2 rounded border border-border">
-                {[
-                  { value: null,      label: 'No group' },
-                  { value: 'product', label: 'Product' },
-                  { value: 'asset',   label: 'Asset' },
-                  { value: 'craft',   label: 'Craft' },
-                ].map(opt => (
-                  <button
-                    key={String(opt.value)}
-                    onClick={() => setWorkGroup(opt.value)}
-                    className={`px-2 py-1 text-xs rounded transition-colors ${
-                      workGroup === opt.value
-                        ? 'bg-accent/20 text-accent'
-                        : 'text-muted hover:text-foreground'
-                    }`}
-                  >
-                    {opt.label}
-                  </button>
+              <Select
+                size="sm"
+                value={workGroup ?? ''}
+                onChange={e => setWorkGroup(e.target.value || null)}
+              >
+                {GROUP_OPTIONS.map(opt => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
                 ))}
-              </div>
+              </Select>
             )}
 
             {/* Table / Timeline toggle */}
-            <div className="flex items-center gap-1 p-0.5 bg-surface-2 rounded border border-border">
+            <div className="flex items-center gap-1 p-0.5 bg-surface-2 rounded-md border border-border">
               {['table', 'timeline'].map(v => (
                 <button
                   key={v}
+                  type="button"
                   onClick={() => setWorkView(v)}
-                  className={`px-2.5 py-1 text-xs rounded transition-colors ${
+                  className={`px-2.5 py-1 text-xs rounded transition-colors cursor-pointer ${
                     workView === v
-                      ? 'bg-accent/20 text-accent'
+                      ? 'bg-accent-tint-2 text-accent-hover'
                       : 'text-muted hover:text-foreground'
                   }`}
                 >
@@ -198,57 +177,51 @@ export default function ScenarioViewer({
 
         {/* Mode badge */}
         {hasData && (
-          <span className={`shrink-0 text-xs font-medium px-2 py-0.5 rounded border ${
-            generationMode === 'rule_based'
-              ? 'text-accent border-accent/40 bg-accent/5'
-              : 'text-muted border-border bg-surface-2'
-          }`}>
+          <Pill tone={generationMode === 'rule_based' ? 'accent' : 'neutral'} className="shrink-0">
             {generationMode === 'rule_based' ? 'Rule-based' : 'AI'}
-          </span>
+          </Pill>
         )}
       </div>
 
       {/* Work filter bar */}
       {tab === 'Work' && hasData && work.length > 0 && (
-        <div className="flex items-center gap-2 px-6 py-2 border-b border-border/50 bg-surface-2/30">
-          <span className="text-xs text-muted shrink-0">Filter:</span>
+        <div className="flex items-center gap-2 px-6 py-2 border-b border-border-soft bg-surface">
+          <span className="text-xs text-faint shrink-0">Filter:</span>
 
-          <select
+          <Select
+            size="sm"
             value={wProductFilter}
             onChange={e => setWProductFilter(e.target.value)}
-            className={`text-xs rounded px-2 py-1 border transition-colors bg-transparent cursor-pointer ${
-              wProductFilter ? 'border-accent/60 text-foreground' : 'border-border text-muted'
-            }`}
+            className={wProductFilter ? 'border-accent/60 text-foreground' : 'text-muted'}
           >
             <option value="">All products</option>
             {productOptions.map(p => <option key={p} value={p}>{p}</option>)}
-          </select>
+          </Select>
 
-          <select
+          <Select
+            size="sm"
             value={wCraftFilter}
             onChange={e => setWCraftFilter(e.target.value)}
-            className={`text-xs rounded px-2 py-1 border transition-colors bg-transparent cursor-pointer ${
-              wCraftFilter ? 'border-accent/60 text-foreground' : 'border-border text-muted'
-            }`}
+            className={wCraftFilter ? 'border-accent/60 text-foreground' : 'text-muted'}
           >
             <option value="">All crafts</option>
             {craftOptions.map(c => <option key={c} value={c}>{c}</option>)}
-          </select>
+          </Select>
 
-          <input
+          <Input
+            size="sm"
             type="text"
             placeholder="Search asset…"
             value={wAssetSearch}
             onChange={e => setWAssetSearch(e.target.value)}
-            className={`text-xs rounded px-2 py-1 border transition-colors bg-transparent placeholder:text-muted/50 ${
-              wAssetSearch ? 'border-accent/60 text-foreground' : 'border-border text-muted'
-            }`}
+            className={wAssetSearch ? 'border-accent/60' : ''}
           />
 
           {hasWorkFilters && (
             <button
+              type="button"
               onClick={() => { setWProductFilter(''); setWCraftFilter(''); setWAssetSearch('') }}
-              className="text-xs text-muted hover:text-foreground transition-colors ml-1"
+              className="text-xs text-muted hover:text-foreground transition-colors cursor-pointer ml-1"
             >
               Clear
             </button>
@@ -258,7 +231,7 @@ export default function ScenarioViewer({
 
       {/* Sparsity warning banner */}
       {showWarnings && (
-        <div className="flex items-start justify-between gap-3 mx-6 mt-3 px-4 py-3 bg-surface-2 border border-border rounded-lg text-sm">
+        <div className="flex items-start justify-between gap-3 mx-6 mt-3 px-4 py-3 bg-warning-tint border border-warning/25 rounded-lg text-sm">
           <div className="flex flex-col gap-1">
             <span className="text-foreground font-medium">Matrix gaps detected</span>
             <span className="text-muted text-xs">
@@ -266,17 +239,18 @@ export default function ScenarioViewer({
                 ? `Profile "${preflightWarnings[0].profile}" has no steps with estimates.`
                 : `${preflightWarnings.length} profiles have no steps with estimates: ${preflightWarnings.map(w => `"${w.profile}"`).join(', ')}.`}
               {' '}
-              <a href="/org?tab=estimates" className="text-accent hover:text-accent/80 transition-colors">
+              <a href="/org?tab=estimates" className="text-link hover:underline">
                 Edit matrix →
               </a>
             </span>
           </div>
           <button
+            type="button"
             onClick={dismissWarnings}
-            className="text-muted hover:text-foreground transition-colors shrink-0 mt-0.5"
+            className="text-muted hover:text-foreground transition-colors cursor-pointer shrink-0 mt-0.5"
             aria-label="Dismiss"
           >
-            ✕
+            <X size={14} />
           </button>
         </div>
       )}
@@ -289,15 +263,14 @@ export default function ScenarioViewer({
           {isGenerating && !hasData ? (
             <GeneratingState status={generationStatus} cols={cols} />
           ) : !hasData ? (
-            <EmptyState stage="before" />
+            <EmptyState title="Scenario data will appear here once generated." className="h-full" />
           ) : sorted.length === 0 ? (
-            <EmptyState stage="empty_tab" tab={tab} />
+            <EmptyState title={`No ${tab.toLowerCase()} in this scenario.`} />
           ) : tab === 'Work' && workGroup ? (
             <GroupedWorkTable
               rows={sorted}
               cols={visibleWorkCols}
               groupKey={workGroup === 'product' ? '_product_name' : workGroup === 'asset' ? '_asset_name' : 'craft'}
-              groupLabel={workGroup.charAt(0).toUpperCase() + workGroup.slice(1)}
               sortKey={sortKey}
               sortDir={sortDir}
               onSort={handleSort}
@@ -313,39 +286,52 @@ export default function ScenarioViewer({
 
 // ── Table renderers ───────────────────────────────────────────────────────────
 
+function _cell(row, col) {
+  const value = row[col.key]
+  if (col.key === 'craft' && value) {
+    return <StatusDot label={value} color={craftColor(value)} />
+  }
+  return _fmt(value)
+}
+
+function SortableTh({ col, sortKey, sortDir, onSort }) {
+  return (
+    <Th
+      onClick={() => onSort(col.key)}
+      className="cursor-pointer select-none hover:text-muted transition-colors"
+    >
+      {col.label}
+      {sortKey === col.key && (
+        <span className="ml-1">{sortDir === 'asc' ? '↑' : '↓'}</span>
+      )}
+    </Th>
+  )
+}
+
 function FlatTable({ rows, cols, sortKey, sortDir, onSort }) {
   return (
-    <table className="w-full text-sm border-collapse">
+    <Table>
       <thead>
-        <tr className="border-b border-border">
+        <tr>
           {cols.map(col => (
-            <th
-              key={col.key}
-              onClick={() => onSort(col.key)}
-              className="text-left py-2 px-3 text-muted font-medium text-xs cursor-pointer select-none hover:text-foreground transition-colors"
-            >
-              {col.label}
-              {sortKey === col.key && (
-                <span className="ml-1">{sortDir === 'asc' ? '↑' : '↓'}</span>
-              )}
-            </th>
+            <SortableTh key={col.key} col={col} sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
           ))}
         </tr>
       </thead>
       <tbody>
         {rows.map((row, i) => (
-          <tr key={row.id ?? i} className="border-b border-border/50 hover:bg-surface-2 transition-colors">
-            {cols.map(col => (
-              <td key={col.key} className="py-2 px-3 text-foreground">{_fmt(row[col.key])}</td>
+          <Tr key={row.id ?? i}>
+            {cols.map((col, j) => (
+              <Td key={col.key} primary={j === 0}>{_cell(row, col)}</Td>
             ))}
-          </tr>
+          </Tr>
         ))}
       </tbody>
-    </table>
+    </Table>
   )
 }
 
-function GroupedWorkTable({ rows, cols, groupKey, groupLabel, sortKey, sortDir, onSort }) {
+function GroupedWorkTable({ rows, cols, groupKey, sortKey, sortDir, onSort }) {
   // Build ordered groups preserving natural sort of group keys
   const groupMap = {}
   const groupOrder = []
@@ -360,19 +346,12 @@ function GroupedWorkTable({ rows, cols, groupKey, groupLabel, sortKey, sortDir, 
   const toggle = (key) => setCollapsed(prev => ({ ...prev, [key]: !prev[key] }))
 
   return (
-    <table className="w-full text-sm border-collapse">
+    <Table>
       <thead>
-        <tr className="border-b border-border">
-          <th className="text-left py-2 px-3 text-muted font-medium text-xs w-6" />
+        <tr>
+          <Th className="w-6" />
           {cols.map(col => (
-            <th
-              key={col.key}
-              onClick={() => onSort(col.key)}
-              className="text-left py-2 px-3 text-muted font-medium text-xs cursor-pointer select-none hover:text-foreground transition-colors"
-            >
-              {col.label}
-              {sortKey === col.key && <span className="ml-1">{sortDir === 'asc' ? '↑' : '↓'}</span>}
-            </th>
+            <SortableTh key={col.key} col={col} sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
           ))}
         </tr>
       </thead>
@@ -384,26 +363,34 @@ function GroupedWorkTable({ rows, cols, groupKey, groupLabel, sortKey, sortDir, 
             <tr
               key={`hdr-${groupKey_}`}
               onClick={() => toggle(groupKey_)}
-              className="border-b border-border bg-surface-2/60 cursor-pointer hover:bg-surface-2 transition-colors select-none"
+              className="border-b border-border-soft bg-surface-2/60 cursor-pointer hover:bg-surface-2 transition-colors select-none"
             >
-              <td className="py-1.5 px-3 text-muted text-xs">{isOpen ? '▾' : '▸'}</td>
-              <td colSpan={cols.length} className="py-1.5 px-3">
-                <span className="text-foreground font-medium text-xs">{groupKey_}</span>
-                <span className="ml-2 text-muted text-xs">({groupRows.length})</span>
+              <td className="py-1.5 px-2.5 text-muted text-xs">{isOpen ? '▾' : '▸'}</td>
+              <td colSpan={cols.length} className="py-1.5 px-2.5">
+                {groupKey === 'craft' ? (
+                  <StatusDot
+                    label={groupKey_}
+                    color={craftColor(groupKey_)}
+                    className="text-foreground font-medium text-xs"
+                  />
+                ) : (
+                  <span className="text-foreground font-medium text-xs">{groupKey_}</span>
+                )}
+                <span className="ml-2 text-faint text-xs tabular-nums">({groupRows.length})</span>
               </td>
             </tr>,
             ...(isOpen ? groupRows.map((row, i) => (
-              <tr key={row.id ?? `${groupKey_}-${i}`} className="border-b border-border/40 hover:bg-surface-2 transition-colors">
-                <td className="py-2 px-3" />
-                {cols.map(col => (
-                  <td key={col.key} className="py-2 px-3 text-foreground">{_fmt(row[col.key])}</td>
+              <Tr key={row.id ?? `${groupKey_}-${i}`}>
+                <Td />
+                {cols.map((col, j) => (
+                  <Td key={col.key} primary={j === 0}>{_cell(row, col)}</Td>
                 ))}
-              </tr>
+              </Tr>
             )) : []),
           ]
         })}
       </tbody>
-    </table>
+    </Table>
   )
 }
 
@@ -434,7 +421,7 @@ function WorkTimeline({ work, assets }) {
     if (w.start_date) minMs = Math.min(minMs, +new Date(w.start_date))
     if (w.end_date)   maxMs = Math.max(maxMs, +new Date(w.end_date))
   }
-  if (!isFinite(minMs)) return <EmptyState stage="empty_tab" tab="Work" />
+  if (!isFinite(minMs)) return <EmptyState title="No work in this scenario." />
 
   const minDate   = new Date(minMs)
   const maxDate   = new Date(maxMs)
@@ -482,13 +469,13 @@ function WorkTimeline({ work, assets }) {
       <div className="flex items-center gap-4 px-6 py-2 border-b border-border">
         {crafts.map(c => (
           <div key={c} className="flex items-center gap-1.5 text-xs text-muted">
-            <div className="w-3 h-3 rounded-sm" style={{ background: CRAFT_COLOR[c] ?? CRAFT_COLOR_DEFAULT }} />
+            <div className="w-3 h-3 rounded-sm" style={{ background: craftColor(c) }} />
             {c}
           </div>
         ))}
         {work.some(w => !w.craft) && (
           <div className="flex items-center gap-1.5 text-xs text-muted">
-            <div className="w-3 h-3 rounded-sm" style={{ background: CRAFT_COLOR_DEFAULT }} />
+            <div className="w-3 h-3 rounded-sm" style={{ background: craftColor(null) }} />
             Other
           </div>
         )}
@@ -496,10 +483,10 @@ function WorkTimeline({ work, assets }) {
 
       <div className="flex-1 overflow-auto">
         <div style={{ width: LABEL_W + totalWidth, minWidth: '100%' }}>
-          <div className="flex sticky top-0 z-20" style={{ background: 'var(--color-background, #0f0e1a)' }}>
+          <div className="flex sticky top-0 z-20 bg-background">
             <div
-              className="sticky left-0 z-30 shrink-0 border-b border-r border-border flex items-end pb-1 px-3"
-              style={{ width: LABEL_W, height: HEADER_H, background: 'var(--color-background, #0f0e1a)' }}
+              className="sticky left-0 z-30 shrink-0 border-b border-r border-border flex items-end pb-1 px-3 bg-background"
+              style={{ width: LABEL_W, height: HEADER_H }}
             >
               <span className="text-xs text-muted font-medium">Asset</span>
             </div>
@@ -517,15 +504,15 @@ function WorkTimeline({ work, assets }) {
             return (
               <div key={name} className="flex" style={{ height: rowH }}>
                 <div
-                  className="sticky left-0 z-10 shrink-0 flex items-center px-3 border-b border-r border-border/50 text-xs text-muted truncate"
-                  style={{ width: LABEL_W, background: 'var(--color-background, #0f0e1a)' }}
+                  className="sticky left-0 z-10 shrink-0 flex items-center px-3 border-b border-r border-border-soft text-xs text-muted truncate bg-background"
+                  style={{ width: LABEL_W }}
                   title={name}
                 >
                   {name}
                 </div>
-                <div className="relative border-b border-border/30" style={{ width: totalWidth, flexShrink: 0 }}>
+                <div className="relative border-b border-border-faint" style={{ width: totalWidth, flexShrink: 0 }}>
                   {months.map((m, i) => (
-                    <div key={i} className="absolute top-0 bottom-0" style={{ left: m.x, width: 1, background: 'rgba(255,255,255,0.04)' }} />
+                    <div key={i} className="absolute top-0 bottom-0 w-px bg-border-faint" style={{ left: m.x }} />
                   ))}
                   {assetTasks[name].map((w, i) => (
                     <div
@@ -537,7 +524,7 @@ function WorkTimeline({ work, assets }) {
                         width:    barW(w.start_date, w.end_date),
                         top:      ROW_PAD + w._lane * LANE_H,
                         height:   LANE_H - 2,
-                        background:   CRAFT_COLOR[w.craft] ?? CRAFT_COLOR_DEFAULT,
+                        background:   craftColor(w.craft),
                         borderRadius: 2,
                         opacity:      0.85,
                       }}
@@ -556,29 +543,11 @@ function WorkTimeline({ work, assets }) {
 
 // ── Supporting components ─────────────────────────────────────────────────────
 
-function EmptyState({ stage, tab }) {
-  if (stage === 'before') {
-    return (
-      <div className="flex flex-col items-center justify-center h-full gap-2 text-center py-16">
-        <p className="text-muted text-sm">Scenario data will appear here once generated.</p>
-      </div>
-    )
-  }
-  return (
-    <div className="flex items-center justify-center py-16">
-      <p className="text-muted text-sm">No {tab?.toLowerCase()} in this scenario.</p>
-    </div>
-  )
-}
-
 function GeneratingState({ status, cols }) {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center gap-2.5 py-2 text-sm text-muted">
-        <svg className="animate-spin h-3.5 w-3.5 shrink-0" fill="none" viewBox="0 0 24 24">
-          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
-        </svg>
+        <Spinner size={14} className="shrink-0" />
         <span>{status ?? 'Generating scenario…'}</span>
       </div>
       <SkeletonTable cols={cols} />
@@ -588,26 +557,28 @@ function GeneratingState({ status, cols }) {
 
 function SkeletonTable({ cols }) {
   return (
-    <table className="w-full text-sm border-collapse">
+    <Table>
       <thead>
-        <tr className="border-b border-border">
+        <tr>
           {cols.map(col => (
-            <th key={col.key} className="text-left py-2 px-3 text-muted font-medium text-xs">{col.label}</th>
+            <Th key={col.key}>{col.label}</Th>
           ))}
         </tr>
       </thead>
       <tbody>
         {Array.from({ length: 5 }).map((_, i) => (
-          <tr key={i} className="border-b border-border/50">
+          <tr key={i} className="border-b border-border-soft">
             {cols.map((col, j) => (
-              <td key={col.key} className="py-2 px-3">
-                <div className="h-3 bg-surface-2 rounded animate-pulse" style={{ width: `${60 + ((i * 3 + j * 7) % 30)}%` }} />
+              <td key={col.key} className="py-2 px-2.5">
+                <div style={{ width: `${60 + ((i * 3 + j * 7) % 30)}%` }}>
+                  <Skeleton className="h-3 w-full" />
+                </div>
               </td>
             ))}
           </tr>
         ))}
       </tbody>
-    </table>
+    </Table>
   )
 }
 

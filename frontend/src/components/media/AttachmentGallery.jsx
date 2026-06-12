@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { SectionLabel } from '../ui'
 import AttachmentCard from './AttachmentCard'
 import MediaLightbox from './MediaLightbox'
 
@@ -9,9 +10,7 @@ export default function AttachmentGallery({ label, attachments = [] }) {
 
   return (
     <div className="flex flex-col gap-2">
-      {label && (
-        <span className="text-muted text-xs font-medium uppercase tracking-wide">{label}</span>
-      )}
+      {label && <SectionLabel>{label}</SectionLabel>}
       <div className="flex flex-wrap gap-2">
         {attachments.map((att, i) => (
           <AttachmentCard

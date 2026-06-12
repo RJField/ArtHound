@@ -130,7 +130,10 @@ async def _storage_upload_review(path: str, data: bytes, content_type: str) -> N
             headers=_storage_headers({"Content-Type": content_type, "x-upsert": "true"}),
             content=data,
         )
-        r.raise_for_status()
+        if not r.is_success:
+            # Storage API puts the real reason (e.g. "Bucket not found") in the body;
+            # raise_for_status() alone would drop it from the error log.
+            raise RuntimeError(f"storage upload {r.status_code}: {r.text[:300]}")
 
 
 async def _storage_delete(path: str) -> None:

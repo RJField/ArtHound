@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { apiFetch } from '../lib/api'
+import { Button, Modal, Pill, Select, Spinner, Textarea } from './ui'
 
 const WELCOME = {
   role: 'assistant',
@@ -134,93 +135,20 @@ export default function LoreBotModal({ onClose }) {
   }
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center sm:justify-end bg-black/60 sm:p-6"
-      onClick={e => e.target === e.currentTarget && onClose()}
-    >
-      <div className="bg-surface border border-border rounded-xl flex flex-col w-full sm:w-[440px] h-[82vh] sm:h-[660px]">
-
-        {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
-          <div className="flex items-center gap-2">
-            <span className="text-accent text-sm font-semibold">LoreBot</span>
-            <span className="text-muted text-xs px-1.5 py-0.5 bg-surface-2 rounded">Haiku · PoC</span>
-          </div>
-          <button onClick={onClose} className="text-muted hover:text-foreground text-xl cursor-pointer leading-none">×</button>
-        </div>
-
-        {/* PoC notice */}
-        <div className="px-4 py-2 bg-warning/10 border-b border-warning/20 text-warning text-xs shrink-0">
-          ⚠ Proof of concept — powered by Claude Haiku. Do not share confidential data.
-        </div>
-
-        {/* Item selector */}
-        <div className="px-4 py-2.5 border-b border-border shrink-0">
-          {itemsLoading ? (
-            <div className="text-xs text-muted py-0.5">Loading assets…</div>
-          ) : items.length === 0 ? (
-            <div className="text-xs text-muted py-0.5">No assets with attachments found.</div>
-          ) : (
-            <select
-              value={selectedItem?.id || ''}
-              onChange={e => handleSelectItem(e.target.value)}
-              className="w-full bg-surface-2 border border-border rounded-md px-2 py-1.5 text-xs text-foreground outline-none focus:border-accent"
-            >
-              <option value="">Select an asset or payload…</option>
-              {items.map(item => (
-                <option key={item.id} value={item.id}>{item.label}</option>
-              ))}
-            </select>
-          )}
-        </div>
-
-        {/* Messages */}
-        <div className="flex-1 overflow-y-auto px-4 py-3 flex flex-col gap-3">
-          {messages.map((msg, i) => (
-            <div key={i} className={msg.role === 'user' ? 'flex justify-end' : 'flex justify-start'}>
-              <div
-                className={
-                  msg.role === 'user'
-                    ? 'bg-accent text-white text-sm px-3 py-2 rounded-2xl rounded-tr-sm max-w-[80%]'
-                    : 'bg-surface-2 text-foreground text-sm px-3 py-2 rounded-2xl rounded-tl-sm max-w-[80%]'
-                }
-                style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}
-              >
-                {msg.content}
-              </div>
-            </div>
-          ))}
-
-          {thinking && (
-            <div className="flex justify-start">
-              <div className="bg-surface-2 text-muted text-sm px-3 py-2 rounded-2xl rounded-tl-sm">
-                <ThinkingDots />
-              </div>
-            </div>
-          )}
-
-          {needsReplication && !replicating && (
-            <ReplicationCard
-              uncopied={uncopied}
-              onReplicate={handleReplicate}
-              onSkip={handleSkip}
-            />
-          )}
-
-          {replicating && (
-            <div className="flex justify-start">
-              <div className="bg-surface-2 text-muted text-xs px-3 py-2 rounded-2xl rounded-tl-sm flex items-center gap-2">
-                Replicating attachments… <ThinkingDots />
-              </div>
-            </div>
-          )}
-
-          <div ref={bottomRef} />
-        </div>
-
-        {/* Input */}
-        <div className="flex items-end gap-2 px-4 py-3 border-t border-border shrink-0">
-          <textarea
+    <Modal
+      title={
+        <span className="flex items-center gap-2">
+          <span className="text-accent">LoreBot</span>
+          <Pill tone="neutral">Haiku · PoC</Pill>
+        </span>
+      }
+      onClose={onClose}
+      width="max-w-md"
+      className="h-[82vh] sm:h-[660px]"
+      bodyClassName="flex flex-col p-0 overflow-hidden"
+      footer={
+        <div className="flex items-end gap-2 w-full">
+          <Textarea
             ref={inputRef}
             value={input}
             onChange={e => setInput(e.target.value)}
@@ -228,27 +156,99 @@ export default function LoreBotModal({ onClose }) {
             disabled={thinking || replicating || !selectedItem}
             rows={1}
             placeholder={selectedItem ? 'Ask about the attachments…' : 'Select an asset or payload first'}
-            className="flex-1 bg-surface-2 border border-border rounded-lg px-3 py-2 text-foreground text-sm outline-none focus:border-accent resize-none disabled:opacity-50"
+            className="flex-1 resize-none"
             style={{ minHeight: '38px', maxHeight: '120px', overflowY: 'auto' }}
           />
-          <button
+          <Button
+            variant="primary"
+            size="lg"
             onClick={send}
             disabled={thinking || replicating || !input.trim() || !selectedItem}
-            className="px-3 py-2 rounded-lg bg-accent text-white text-sm hover:bg-accent-hover transition-colors cursor-pointer disabled:opacity-40 shrink-0"
+            className="shrink-0"
           >
             Send
-          </button>
+          </Button>
         </div>
-
+      }
+    >
+      {/* PoC notice */}
+      <div className="px-4 py-2 bg-warning-tint border-b border-warning/25 text-warning text-xs shrink-0">
+        ⚠ Proof of concept — powered by Claude Haiku. Do not share confidential data.
       </div>
-    </div>
+
+      {/* Item selector */}
+      <div className="px-4 py-2.5 border-b border-border-soft shrink-0">
+        {itemsLoading ? (
+          <div className="flex items-center gap-2 text-xs text-muted py-0.5">
+            <Spinner size={12} /> Loading assets…
+          </div>
+        ) : items.length === 0 ? (
+          <div className="text-xs text-muted py-0.5">No assets with attachments found.</div>
+        ) : (
+          <Select
+            value={selectedItem?.id || ''}
+            onChange={e => handleSelectItem(e.target.value)}
+            className="w-full"
+          >
+            <option value="">Select an asset or payload…</option>
+            {items.map(item => (
+              <option key={item.id} value={item.id}>{item.label}</option>
+            ))}
+          </Select>
+        )}
+      </div>
+
+      {/* Messages */}
+      <div className="flex-1 overflow-y-auto px-4 py-3 flex flex-col gap-3">
+        {messages.map((msg, i) => (
+          <div key={i} className={msg.role === 'user' ? 'flex justify-end' : 'flex justify-start'}>
+            <div
+              className={
+                msg.role === 'user'
+                  ? 'bg-accent text-white text-sm px-3 py-2 rounded-lg rounded-tr-sm max-w-[80%]'
+                  : 'bg-surface-2 text-foreground text-sm px-3 py-2 rounded-lg rounded-tl-sm max-w-[80%]'
+              }
+              style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}
+            >
+              {msg.content}
+            </div>
+          </div>
+        ))}
+
+        {thinking && (
+          <div className="flex justify-start">
+            <div className="bg-surface-2 text-muted text-sm px-3 py-2 rounded-lg rounded-tl-sm">
+              <Spinner size={14} />
+            </div>
+          </div>
+        )}
+
+        {needsReplication && !replicating && (
+          <ReplicationCard
+            uncopied={uncopied}
+            onReplicate={handleReplicate}
+            onSkip={handleSkip}
+          />
+        )}
+
+        {replicating && (
+          <div className="flex justify-start">
+            <div className="bg-surface-2 text-muted text-xs px-3 py-2 rounded-lg rounded-tl-sm flex items-center gap-2">
+              Replicating attachments… <Spinner size={12} />
+            </div>
+          </div>
+        )}
+
+        <div ref={bottomRef} />
+      </div>
+    </Modal>
   )
 }
 
 function ReplicationCard({ uncopied, onReplicate, onSkip }) {
   return (
     <div className="flex justify-start">
-      <div className="bg-surface-2 border border-warning/30 text-foreground text-sm px-3 py-3 rounded-2xl rounded-tl-sm max-w-[90%]">
+      <div className="bg-surface-2 border border-warning/25 text-foreground text-sm px-3 py-3 rounded-lg rounded-tl-sm max-w-[90%]">
         <div className="text-warning text-xs font-medium mb-1">Attachments not yet in ArtHound</div>
         <div className="text-muted text-xs mb-2">
           {uncopied.length} file{uncopied.length !== 1 ? 's' : ''} need to be replicated before LoreBot can read them:
@@ -260,34 +260,14 @@ function ReplicationCard({ uncopied, onReplicate, onSkip }) {
           {uncopied.length > 5 && <li>• …and {uncopied.length - 5} more</li>}
         </ul>
         <div className="flex gap-2">
-          <button
-            onClick={onReplicate}
-            className="px-3 py-1 rounded-md bg-accent text-white text-xs hover:bg-accent-hover transition-colors cursor-pointer"
-          >
+          <Button variant="primary" size="sm" onClick={onReplicate}>
             Replicate now
-          </button>
-          <button
-            onClick={onSkip}
-            className="px-3 py-1 rounded-md bg-surface text-muted text-xs hover:text-foreground border border-border transition-colors cursor-pointer"
-          >
+          </Button>
+          <Button size="sm" onClick={onSkip}>
             Skip
-          </button>
+          </Button>
         </div>
       </div>
     </div>
-  )
-}
-
-function ThinkingDots() {
-  return (
-    <span className="inline-flex gap-1 items-center">
-      {[0, 1, 2].map(i => (
-        <span
-          key={i}
-          className="w-1.5 h-1.5 rounded-full bg-muted animate-bounce"
-          style={{ animationDelay: `${i * 0.15}s` }}
-        />
-      ))}
-    </span>
   )
 }

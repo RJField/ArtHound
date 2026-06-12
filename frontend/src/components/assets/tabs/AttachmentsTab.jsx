@@ -1,6 +1,8 @@
 import { useMemo } from 'react'
+import { Paperclip } from 'lucide-react'
 import { assetAttachmentUrl } from '../../../lib/api'
 import { formatRawFields } from '../../../lib/fields'
+import { EmptyState } from '../../ui'
 import AttachmentGallery from '../../media/AttachmentGallery'
 
 export default function AttachmentsTab({ asset }) {
@@ -11,7 +13,7 @@ export default function AttachmentsTab({ asset }) {
   }, [asset?.id, asset?.canonicalId])
 
   if (!attachmentGroups.length) {
-    return <p className="text-muted text-xs p-4">No attachments on this asset.</p>
+    return <EmptyState icon={Paperclip} title="No attachments on this asset." />
   }
 
   return (

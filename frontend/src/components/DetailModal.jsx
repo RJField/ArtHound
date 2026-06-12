@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react'
 import { toast } from 'sonner'
+import { ArrowLeft } from 'lucide-react'
 import { cn } from '../lib/utils'
+import { Modal, Button, Pill, Spinner, EmptyState } from './ui'
 import AttachmentGallery from './media/AttachmentGallery'
 
 // DetailModal({ title, badge?, fields?, image?, actions?, loading?, onClose })
@@ -43,91 +45,81 @@ export default function DetailModal({ title, badge, fields = [], image, actions 
   }
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
-      onClick={e => e.target === e.currentTarget && onClose()}
-    >
-      <div className="bg-surface border border-border rounded-xl w-full max-w-lg max-h-[85vh] flex flex-col">
-
-        {/* Header */}
-        <div className="flex items-start gap-3 px-5 pt-5 pb-3 shrink-0">
+    <Modal
+      title={
+        <span className="flex items-center gap-2 min-w-0">
           {canGoBack && (
-            <button onClick={goBack} className="text-muted hover:text-foreground text-sm mt-0.5 cursor-pointer shrink-0">←</button>
+            <button
+              type="button"
+              onClick={goBack}
+              aria-label="Back"
+              className="text-muted hover:text-foreground cursor-pointer shrink-0"
+            >
+              <ArrowLeft size={14} />
+            </button>
           )}
-          <div className="flex-1 min-w-0">
-            <h2 className="text-foreground font-semibold text-base truncate">{current.title}</h2>
-            {current.badge && (
-              <span className="mt-1 inline-block text-xs text-muted bg-surface-2 px-2 py-0.5 rounded-full">
-                {current.badge}
-              </span>
-            )}
-          </div>
-          <button onClick={onClose} className="text-muted hover:text-foreground text-xl cursor-pointer leading-none shrink-0">×</button>
-        </div>
+          <span className="truncate">{current.title}</span>
+        </span>
+      }
+      onClose={onClose}
+      footer={
+        current.actions?.length > 0 ? (
+          current.actions.map((a, i) => (
+            <Button
+              key={i}
+              variant={a.style === 'primary' ? 'primary' : a.style === 'danger' ? 'danger' : 'secondary'}
+              size="lg"
+              onClick={() => a.onClick(onClose)}
+            >
+              {a.label}
+            </Button>
+          ))
+        ) : undefined
+      }
+    >
+      {current.badge && (
+        <Pill tone="neutral" className="mb-3">{current.badge}</Pill>
+      )}
 
-        {/* Body */}
-        <div className="flex-1 overflow-y-auto px-5 pb-4">
-          {current.image && (
-            <img src={current.image} alt="Preview" className="w-full rounded-lg mb-4 object-cover max-h-48" />
-          )}
+      {current.image && (
+        <img src={current.image} alt="Preview" className="w-full rounded-lg mb-4 object-cover max-h-48" />
+      )}
 
-          {current.fields.length > 0 && (
-            <div className="flex flex-col divide-y divide-border/50">
-              {current.fields.map((f, i) => {
-                if (f.type === 'attachments') {
-                  return (
-                    <div key={i} className="py-3">
-                      <AttachmentGallery label={f.label} attachments={f.items ?? []} />
-                    </div>
-                  )
-                }
-                const display = f.value != null && f.value !== '' ? String(f.value) : '—'
-                const isEmpty = display === '—'
-                return (
-                  <FieldRow
-                    key={i}
-                    field={f}
-                    display={display}
-                    isEmpty={isEmpty}
-                    onDrillIn={drillInto}
-                  />
-                )
-              })}
-            </div>
-          )}
-
-          {current.loading && (
-            <p className="text-muted text-sm">Loading…</p>
-          )}
-
-          {!current.loading && current.fields.length === 0 && !current.image && (
-            <p className="text-muted text-sm">No fields to display.</p>
-          )}
-        </div>
-
-        {/* Footer actions */}
-        {current.actions?.length > 0 && (
-          <div className="flex gap-2 px-5 py-4 border-t border-border shrink-0">
-            {current.actions.map((a, i) => (
-              <button
+      {current.fields.length > 0 && (
+        <div className="flex flex-col">
+          {current.fields.map((f, i) => {
+            if (f.type === 'attachments') {
+              return (
+                <div key={i} className="py-3 border-b border-border-faint last:border-b-0">
+                  <AttachmentGallery label={f.label} attachments={f.items ?? []} />
+                </div>
+              )
+            }
+            const display = f.value != null && f.value !== '' ? String(f.value) : '—'
+            const isEmpty = display === '—'
+            return (
+              <FieldRow
                 key={i}
-                onClick={() => a.onClick(onClose)}
-                className={cn(
-                  'px-3 py-1.5 rounded-md text-xs font-medium cursor-pointer transition-colors',
-                  a.style === 'primary'
-                    ? 'bg-accent text-white hover:bg-accent-hover'
-                    : a.style === 'danger'
-                    ? 'bg-error/10 text-error hover:bg-error/20'
-                    : 'bg-surface-2 text-foreground hover:bg-surface-3'
-                )}
-              >
-                {a.label}
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
+                field={f}
+                display={display}
+                isEmpty={isEmpty}
+                onDrillIn={drillInto}
+              />
+            )
+          })}
+        </div>
+      )}
+
+      {current.loading && (
+        <div className="flex items-center gap-2 text-muted text-sm">
+          <Spinner size={14} /> Loading…
+        </div>
+      )}
+
+      {!current.loading && current.fields.length === 0 && !current.image && (
+        <EmptyState title="No fields to display." />
+      )}
+    </Modal>
   )
 }
 
@@ -152,23 +144,23 @@ function FieldRow({ field, display, isEmpty, onDrillIn }) {
     <div
       onClick={handleClick}
       className={cn(
-        'flex items-start gap-4 py-2.5',
+        'flex gap-3 py-2.5 border-b border-border-faint last:border-b-0 text-xs',
         (isLinked || isCopyable) && 'cursor-pointer group'
       )}
     >
-      <span className="text-muted text-xs w-32 shrink-0 pt-0.5">{field.label}</span>
+      <span className="shrink-0 text-faint w-32 pt-0.5">{field.label}</span>
       <span className={cn(
-        'text-sm flex-1',
-        isEmpty    ? 'text-border'     : 'text-foreground',
-        isLinked   ? 'text-p2 group-hover:underline' : '',
+        'min-w-0 flex-1 text-sm',
+        isEmpty    ? 'text-faint'      : 'text-foreground',
+        isLinked   ? 'text-link group-hover:underline' : '',
         copied     ? 'text-success'    : '',
       )}>
         {isLink ? (
-          <a href={field.href} target="_blank" rel="noopener" className="text-p2 hover:underline" onClick={e => e.stopPropagation()}>
+          <a href={field.href} target="_blank" rel="noopener" className="text-link hover:underline" onClick={e => e.stopPropagation()}>
             {display}
           </a>
         ) : field.type === 'badge' ? (
-          <span className="px-2 py-0.5 rounded-full bg-surface-2 text-xs">{display}</span>
+          <Pill tone="neutral">{display}</Pill>
         ) : (
           <>
             {copied ? 'Copied!' : display}

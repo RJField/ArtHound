@@ -28,13 +28,15 @@ export default function MediaLightbox({ items, activeIndex, onClose, onPrev, onN
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm"
       onClick={e => { if (e.target === e.currentTarget) onClose() }}
     >
-      <div className="relative w-full max-w-5xl max-h-[90vh] flex flex-col bg-surface rounded-xl overflow-hidden shadow-2xl m-4">
+      <div className="relative w-full max-w-5xl max-h-[90vh] flex flex-col bg-surface rounded-lg overflow-hidden shadow-(--ah-shadow-lg) m-4">
         {/* Header */}
-        <div className="flex items-center justify-between px-4 py-2 border-b border-border/40 shrink-0">
+        <div className="flex items-center justify-between px-4 py-2 border-b border-border-soft shrink-0">
           <span className="text-foreground text-sm font-medium truncate">{item.filename}</span>
           <button
+            type="button"
             onClick={onClose}
-            className="p-1 rounded hover:bg-surface-2 text-muted ml-2 shrink-0"
+            aria-label="Close"
+            className="p-1 rounded-md hover:bg-surface-2 text-muted hover:text-foreground cursor-pointer ml-2 shrink-0 transition-colors"
           >
             <X size={16} />
           </button>

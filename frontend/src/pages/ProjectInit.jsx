@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { apiFetch } from '../lib/api'
 import { useAuth } from '../contexts/AuthContext'
+import { Button, Input, Select, Textarea, Field, Pill, Spinner, SectionLabel } from '../components/ui'
 
 const REQUIRED_SLOTS = ['name', 'status', 'item_type']
 const ALL_SLOTS = [
@@ -48,44 +49,48 @@ function linkFields(fields, parentTableId) {
 
 function valueInputForField(field, value, onChange) {
   if (!field) return (
-    <input
+    <Input
+      size="sm"
       value={value}
       onChange={e => onChange(e.target.value)}
       placeholder="value"
-      className="flex-1 bg-surface-3 border border-border rounded px-2 py-1 text-sm text-foreground outline-none focus:border-accent"
+      className="flex-1"
     />
   )
   const choices = field.options?.choices
   if (choices?.length) {
     return (
-      <select
+      <Select
+        size="sm"
         value={value}
         onChange={e => onChange(e.target.value)}
-        className="flex-1 bg-surface-3 border border-border rounded px-2 py-1 text-sm text-foreground outline-none focus:border-accent"
+        className="flex-1"
       >
         <option value="">— choose —</option>
         {choices.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
-      </select>
+      </Select>
     )
   }
   if (field.type === 'checkbox') {
     return (
-      <select
+      <Select
+        size="sm"
         value={value}
         onChange={e => onChange(e.target.value)}
-        className="flex-1 bg-surface-3 border border-border rounded px-2 py-1 text-sm text-foreground outline-none focus:border-accent"
+        className="flex-1"
       >
         <option value="true">checked</option>
         <option value="false">unchecked</option>
-      </select>
+      </Select>
     )
   }
   return (
-    <input
+    <Input
+      size="sm"
       value={value}
       onChange={e => onChange(e.target.value)}
       placeholder="value"
-      className="flex-1 bg-surface-3 border border-border rounded px-2 py-1 text-sm text-foreground outline-none focus:border-accent"
+      className="flex-1"
     />
   )
 }
@@ -105,14 +110,14 @@ function StepSelectSource({ onSelect }) {
             key={src.id}
             onClick={src.live ? () => onSelect(src.id) : undefined}
             disabled={!src.live}
-            className={`flex flex-col items-center justify-center gap-2 px-4 py-8 rounded-xl border text-sm font-medium transition-colors ${
+            className={`flex flex-col items-center justify-center gap-2 px-4 py-8 rounded-lg border text-sm font-medium transition-colors ${
               src.live
-                ? 'border-border bg-surface-2 text-foreground hover:border-accent/60 hover:bg-surface-3 cursor-pointer'
-                : 'border-border bg-surface-2 text-foreground opacity-40 cursor-not-allowed'
+                ? 'border-border text-foreground hover:bg-surface-2 cursor-pointer'
+                : 'border-border text-foreground opacity-40 cursor-not-allowed'
             }`}
           >
             <span>{src.label}</span>
-            {!src.live && <span className="text-xs font-normal text-muted">Coming soon</span>}
+            {!src.live && <Pill tone="neutral">Coming soon</Pill>}
           </button>
         ))}
       </div>
@@ -183,41 +188,45 @@ function StepCredentials({ onSuccess, onBack }) {
         Connect ArtHound to your Airtable base. Credentials are encrypted at rest
         and never returned to the browser after saving.
       </p>
-      <label className="flex flex-col gap-1.5">
-        <span className="text-foreground text-sm font-medium">Airtable API token</span>
-        <input
+      <Field label="Airtable API token">
+        <Input
+          size="lg"
           type="password"
           value={apiToken}
           onChange={e => setApiToken(e.target.value)}
           placeholder="pat…"
           required
-          className="bg-surface-2 border border-border rounded-md px-3 py-2 text-foreground text-sm outline-none focus:border-accent font-mono"
+          className="font-mono"
         />
-      </label>
-      <label className="flex flex-col gap-1.5">
-        <span className="text-foreground text-sm font-medium">Base ID</span>
-        <input
+      </Field>
+      <Field
+        label="Base ID"
+        hint={<>Found in your Airtable base URL: airtable.com/<strong>appXXX</strong>/…</>}
+      >
+        <Input
+          size="lg"
           type="text"
           value={baseId}
           onChange={e => setBaseId(e.target.value)}
           placeholder="appXXXXXXXXXXXXXX"
           required
-          className="bg-surface-2 border border-border rounded-md px-3 py-2 text-foreground text-sm outline-none focus:border-accent font-mono"
+          className="font-mono"
         />
-        <span className="text-muted text-xs">Found in your Airtable base URL: airtable.com/<strong>appXXX</strong>/…</span>
-      </label>
+      </Field>
       {error && <p className="text-error text-sm">{error}</p>}
       <div className="flex gap-2 mt-2">
         {onBack && (
-          <button type="button" onClick={onBack} className="px-4 py-2 rounded-md bg-surface-2 text-foreground text-sm font-medium hover:bg-surface-3 transition-colors cursor-pointer">Back</button>
+          <Button size="lg" onClick={onBack}>Back</Button>
         )}
-        <button
+        <Button
           type="submit"
+          variant="primary"
+          size="lg"
           disabled={loading || !apiToken || !baseId}
-          className="flex-1 px-4 py-2 rounded-md bg-accent text-white text-sm font-medium hover:bg-accent-hover transition-colors cursor-pointer disabled:opacity-40"
+          className="flex-1"
         >
           {loading ? 'Testing connection…' : 'Test & Save'}
-        </button>
+        </Button>
       </div>
     </form>
   )
@@ -293,15 +302,13 @@ function StepJiraOAuth({ onSuccess, onBack }) {
     }
   }
 
-  const inputCls = 'w-full px-3 py-2 rounded-md bg-surface border border-border text-foreground text-sm placeholder-muted focus:outline-none focus:border-accent'
-
   return (
     <div className="flex flex-col gap-5">
       {!connected ? (
         <>
           {/* Deployment selector */}
           <div className="flex flex-col gap-1.5">
-            <span className="text-foreground text-sm font-medium">Jira deployment type</span>
+            <span className="text-xs text-muted">Jira deployment type</span>
             <div className="flex gap-2">
               {[
                 { id: 'cloud',      label: 'Cloud',       sub: 'Hosted by Atlassian' },
@@ -312,9 +319,9 @@ function StepJiraOAuth({ onSuccess, onBack }) {
                   type="button"
                   onClick={() => setDeployment(opt.id)}
                   className={`flex-1 flex flex-col items-start px-3 py-2.5 rounded-md border text-left transition-colors cursor-pointer
-                    ${deployment === opt.id ? 'border-accent bg-accent/10' : 'border-border hover:border-accent/50'}`}
+                    ${deployment === opt.id ? 'border-accent bg-accent-tint' : 'border-border hover:bg-surface-2'}`}
                 >
-                  <span className={`text-sm font-medium ${deployment === opt.id ? 'text-accent' : 'text-foreground'}`}>{opt.label}</span>
+                  <span className="text-sm font-medium text-foreground">{opt.label}</span>
                   <span className="text-muted text-xs">{opt.sub}</span>
                 </button>
               ))}
@@ -333,50 +340,48 @@ function StepJiraOAuth({ onSuccess, onBack }) {
                 Create an Application Link on your Jira instance (<span className="text-foreground">Settings → Applications → Application Links</span>),
                 then paste the credentials below.
               </p>
-              <div className="flex flex-col gap-1">
-                <label className="text-foreground text-xs font-medium">Jira instance URL</label>
-                <input
-                  className={inputCls}
+              <Field label="Jira instance URL">
+                <Input
+                  size="lg"
                   placeholder="https://jira.yourstudio.com"
                   value={instanceUrl}
                   onChange={e => setInstanceUrl(e.target.value)}
                 />
-              </div>
-              <div className="flex flex-col gap-1">
-                <label className="text-foreground text-xs font-medium">Client ID</label>
-                <input
-                  className={inputCls}
+              </Field>
+              <Field label="Client ID">
+                <Input
+                  size="lg"
                   placeholder="From Application Link → OAuth 2.0"
                   value={dcClientId}
                   onChange={e => setDcClientId(e.target.value)}
                 />
-              </div>
-              <div className="flex flex-col gap-1">
-                <label className="text-foreground text-xs font-medium">Client Secret</label>
-                <input
+              </Field>
+              <Field label="Client Secret">
+                <Input
+                  size="lg"
                   type="password"
-                  className={inputCls}
                   placeholder="Client secret"
                   value={dcClientSecret}
                   onChange={e => setDcClientSecret(e.target.value)}
                 />
-              </div>
+              </Field>
             </div>
           )}
 
           {error && <p className="text-error text-sm">{error}</p>}
-          <button
+          <Button
+            variant="primary"
+            size="lg"
             onClick={initiateOAuth}
             disabled={loading}
-            className="px-4 py-2 rounded-md bg-accent text-white text-sm font-medium hover:bg-accent-hover transition-colors cursor-pointer disabled:opacity-40"
           >
             {loading ? 'Redirecting…' : `Connect with JIRA ${deployment === 'datacenter' ? 'Data Center' : 'Cloud'}`}
-          </button>
-          <button type="button" onClick={onBack} className="self-start text-muted text-sm hover:text-foreground cursor-pointer">← Back</button>
+          </Button>
+          <Button size="lg" onClick={onBack} className="self-start">Back</Button>
         </>
       ) : (
         <>
-          <div className="flex items-center justify-between px-3 py-2 bg-accent/10 border border-accent/30 rounded-md">
+          <div className="flex items-center justify-between px-3 py-2 bg-accent-tint border border-accent/30 rounded-md">
             <div className="flex items-center gap-2">
               <span className="text-accent text-sm">✓</span>
               <span className="text-foreground text-sm">Jira workspace connected</span>
@@ -398,7 +403,7 @@ function StepJiraOAuth({ onSuccess, onBack }) {
                   setDisconnectLoading(false)
                 }
               }}
-              className="text-xs text-muted hover:text-error transition-colors cursor-pointer disabled:opacity-40"
+              className="text-xs text-muted hover:text-error transition-colors cursor-pointer disabled:opacity-45"
             >
               {disconnectLoading ? 'Disconnecting…' : 'Disconnect'}
             </button>
@@ -407,7 +412,7 @@ function StepJiraOAuth({ onSuccess, onBack }) {
           {/* Instance picker — only shown for Cloud with multiple sites */}
           {instances.length > 1 && (
             <div className="flex flex-col gap-2">
-              <span className="text-foreground text-sm font-medium">Select your Jira site</span>
+              <span className="text-xs text-muted">Select your Jira site</span>
               <div className="flex flex-col gap-1.5">
                 {instances.map(inst => (
                   <button
@@ -415,10 +420,10 @@ function StepJiraOAuth({ onSuccess, onBack }) {
                     type="button"
                     onClick={() => setSelectedId(inst.id)}
                     className={`flex items-center justify-between px-3 py-2.5 rounded-md border text-left transition-colors cursor-pointer
-                      ${selectedId === inst.id ? 'border-accent bg-accent/10' : 'border-border hover:border-accent/50'}`}
+                      ${selectedId === inst.id ? 'border-accent bg-accent-tint' : 'border-border hover:bg-surface-2'}`}
                   >
                     <div>
-                      <div className={`text-sm font-medium ${selectedId === inst.id ? 'text-accent' : 'text-foreground'}`}>{inst.name}</div>
+                      <div className="text-sm font-medium text-foreground">{inst.name}</div>
                       <div className="text-muted text-xs">{inst.url}</div>
                     </div>
                     {selectedId === inst.id && <span className="text-accent text-sm">✓</span>}
@@ -430,8 +435,11 @@ function StepJiraOAuth({ onSuccess, onBack }) {
 
           {error && <p className="text-error text-sm">{error}</p>}
           <div className="flex gap-2">
-            <button type="button" onClick={onBack} className="px-4 py-2 rounded-md bg-surface-2 text-foreground text-sm font-medium hover:bg-surface-3 transition-colors cursor-pointer">Back</button>
-            <button
+            <Button size="lg" onClick={onBack}>Back</Button>
+            <Button
+              variant="primary"
+              size="lg"
+              className="flex-1"
               disabled={instances.length > 1 && !selectedId || pickLoading}
               onClick={async () => {
                 // If multi-instance and selection differs from stored, confirm it first
@@ -451,10 +459,9 @@ function StepJiraOAuth({ onSuccess, onBack }) {
                 }
                 onSuccess()
               }}
-              className="flex-1 px-4 py-2 rounded-md bg-accent text-white text-sm font-medium hover:bg-accent-hover transition-colors cursor-pointer disabled:opacity-40"
             >
               {pickLoading ? 'Saving…' : 'Continue'}
-            </button>
+            </Button>
           </div>
         </>
       )}
@@ -497,14 +504,14 @@ function StepDiscover({ sourceType, onSuccess, onBack }) {
     <div className="flex flex-col gap-5">
       {loading && (
         <div className="flex flex-col items-center gap-3 py-8">
-          <div className="w-6 h-6 border-2 border-accent border-t-transparent rounded-full animate-spin" />
+          <Spinner size={24} className="text-accent" />
           <p className="text-muted text-sm">Discovering schema…</p>
         </div>
       )}
       {error && (
         <div className="flex flex-col gap-3">
           <p className="text-error text-sm">{error}</p>
-          <button onClick={discover} className="self-start px-3 py-1.5 rounded-md bg-surface-2 text-foreground text-sm hover:bg-surface-3 cursor-pointer">Retry</button>
+          <Button onClick={discover} className="self-start">Retry</Button>
         </div>
       )}
       {!loading && !error && (
@@ -514,25 +521,27 @@ function StepDiscover({ sourceType, onSuccess, onBack }) {
           </p>
           <div className="bg-surface-2 rounded-lg border border-border max-h-48 overflow-y-auto">
             {tables.map(t => (
-              <div key={t.id} className="flex items-center justify-between px-3 py-2 border-b border-border/50 last:border-0">
+              <div key={t.id} className="flex items-center justify-between px-3 py-2 border-b border-border-soft last:border-0">
                 <span className="text-foreground text-sm font-medium">{t.name}</span>
-                <span className="text-muted text-xs">{t.fields.length} fields</span>
+                <span className="text-faint text-xs tabular-nums">{t.fields.length} fields</span>
               </div>
             ))}
           </div>
           <div className="flex gap-2">
-            <button onClick={onBack} className="px-4 py-2 rounded-md bg-surface-2 text-foreground text-sm font-medium hover:bg-surface-3 transition-colors cursor-pointer">Back</button>
-            <button
+            <Button size="lg" onClick={onBack}>Back</Button>
+            <Button
+              variant="primary"
+              size="lg"
               onClick={() => onSuccess(tables)}
-              className="flex-1 px-4 py-2 rounded-md bg-accent text-white text-sm font-medium hover:bg-accent-hover transition-colors cursor-pointer"
+              className="flex-1"
             >
               Continue to hierarchy
-            </button>
+            </Button>
           </div>
         </>
       )}
       {!loading && error && (
-        <button onClick={onBack} className="self-start px-4 py-2 rounded-md bg-surface-2 text-foreground text-sm font-medium hover:bg-surface-3 transition-colors cursor-pointer">Back</button>
+        <Button size="lg" onClick={onBack} className="self-start">Back</Button>
       )}
     </div>
   )
@@ -643,72 +652,71 @@ function EntityPanel({ entity, tables, definitions, onChange }) {
       )}
 
       {supportsFieldMode && mode === 'select_field' && (
-        <label className="flex flex-col gap-1.5">
-          <span className="text-muted text-xs">Field on asset table</span>
+        <Field label="Field on asset table">
           {!assetTableId ? (
             <p className="text-warning text-xs">Define the Asset entity first to see its fields.</p>
           ) : (
-            <select
+            <Select
+              size="lg"
               value={def.select_field_id || ''}
               onChange={e => {
                 const f = assetTableFields.find(f => f.id === e.target.value)
                 update({ select_field_id: e.target.value, select_field_name: f?.name || '' })
               }}
-              className="bg-surface-2 border border-border rounded-md px-2 py-1.5 text-foreground text-sm outline-none focus:border-accent"
             >
               <option value="">— select field —</option>
               {assetTableFields.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
-            </select>
+            </Select>
           )}
-        </label>
+        </Field>
       )}
 
       {(!supportsFieldMode || mode === 'table') && (
-        <label className="flex flex-col gap-1.5">
-          <span className="text-muted text-xs">Table</span>
-          <select
+        <Field label="Table">
+          <Select
+            size="lg"
             value={def.table_id || ''}
             onChange={e => {
               const t = tables.find(t => t.id === e.target.value)
               update({ table_id: e.target.value, table_name: t?.name || '', filters: [], rel_field_id: '', rel_field_name: '', rel_direction: 'child_holds_link' })
               setPreview(null)
             }}
-            className="bg-surface-2 border border-border rounded-md px-2 py-1.5 text-foreground text-sm outline-none focus:border-accent"
           >
             <option value="">— select table —</option>
             {tables.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-          </select>
-        </label>
+          </Select>
+        </Field>
       )}
 
       {def.table_id && mode === 'table' && (
         <div className="flex flex-col gap-2">
           <div className="flex items-center justify-between">
-            <span className="text-muted text-xs">Filters <span className="opacity-60">(optional)</span></span>
-            <button onClick={addFilter} className="text-xs text-accent hover:text-accent-hover cursor-pointer">+ Add filter</button>
+            <span className="text-muted text-xs">Filters <span className="text-faint">(optional)</span></span>
+            <button onClick={addFilter} className="text-xs text-link hover:underline cursor-pointer">+ Add filter</button>
           </div>
           {(def.filters || []).map((f, i) => {
             const ff = tableFields.find(tf => tf.id === f.field_id)
             return (
               <div key={i} className="flex gap-2 items-center">
-                <select
+                <Select
+                  size="sm"
                   value={f.field_id}
                   onChange={e => {
                     const tf = tableFields.find(tf => tf.id === e.target.value)
                     updateFilter(i, { field_id: e.target.value, field_name: tf?.name || '', value: '' })
                   }}
-                  className="flex-1 bg-surface-3 border border-border rounded px-2 py-1 text-xs text-foreground outline-none focus:border-accent"
+                  className="flex-1"
                 >
                   <option value="">— field —</option>
                   {tableFields.map(tf => <option key={tf.id} value={tf.id}>{tf.name}</option>)}
-                </select>
-                <select
+                </Select>
+                <Select
+                  size="sm"
                   value={f.operator}
                   onChange={e => updateFilter(i, { operator: e.target.value })}
-                  className="bg-surface-3 border border-border rounded px-2 py-1 text-xs text-foreground outline-none focus:border-accent"
                 >
                   {OPERATORS.map(op => <option key={op.value} value={op.value}>{op.label}</option>)}
-                </select>
+                </Select>
                 {valueInputForField(ff, f.value, v => updateFilter(i, { value: v }))}
                 <button onClick={() => removeFilter(i)} className="text-muted hover:text-error text-sm cursor-pointer">×</button>
               </div>
@@ -731,17 +739,18 @@ function EntityPanel({ entity, tables, definitions, onChange }) {
           )}
           {parentTableId && validLinkFields.length > 0 && (
             <div className="flex gap-2 items-center">
-              <select
+              <Select
+                size="lg"
                 value={def.rel_field_id || ''}
                 onChange={e => {
                   const ff = validLinkFields.find(f => f.id === e.target.value)
                   update({ rel_field_id: e.target.value, rel_field_name: ff?.name || '', rel_direction: 'child_holds_link' })
                 }}
-                className="flex-1 bg-surface-2 border border-border rounded-md px-2 py-1.5 text-sm text-foreground outline-none focus:border-accent"
+                className="flex-1"
               >
                 <option value="">— select link field —</option>
                 {validLinkFields.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
-              </select>
+              </Select>
             </div>
           )}
         </div>
@@ -749,13 +758,13 @@ function EntityPanel({ entity, tables, definitions, onChange }) {
 
       {def.table_id && mode === 'table' && (
         <div className="flex items-center gap-3">
-          <button
+          <Button
+            size="sm"
             onClick={runPreview}
             disabled={previewing}
-            className="px-3 py-1 rounded-md bg-surface-2 text-foreground text-xs hover:bg-surface-3 transition-colors cursor-pointer disabled:opacity-40"
           >
             {previewing ? 'Previewing…' : 'Preview'}
-          </button>
+          </Button>
           {preview && (
             <p className="text-muted text-xs">
               <span className="text-foreground font-medium">
@@ -874,31 +883,29 @@ function JiraEntityPanel({ entity, projects, definitions, onChange }) {
         </div>
       </div>
 
-      <label className="flex flex-col gap-1.5">
-        <span className="text-muted text-xs">Project</span>
-        <select
+      <Field label="Project">
+        <Select
+          size="lg"
           value={projectKey}
           onChange={e => handleProjectChange(e.target.value)}
-          className="bg-surface-2 border border-border rounded-md px-2 py-1.5 text-foreground text-sm outline-none focus:border-accent"
         >
           <option value="">— select project —</option>
           {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-        </select>
-      </label>
+        </Select>
+      </Field>
 
       {!advanced && (
-        <label className="flex flex-col gap-1.5">
-          <span className="text-muted text-xs">Issue type <span className="opacity-60">(optional)</span></span>
-          <select
+        <Field label={<>Issue type <span className="text-faint">(optional)</span></>}>
+          <Select
+            size="lg"
             value={issueType}
             onChange={e => handleIssueTypeChange(e.target.value)}
             disabled={!projectKey}
-            className="bg-surface-2 border border-border rounded-md px-2 py-1.5 text-foreground text-sm outline-none focus:border-accent disabled:opacity-50"
           >
             <option value="">— all issue types —</option>
             {issueTypes.map(t => <option key={t.id} value={t.name}>{t.name}</option>)}
-          </select>
-        </label>
+          </Select>
+        </Field>
       )}
 
       <div className="flex flex-col gap-2">
@@ -906,21 +913,19 @@ function JiraEntityPanel({ entity, projects, definitions, onChange }) {
           <span className="text-muted text-xs">JQL</span>
           <button
             onClick={handleAdvancedToggle}
-            className="text-xs text-accent hover:text-accent-hover cursor-pointer"
+            className="text-xs text-link hover:underline cursor-pointer"
           >
             {advanced ? 'Guided mode' : 'Edit JQL'}
           </button>
         </div>
-        <textarea
+        <Textarea
           value={jql}
           onChange={e => advanced && handleJqlChange(e.target.value)}
           readOnly={!advanced}
           rows={2}
           placeholder={`project = "KEY" AND issuetype = "Story"`}
-          className={`bg-surface-2 border rounded-md px-3 py-2 text-sm font-mono outline-none resize-none ${
-            advanced
-              ? 'border-accent text-foreground focus:border-accent-hover'
-              : 'border-border text-muted cursor-default'
+          className={`font-mono resize-none ${
+            advanced ? 'border-accent' : 'text-muted cursor-default'
           }`}
         />
         {advanced && (
@@ -932,13 +937,13 @@ function JiraEntityPanel({ entity, projects, definitions, onChange }) {
 
       {jql.trim() && (
         <div className="flex items-center gap-3">
-          <button
+          <Button
+            size="sm"
             onClick={runPreview}
             disabled={previewing}
-            className="px-3 py-1 rounded-md bg-surface-2 text-foreground text-xs hover:bg-surface-3 transition-colors cursor-pointer disabled:opacity-40"
           >
             {previewing ? 'Previewing…' : 'Preview'}
-          </button>
+          </Button>
           {preview && (
             <p className="text-muted text-xs">
               <span className="text-foreground font-medium">
@@ -991,30 +996,30 @@ function WorkFieldMappings({ tableFields, workFieldMap, onChange }) {
     <div className="flex flex-col gap-3">
       <div className="flex items-center justify-between">
         <span className="text-muted text-xs">Work field mappings</span>
-        <span className="text-muted text-xs opacity-60">* required</span>
+        <span className="text-faint text-xs">* required</span>
       </div>
       <div className="border border-border rounded-lg overflow-hidden">
         <table className="w-full text-xs">
           <tbody>
             {WORK_FIELD_SLOTS.map(slot => (
-              <tr key={slot.key} className="border-b border-border/50 last:border-0">
+              <tr key={slot.key} className="border-b border-border-soft last:border-0">
                 <td className="px-3 py-2 text-foreground w-1/3">
                   {slot.label}{slot.required && <span className="text-error ml-0.5">*</span>}
                 </td>
                 <td className="px-3 py-2">
-                  <select
+                  <Select
                     value={workFieldMap[slot.key]?.field_id || ''}
                     onChange={e => {
                       const f = tableFields.find(f => f.id === e.target.value)
                       onChange(slot.key, f ? { field_id: f.id, field_name: f.name } : null)
                     }}
-                    className={`w-full bg-surface-2 border rounded-md px-2 py-1 text-foreground outline-none focus:border-accent ${
-                      slot.required && !workFieldMap[slot.key] ? 'border-error/60' : 'border-border'
+                    className={`w-full ${
+                      slot.required && !workFieldMap[slot.key] ? 'border-error/60' : ''
                     }`}
                   >
                     <option value="">— unmapped —</option>
                     {tableFields.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
-                  </select>
+                  </Select>
                 </td>
               </tr>
             ))}
@@ -1140,14 +1145,15 @@ function StepDefineAsset({ tables, initialDefs, onSuccess, onBack }) {
       />
       {error && <p className="text-error text-sm">{error}</p>}
       <div className="flex items-center justify-between pt-1">
-        <button onClick={onBack} className="px-4 py-2 rounded-md bg-surface-2 text-foreground text-sm font-medium hover:bg-surface-3 transition-colors cursor-pointer">Back</button>
-        <button
+        <Button size="lg" onClick={onBack}>Back</Button>
+        <Button
+          variant="primary"
+          size="lg"
           onClick={save}
           disabled={saving || !isComplete}
-          className="px-4 py-2 rounded-md bg-accent text-white text-sm font-medium hover:bg-accent-hover transition-colors cursor-pointer disabled:opacity-40"
         >
           {saving ? 'Saving…' : 'Continue'}
-        </button>
+        </Button>
       </div>
     </div>
   )
@@ -1305,7 +1311,7 @@ function StepDefineEntities({ tables, initialDefs, onSuccess, onBack }) {
       </div>
 
       <div className="flex flex-col gap-3">
-        <p className="text-xs text-muted uppercase tracking-wide">Parent level</p>
+        <SectionLabel>Parent level</SectionLabel>
         {PARENT_ENTITIES.map(entity => (
           <EntityPanel
             key={entity.type}
@@ -1319,7 +1325,7 @@ function StepDefineEntities({ tables, initialDefs, onSuccess, onBack }) {
 
       <div className="flex flex-col gap-3">
         <div className="flex items-center justify-between">
-          <p className="text-xs text-muted uppercase tracking-wide">Child level</p>
+          <SectionLabel>Child level</SectionLabel>
           <label className="flex items-center gap-1.5 cursor-pointer">
             <input
               type="checkbox"
@@ -1361,18 +1367,19 @@ function StepDefineEntities({ tables, initialDefs, onSuccess, onBack }) {
 
       {error && <p className="text-error text-sm">{error}</p>}
       <div className="flex items-center justify-between pt-1">
-        <button onClick={onBack} className="px-4 py-2 rounded-md bg-surface-2 text-foreground text-sm font-medium hover:bg-surface-3 transition-colors cursor-pointer">Back</button>
+        <Button size="lg" onClick={onBack}>Back</Button>
         <div className="flex items-center gap-3">
           <p className="text-muted text-xs">
             {allComplete ? 'Structure defined' : 'Define required entities to continue'}
           </p>
-          <button
+          <Button
+            variant="primary"
+            size="lg"
             onClick={save}
             disabled={saving || !allComplete}
-            className="px-4 py-2 rounded-md bg-accent text-white text-sm font-medium hover:bg-accent-hover transition-colors cursor-pointer disabled:opacity-40"
           >
             {saving ? 'Saving…' : 'Save & continue'}
-          </button>
+          </Button>
         </div>
       </div>
     </div>
@@ -1439,14 +1446,15 @@ function StepJiraDefineAsset({ tables, initialDefs, onSuccess, onBack }) {
       />
       {error && <p className="text-error text-sm">{error}</p>}
       <div className="flex items-center justify-between pt-1">
-        <button onClick={onBack} className="px-4 py-2 rounded-md bg-surface-2 text-foreground text-sm font-medium hover:bg-surface-3 transition-colors cursor-pointer">Back</button>
-        <button
+        <Button size="lg" onClick={onBack}>Back</Button>
+        <Button
+          variant="primary"
+          size="lg"
           onClick={save}
           disabled={saving || !isComplete}
-          className="px-4 py-2 rounded-md bg-accent text-white text-sm font-medium hover:bg-accent-hover transition-colors cursor-pointer disabled:opacity-40"
         >
           {saving ? 'Saving…' : 'Continue'}
-        </button>
+        </Button>
       </div>
     </div>
   )
@@ -1547,7 +1555,6 @@ function JiraItemTypePanel({ tables, definitions, onChange }) {
   }
 
   const isComplete = mode === 'field_values' ? !!fieldId : !!jql.trim()
-  const selCls = 'bg-surface-2 border border-border rounded-md px-2 py-1.5 text-foreground text-sm outline-none focus:border-accent'
 
   return (
     <div className={`rounded-lg border p-4 flex flex-col gap-4 transition-colors ${isComplete ? 'border-accent/40' : 'border-border'}`}>
@@ -1567,65 +1574,61 @@ function JiraItemTypePanel({ tables, definitions, onChange }) {
         ].map(opt => (
           <button key={opt.id} type="button" onClick={() => handleModeSwitch(opt.id)}
             className={`flex-1 flex flex-col items-start px-3 py-2 rounded-md border text-left transition-colors cursor-pointer
-              ${mode === opt.id ? 'border-accent bg-accent/10' : 'border-border hover:border-accent/50'}`}
+              ${mode === opt.id ? 'border-accent bg-accent-tint' : 'border-border hover:bg-surface-2'}`}
           >
-            <span className={`text-xs font-medium ${mode === opt.id ? 'text-accent' : 'text-foreground'}`}>{opt.label}</span>
+            <span className="text-xs font-medium text-foreground">{opt.label}</span>
             <span className="text-muted text-xs">{opt.sub}</span>
           </button>
         ))}
       </div>
 
       {mode === 'field_values' ? (
-        <label className="flex flex-col gap-1.5">
-          <span className="text-muted text-xs">Field</span>
-          <select value={fieldId} onChange={e => handleFieldChange(e.target.value)} className={selCls}>
+        <Field
+          label="Field"
+          hint={fieldId ? (
+            <>Distinct values of <span className="text-foreground">{fieldName || fieldId}</span> will become item types at sync time.</>
+          ) : null}
+        >
+          <Select size="lg" value={fieldId} onChange={e => handleFieldChange(e.target.value)}>
             <option value="">— select field —</option>
             {fields.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
-          </select>
-          {fieldId && (
-            <p className="text-muted text-xs">
-              Distinct values of <span className="text-foreground">{fieldName || fieldId}</span> will become item types at sync time.
-            </p>
-          )}
-        </label>
+          </Select>
+        </Field>
       ) : (
         <>
-          <label className="flex flex-col gap-1.5">
-            <span className="text-muted text-xs">Project</span>
-            <select value={projectKey} onChange={e => handleProjectChange(e.target.value)} className={selCls}>
+          <Field label="Project">
+            <Select size="lg" value={projectKey} onChange={e => handleProjectChange(e.target.value)}>
               <option value="">— select project —</option>
               {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-            </select>
-          </label>
+            </Select>
+          </Field>
           {!advanced && (
-            <label className="flex flex-col gap-1.5">
-              <span className="text-muted text-xs">Issue type <span className="opacity-60">(optional)</span></span>
-              <select value={issueType} onChange={e => handleIssueTypeChange(e.target.value)} disabled={!projectKey} className={selCls + ' disabled:opacity-50'}>
+            <Field label={<>Issue type <span className="text-faint">(optional)</span></>}>
+              <Select size="lg" value={issueType} onChange={e => handleIssueTypeChange(e.target.value)} disabled={!projectKey}>
                 <option value="">— all types —</option>
                 {issueTypes.map(t => <option key={t.id} value={t.name}>{t.name}</option>)}
-              </select>
-            </label>
+              </Select>
+            </Field>
           )}
           <div className="flex flex-col gap-1.5">
             <div className="flex items-center justify-between">
               <span className="text-muted text-xs">JQL</span>
-              <button type="button" onClick={() => { setAdvanced(!advanced); if (advanced) { const q = buildJql(projectKey, issueType); setJql(q); handleJqlChange(q) } }} className="text-accent text-xs cursor-pointer hover:underline">
+              <button type="button" onClick={() => { setAdvanced(!advanced); if (advanced) { const q = buildJql(projectKey, issueType); setJql(q); handleJqlChange(q) } }} className="text-link text-xs cursor-pointer hover:underline">
                 {advanced ? 'Simple' : 'Edit JQL'}
               </button>
             </div>
-            <textarea
+            <Textarea
               value={jql}
               readOnly={!advanced}
               onChange={e => handleJqlChange(e.target.value)}
               rows={2}
-              className={`w-full px-3 py-2 rounded-md bg-surface-2 border border-border text-foreground text-xs font-mono outline-none focus:border-accent resize-none ${!advanced ? 'text-muted' : ''}`}
+              className={`w-full text-xs font-mono resize-none ${!advanced ? 'text-muted cursor-default' : ''}`}
             />
           </div>
           <div className="flex items-center gap-3">
-            <button type="button" onClick={runPreview} disabled={!jql.trim() || previewing}
-              className="px-3 py-1.5 rounded-md bg-surface-2 border border-border text-foreground text-xs hover:border-accent/50 transition-colors cursor-pointer disabled:opacity-40">
+            <Button size="sm" onClick={runPreview} disabled={!jql.trim() || previewing}>
               {previewing ? 'Previewing…' : 'Preview'}
-            </button>
+            </Button>
             {preview && !previewErr && (
               <span className="text-muted text-xs">{preview.count} record{preview.count !== 1 ? 's' : ''}{preview.has_more ? '+' : ''}{preview.samples?.length ? ` — ${preview.samples.join(', ')}` : ''}</span>
             )}
@@ -1765,7 +1768,7 @@ function StepJiraDefineEntities({ tables, initialDefs, onSuccess, onBack }) {
       </p>
 
       <div className="flex flex-col gap-3">
-        <p className="text-xs text-muted uppercase tracking-wide">Parent level</p>
+        <SectionLabel>Parent level</SectionLabel>
         <JiraEntityPanel
           entity={ENTITIES.find(e => e.type === 'product')}
           projects={tables}
@@ -1781,7 +1784,7 @@ function StepJiraDefineEntities({ tables, initialDefs, onSuccess, onBack }) {
 
       <div className="flex flex-col gap-3">
         <div className="flex items-center justify-between">
-          <p className="text-xs text-muted uppercase tracking-wide">Child level</p>
+          <SectionLabel>Child level</SectionLabel>
           <label className="flex items-center gap-1.5 cursor-pointer">
             <input
               type="checkbox"
@@ -1806,18 +1809,19 @@ function StepJiraDefineEntities({ tables, initialDefs, onSuccess, onBack }) {
 
       {error && <p className="text-error text-sm">{error}</p>}
       <div className="flex items-center justify-between pt-1">
-        <button onClick={onBack} className="px-4 py-2 rounded-md bg-surface-2 text-foreground text-sm font-medium hover:bg-surface-3 transition-colors cursor-pointer">Back</button>
+        <Button size="lg" onClick={onBack}>Back</Button>
         <div className="flex items-center gap-3">
           <p className="text-muted text-xs">
             {allComplete ? 'Structure defined' : 'Define required entities to continue'}
           </p>
-          <button
+          <Button
+            variant="primary"
+            size="lg"
             onClick={save}
             disabled={saving || !allComplete}
-            className="px-4 py-2 rounded-md bg-accent text-white text-sm font-medium hover:bg-accent-hover transition-colors cursor-pointer disabled:opacity-40"
           >
             {saving ? 'Saving…' : 'Save & continue'}
-          </button>
+          </Button>
         </div>
       </div>
     </div>
@@ -1892,29 +1896,30 @@ function StepMapFields({ sourceType, sourceFields, presetSlotFields, onSuccess, 
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-border bg-surface-2">
-              <th className="text-left text-muted font-normal px-3 py-2 w-1/2">ArtHound slot</th>
-              <th className="text-left text-muted font-normal px-3 py-2 w-1/2">Source field</th>
+              <th className="text-left text-[11px] font-medium uppercase tracking-wider text-faint px-3 py-2 w-1/2">ArtHound slot</th>
+              <th className="text-left text-[11px] font-medium uppercase tracking-wider text-faint px-3 py-2 w-1/2">Source field</th>
             </tr>
           </thead>
           <tbody>
             {ALL_SLOTS.map(s => (
-              <tr key={s.slot} className="border-b border-border/50 last:border-0">
+              <tr key={s.slot} className="border-b border-border-soft last:border-0">
                 <td className="px-3 py-2 text-foreground">
                   {s.label}{s.required && <span className="text-error ml-0.5">*</span>}
                 </td>
                 <td className="px-3 py-2">
-                  <select
+                  <Select
+                    size="lg"
                     value={assignments[s.slot] ?? ''}
                     onChange={e => setSlot(s.slot, e.target.value)}
-                    className={`w-full bg-surface-2 border rounded-md px-2 py-1.5 text-foreground text-sm outline-none focus:border-accent ${
-                      s.required && !assignments[s.slot] ? 'border-error/60' : 'border-border'
+                    className={`w-full ${
+                      s.required && !assignments[s.slot] ? 'border-error/60' : ''
                     }`}
                   >
                     <option value="">— unmapped —</option>
                     {sourceFields.map(f => (
                       <option key={f.id} value={f.id}>{f.name}</option>
                     ))}
-                  </select>
+                  </Select>
                 </td>
               </tr>
             ))}
@@ -1923,20 +1928,21 @@ function StepMapFields({ sourceType, sourceFields, presetSlotFields, onSuccess, 
       </div>
       {error && <p className="text-error text-sm">{error}</p>}
       <div className="flex items-center justify-between">
-        <button onClick={onBack} className="px-4 py-2 rounded-md bg-surface-2 text-foreground text-sm font-medium hover:bg-surface-3 transition-colors cursor-pointer">Back</button>
+        <Button size="lg" onClick={onBack}>Back</Button>
         <div className="flex items-center gap-3">
           <p className="text-muted text-xs">
             {allRequiredMapped
               ? 'All required fields mapped'
               : `${REQUIRED_SLOTS.length - mappedRequired.length} required field(s) still unmapped`}
           </p>
-          <button
+          <Button
+            variant="primary"
+            size="lg"
             onClick={save}
             disabled={saving || !allRequiredMapped}
-            className="px-4 py-2 rounded-md bg-accent text-white text-sm font-medium hover:bg-accent-hover transition-colors cursor-pointer disabled:opacity-40"
           >
             {saving ? 'Saving…' : 'Save & continue'}
-          </button>
+          </Button>
         </div>
       </div>
     </div>
@@ -1968,7 +1974,7 @@ function StepReview({ sourceType, definitions, isReset, onStart, onBack }) {
 
   return (
     <div className="flex flex-col gap-5">
-      <div className="bg-surface-2 border border-border rounded-lg divide-y divide-border">
+      <div className="bg-surface-2 border border-border rounded-lg divide-y divide-border-soft">
         <div className="flex justify-between px-4 py-3">
           <span className="text-muted text-sm">Source</span>
           <span className="text-foreground text-sm font-medium">{SOURCE_LABELS[sourceType] || sourceType}</span>
@@ -2001,7 +2007,7 @@ function StepReview({ sourceType, definitions, isReset, onStart, onBack }) {
       </div>
 
       {isReset && (
-        <p className="text-warning text-sm bg-warning/10 border border-warning/30 rounded-md px-3 py-2">
+        <p className="text-warning text-sm bg-warning-tint border border-warning/30 rounded-md px-3 py-2">
           This will delete all replicated assets, products, and work items and re-import from scratch.
         </p>
       )}
@@ -2009,14 +2015,16 @@ function StepReview({ sourceType, definitions, isReset, onStart, onBack }) {
       {error && <p className="text-error text-sm">{error}</p>}
 
       <div className="flex gap-2">
-        <button onClick={onBack} className="px-4 py-2 rounded-md bg-surface-2 text-foreground text-sm font-medium hover:bg-surface-3 transition-colors cursor-pointer">Back</button>
-        <button
+        <Button size="lg" onClick={onBack}>Back</Button>
+        <Button
+          variant="primary"
+          size="lg"
           onClick={start}
           disabled={loading}
-          className="flex-1 px-4 py-2 rounded-md bg-accent text-white text-sm font-medium hover:bg-accent-hover transition-colors cursor-pointer disabled:opacity-40"
+          className="flex-1"
         >
           {loading ? 'Starting…' : isReset ? 'Reset & re-sync' : 'Start sync'}
-        </button>
+        </Button>
       </div>
     </div>
   )
@@ -2054,7 +2062,7 @@ function StepProgress({ jobId, onComplete, onBack }) {
     <div className="flex flex-col gap-5 items-center py-4">
       {(!job || job.status === 'running' || job.status === 'pending') && (
         <>
-          <div className="w-8 h-8 border-2 border-accent border-t-transparent rounded-full animate-spin" />
+          <Spinner size={32} className="text-accent" />
           <p className="text-foreground text-sm font-medium">Syncing your project…</p>
           {job && (
             <div className="w-full flex flex-col gap-2">
@@ -2084,12 +2092,9 @@ function StepProgress({ jobId, onComplete, onBack }) {
             </pre>
           )}
           <p className="text-muted text-xs">Check your credentials and hierarchy config, then try again.</p>
-          <button
-            onClick={onBack}
-            className="self-start px-4 py-2 rounded-md bg-surface-2 text-foreground text-sm font-medium hover:bg-surface-3 transition-colors cursor-pointer"
-          >
+          <Button size="lg" onClick={onBack} className="self-start">
             Back to review
-          </button>
+          </Button>
         </div>
       )}
     </div>
@@ -2110,7 +2115,7 @@ function StepDone({ sourceType, recordCount, isReset }) {
 
   return (
     <div className="flex flex-col gap-5 items-center py-4 text-center">
-      <div className="w-12 h-12 rounded-full bg-accent/15 flex items-center justify-center text-2xl">✓</div>
+      <div className="w-12 h-12 rounded-full bg-accent-tint flex items-center justify-center text-2xl text-accent">✓</div>
       <div>
         <p className="text-foreground font-semibold text-base mb-1">
           {isReset ? 'Project reset complete' : 'Setup complete'}
@@ -2119,12 +2124,9 @@ function StepDone({ sourceType, recordCount, isReset }) {
           {recordCount} asset{recordCount !== 1 ? 's' : ''} synced from {SOURCE_LABELS[sourceType] || sourceType}.
         </p>
       </div>
-      <button
-        onClick={finish}
-        className="px-5 py-2 rounded-md bg-accent text-white text-sm font-medium hover:bg-accent-hover transition-colors cursor-pointer"
-      >
+      <Button variant="primary" size="lg" onClick={finish}>
         Go to ArtHound
-      </button>
+      </Button>
     </div>
   )
 }
@@ -2186,7 +2188,7 @@ export default function ProjectInit() {
           onNavigate={step < 8 ? setStep : undefined}
         />
 
-        <div className="bg-surface border border-border rounded-xl p-6">
+        <div className="bg-surface border border-border rounded-lg p-6">
           {step === 1 && (
             <StepSelectSource onSelect={id => { setSourceType(id); setStep(2) }} />
           )}

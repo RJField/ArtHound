@@ -1,6 +1,8 @@
 import { useState, useMemo } from 'react'
-import { cn } from '../../lib/utils'
+import { MousePointerClick } from 'lucide-react'
 import { formatRawFields } from '../../lib/fields'
+import { priorityColor } from '../../lib/statusColors'
+import { EmptyState, Pill, StatusDot, Tabs } from '../ui'
 import DetailsTab     from './tabs/DetailsTab'
 import WorkTab        from './tabs/WorkTab'
 import ReviewsTab     from './tabs/ReviewsTab'
@@ -8,11 +10,11 @@ import BugsTab        from './tabs/BugsTab'
 import AttachmentsTab from './tabs/AttachmentsTab'
 
 const TABS = [
-  { id: 'details',     label: () => 'Details',     Component: DetailsTab },
-  { id: 'attachments', label: n  => n ? `Attachments (${n})` : 'Attachments', Component: AttachmentsTab },
-  { id: 'work',        label: () => 'Work',         Component: WorkTab },
-  { id: 'reviews',     label: () => 'Reviews',      Component: ReviewsTab },
-  { id: 'bugs',        label: () => 'Bugs',         Component: BugsTab },
+  { id: 'details',     label: 'Details',     Component: DetailsTab },
+  { id: 'attachments', label: 'Attachments', Component: AttachmentsTab },
+  { id: 'work',        label: 'Work',        Component: WorkTab },
+  { id: 'reviews',     label: 'Reviews',     Component: ReviewsTab },
+  { id: 'bugs',        label: 'Bugs',        Component: BugsTab },
 ]
 
 export default function AssetDetailPanel({ asset, schema, workRefreshKey }) {
@@ -24,14 +26,20 @@ export default function AssetDetailPanel({ asset, schema, workRefreshKey }) {
       .reduce((sum, g) => sum + (g.items?.length ?? 0), 0)
   }, [asset?.id])
 
-  const { Component: ActiveComponent, label: labelFn } = TABS.find(t => t.id === activeTab) ?? {}
+  const tabs = TABS.map(t => ({
+    id: t.id,
+    label: t.label,
+    count: t.id === 'attachments' && attachmentCount ? attachmentCount : undefined,
+  }))
+
+  const { Component: ActiveComponent } = TABS.find(t => t.id === activeTab) ?? {}
 
   return (
     <div className="w-96 shrink-0 flex flex-col overflow-hidden">
 
       {!asset ? (
         <div className="flex-1 flex items-center justify-center">
-          <p className="text-muted text-xs">Select an asset</p>
+          <EmptyState icon={MousePointerClick} title="Select an asset" />
         </div>
       ) : (
         <>
@@ -40,40 +48,30 @@ export default function AssetDetailPanel({ asset, schema, workRefreshKey }) {
             <h2 className="text-foreground font-semibold text-sm leading-snug truncate">
               {asset.name || '—'}
             </h2>
-            <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
+            <div className="flex items-center gap-2 mt-1.5 flex-wrap">
               {asset.itemType && (
-                <span className="text-xs bg-surface-2 text-muted px-2 py-0.5 rounded-full">
-                  {asset.itemType}
-                </span>
+                <Pill tone="neutral">{asset.itemType}</Pill>
               )}
               {asset.priority != null && (
-                <span className="text-xs bg-surface-2 text-muted px-2 py-0.5 rounded-full">
-                  P{asset.priority}
-                </span>
+                <StatusDot
+                  label={`P${asset.priority}`}
+                  color={priorityColor(asset.priority)}
+                  className="text-xs text-foreground"
+                />
               )}
               {asset.assetNumber && (
-                <span className="text-xs text-muted">#{asset.assetNumber}</span>
+                <span className="font-mono text-xs text-muted">#{asset.assetNumber}</span>
               )}
             </div>
           </div>
 
           {/* Tab bar */}
-          <div className="flex border-b border-border shrink-0 overflow-x-auto">
-            {TABS.map(tab => (
-              <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
-                className={cn(
-                  'px-4 py-2 text-xs font-medium transition-colors cursor-pointer whitespace-nowrap border-b-2 -mb-px',
-                  activeTab === tab.id
-                    ? 'border-accent text-foreground'
-                    : 'border-transparent text-muted hover:text-foreground'
-                )}
-              >
-                {tab.label(tab.id === 'attachments' ? attachmentCount : null)}
-              </button>
-            ))}
-          </div>
+          <Tabs
+            tabs={tabs}
+            active={activeTab}
+            onChange={setActiveTab}
+            className="shrink-0"
+          />
 
           {/* Active tab content */}
           <div className="flex-1 overflow-hidden">

@@ -1,8 +1,10 @@
 import { useState, useEffect } from 'react'
+import { ListChecks } from 'lucide-react'
 import { toast } from 'sonner'
 import { apiFetch } from '../../../lib/api'
 import { fmtDate } from '../../../lib/fields'
 import { cn } from '../../../lib/utils'
+import { EmptyState, Spinner, StatusDot, Table, Th, Tr, Td } from '../../ui'
 // ── Timeline ──────────────────────────────────────────────────────────────────
 
 function WorkTimeline({ work }) {
@@ -10,7 +12,7 @@ function WorkTimeline({ work }) {
     .filter(t => t.startDate && t.endDate)
     .map(t => ({ ...t, start: new Date(t.startDate), end: new Date(t.endDate) }))
 
-  if (!dated.length) return <p className="text-muted text-xs p-3">No dated work items to display.</p>
+  if (!dated.length) return <EmptyState title="No dated work items to display." />
 
   const minMs  = Math.min(...dated.map(t => t.start.getTime()))
   const maxMs  = Math.max(...dated.map(t => t.end.getTime()))
@@ -36,7 +38,7 @@ function WorkTimeline({ work }) {
         <div className="w-32 shrink-0" />
         <div className="flex-1 relative">
           {months.map(m => (
-            <span key={m.label} className="absolute text-muted text-xs" style={{ left: `${m.pct}%` }}>
+            <span key={m.label} className="absolute text-faint text-xs" style={{ left: `${m.pct}%` }}>
               {m.label}
             </span>
           ))}
@@ -85,28 +87,28 @@ function CraftRollup({ work }) {
 
   return (
     <div className="border border-border rounded-md overflow-hidden mb-3">
-      <table className="w-full text-xs">
+      <Table>
         <thead>
-          <tr className="border-b border-border bg-surface-2">
-            <th className="text-left font-normal text-muted px-3 py-1.5">Craft</th>
-            <th className="text-right font-normal text-muted px-3 py-1.5">Days</th>
+          <tr>
+            <Th className="static">Craft</Th>
+            <Th className="static text-right">Days</Th>
           </tr>
         </thead>
         <tbody>
           {rows.map(([craft, days]) => (
-            <tr key={craft} className="border-b border-border/40 last:border-0">
-              <td className="px-3 py-1.5 text-foreground">{craft}</td>
-              <td className="px-3 py-1.5 text-right text-foreground tabular-nums">{days}d</td>
-            </tr>
+            <Tr key={craft}>
+              <Td primary>{craft}</Td>
+              <Td className="text-right text-foreground">{days}d</Td>
+            </Tr>
           ))}
         </tbody>
         <tfoot>
           <tr className="border-t border-border bg-surface-2">
-            <td className="px-3 py-1.5 text-muted font-medium">Total</td>
-            <td className="px-3 py-1.5 text-right text-foreground font-medium tabular-nums">{total}d</td>
+            <td className="px-2.5 h-[30px] text-muted font-medium text-xs">Total</td>
+            <td className="px-2.5 h-[30px] text-right text-foreground font-medium tabular-nums text-xs">{total}d</td>
           </tr>
         </tfoot>
-      </table>
+      </Table>
     </div>
   )
 }
@@ -169,7 +171,7 @@ export default function WorkTab({ asset, workRefreshKey }) {
     <div className="flex flex-col h-full overflow-hidden">
 
       {/* Controls */}
-      <div className="flex items-center gap-2 px-3 py-2 border-b border-border shrink-0">
+      <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-surface shrink-0">
         <div className="flex rounded-md overflow-hidden border border-border text-xs">
           {SOURCES.map(s => (
             <button key={s.id} onClick={() => setSource(s.id)} className={cn(
@@ -190,10 +192,14 @@ export default function WorkTab({ asset, workRefreshKey }) {
 
       {/* Work list / timeline */}
       <div className="flex-1 overflow-y-auto p-3">
-        {loading && <p className="text-muted text-xs">Loading…</p>}
+        {loading && (
+          <div className="flex justify-center py-6">
+            <Spinner />
+          </div>
+        )}
 
         {!loading && work !== null && work.length === 0 && (
-          <p className="text-muted text-xs">{emptyMessage()}</p>
+          <EmptyState icon={ListChecks} title={emptyMessage()} />
         )}
 
         {work?.length > 0 && source === 'arthound' && (
@@ -210,9 +216,11 @@ export default function WorkTab({ asset, workRefreshKey }) {
               <div key={t.id} className="flex items-start justify-between gap-4 px-3 py-2 rounded-md">
                 <div className="min-w-0 flex-1">
                   <p className="text-foreground text-xs truncate">{t.name || '—'}</p>
-                  {t.status && <p className="text-muted text-xs">{t.status}</p>}
+                  {t.status && (
+                    <StatusDot label={t.status} className="text-muted text-xs" />
+                  )}
                 </div>
-                <span className="text-muted text-xs shrink-0">
+                <span className="text-muted text-xs shrink-0 tabular-nums">
                   {t.estimate != null ? `${t.estimate}` : '—'}
                 </span>
               </div>
@@ -230,7 +238,7 @@ export default function WorkTab({ asset, workRefreshKey }) {
                     {t.startDate ? fmtDate(t.startDate) : '—'} → {t.endDate ? fmtDate(t.endDate) : '—'}
                   </p>
                 </div>
-                <span className="text-muted text-xs shrink-0">
+                <span className="text-muted text-xs shrink-0 tabular-nums">
                   {t.estimate != null ? `${t.estimate}d` : '—'}
                 </span>
               </div>

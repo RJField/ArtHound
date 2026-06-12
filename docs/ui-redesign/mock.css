@@ -1,0 +1,186 @@
+/* ArtHound UI redesign — proposed design system (mockup stylesheet)
+   Direction: "graphite + violet" — neutral chrome, brand purple reserved
+   for actions, selection and identity. Built for dense data screens. */
+
+:root {
+  /* ── Surfaces: near-neutral graphite with a faint cool-violet cast ── */
+  --bg:        #131217;
+  --surface:   #18171d;
+  --surface-2: #201f27;
+  --surface-3: #2a2932;
+  --overlay:   rgba(8, 7, 12, 0.65);
+
+  /* ── Borders: a real 3-step system, not ad-hoc opacities ── */
+  --border:       #2e2d38;                    /* structural: panel edges, modals   */
+  --border-soft:  rgba(255, 255, 255, 0.07);  /* internal: table rows, dividers    */
+  --border-faint: rgba(255, 255, 255, 0.04);  /* hairline: dense grids, zebra alt  */
+
+  /* ── Text: neutral, 3 explicit tiers ── */
+  --fg:    #e9e8ef;
+  --muted: #a3a1b0;
+  --faint: #6f6d7c;
+
+  /* ── Brand / action: the ONLY saturated chrome in the app ── */
+  --accent:        #7c6af4;
+  --accent-hover:  #9b8ef8;
+  --accent-tint:   rgba(124, 106, 244, 0.10);
+  --accent-tint-2: rgba(124, 106, 244, 0.22);
+
+  /* ── Status (unchanged hues, tints standardized at 12%) ── */
+  --success: #34d399; --success-tint: rgba(52, 211, 153, 0.12);
+  --info:    #60a5fa; --info-tint:    rgba(96, 165, 250, 0.12);
+  --warning: #fbbf24; --warning-tint: rgba(251, 191, 36, 0.12);
+  --error:   #f87171; --error-tint:   rgba(248, 113, 113, 0.12);
+
+  --shadow-md: 0 4px 14px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 24px 48px -12px rgba(0, 0, 0, 0.55);
+  --ring: 0 0 0 2px rgba(124, 106, 244, 0.55);
+
+  /* ── One radius for controls, one for containers. That's it. ── */
+  --r-control: 6px;
+  --r-panel: 10px;
+
+  --font: "Geist", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font);
+  font-size: 13px;                 /* down from 14px — denser baseline */
+  line-height: 1.45;
+  letter-spacing: -0.005em;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── Type scale ── */
+.t-display { font-size: 20px; font-weight: 600; letter-spacing: -0.015em; }
+.t-title   { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
+.t-body    { font-size: 13px; }
+.t-small   { font-size: 12px; }
+.t-label   { font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.05em; color: var(--faint); }
+.t-num     { font-variant-numeric: tabular-nums; }
+.t-mono    { font-family: var(--mono); font-size: 12px; }
+.muted { color: var(--muted); }
+.faint { color: var(--faint); }
+
+/* ── Buttons: one radius, two sizes, four variants ── */
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 28px; padding: 0 12px;
+  border-radius: var(--r-control);
+  font: inherit; font-size: 12.5px; font-weight: 500;
+  border: 1px solid transparent;
+  cursor: pointer; white-space: nowrap;
+  transition: background 120ms, border-color 120ms, color 120ms;
+}
+.btn-lg { height: 32px; padding: 0 14px; font-size: 13px; }
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary:hover { background: var(--accent-hover); }
+.btn-secondary { background: var(--surface-2); color: var(--fg); border-color: var(--border); }
+.btn-secondary:hover { background: var(--surface-3); }
+.btn-ghost { background: transparent; color: var(--muted); }
+.btn-ghost:hover { color: var(--fg); background: var(--surface-2); }
+.btn-danger { background: var(--error-tint); color: var(--error); border-color: rgba(248,113,113,.25); }
+.btn-danger:hover { background: rgba(248,113,113,.2); }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+.btn:focus-visible, .input:focus, .select:focus { outline: none; box-shadow: var(--ring); }
+
+/* ── Inputs: one style ── */
+.input, .select {
+  height: 28px; padding: 0 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-control);
+  color: var(--fg); font: inherit; font-size: 12.5px;
+}
+.input::placeholder { color: var(--faint); }
+
+/* ── Pills / badges ── */
+.pill {
+  display: inline-flex; align-items: center;
+  padding: 1px 8px; border-radius: 999px;
+  font-size: 11px; font-weight: 500; line-height: 1.5;
+  white-space: nowrap;
+}
+.pill-success { background: var(--success-tint); color: var(--success); }
+.pill-info    { background: var(--info-tint);    color: var(--info); }
+.pill-warning { background: var(--warning-tint); color: var(--warning); }
+.pill-error   { background: var(--error-tint);   color: var(--error); }
+.pill-neutral { background: var(--surface-2); color: var(--muted); border: 1px solid var(--border-soft); }
+.pill-accent  { background: var(--accent-tint); color: var(--accent-hover); }
+
+/* ── Dense data table ── */
+.table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.table th {
+  position: sticky; top: 0; z-index: 5;
+  background: var(--surface);
+  text-align: left; font-weight: 500;
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--faint);
+  padding: 0 10px; height: 30px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.table td {
+  padding: 0 10px; height: 30px;
+  border-bottom: 1px solid var(--border-soft);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+.table tbody tr { cursor: default; }
+.table tbody tr:hover { background: var(--surface-2); }
+.table tbody tr.is-selected { background: var(--accent-tint); box-shadow: inset 2px 0 0 var(--accent); }
+.table .td-primary { color: var(--fg); font-weight: 500; }
+.table td, .table th { max-width: 260px; }
+
+/* ── Panels / cards ── */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-panel);
+}
+.card-pad { padding: 16px; }
+
+/* ── Tabs ── */
+.tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); }
+.tab {
+  padding: 7px 12px; font-size: 12.5px; font-weight: 500;
+  color: var(--muted); cursor: pointer;
+  border: none; background: none; font-family: inherit;
+  border-bottom: 2px solid transparent; margin-bottom: -1px;
+}
+.tab:hover { color: var(--fg); }
+.tab.is-active { color: var(--fg); border-bottom-color: var(--accent); }
+
+/* ── App shell ── */
+.topbar {
+  display: flex; align-items: center; gap: 4px;
+  height: 44px; padding: 0 12px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+.nav-link {
+  padding: 5px 10px; border-radius: var(--r-control);
+  color: var(--muted); font-size: 12.5px; font-weight: 500;
+  text-decoration: none; cursor: pointer;
+}
+.nav-link:hover { color: var(--fg); background: var(--surface-2); }
+.nav-link.is-active { color: var(--fg); background: var(--surface-2); }
+
+/* ── Key-value rows (detail panels) ── */
+.kv { display: flex; gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--border-faint); font-size: 12.5px; }
+.kv:last-child { border-bottom: none; }
+.kv .k { width: 110px; flex-shrink: 0; color: var(--faint); }
+.kv .v { color: var(--fg); min-width: 0; }
+
+/* ── Misc helpers for mockups ── */
+.row { display: flex; align-items: center; }
+.gap-1 { gap: 4px; } .gap-2 { gap: 8px; } .gap-3 { gap: 12px; } .gap-4 { gap: 16px; }
+.grow { flex: 1; min-width: 0; }
+.check { accent-color: var(--accent); }
+.swatch { width: 100%; height: 44px; border-radius: 6px; border: 1px solid var(--border-soft); }

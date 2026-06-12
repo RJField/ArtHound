@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react'
 import { toast } from 'sonner'
 import { apiFetch } from '../lib/api'
+import { cn } from '../lib/utils'
+import { Modal, Button, Field, Input, Spinner, SectionLabel } from './ui'
 import EstimateSnapshotView, { GRANULARITY_LABELS, GRANULARITY_HINTS } from './EstimateSnapshotView'
 
 // Vendor "Share estimates" modal (vendor-estimate-share plan §4.5, M3).
@@ -56,106 +58,92 @@ export default function ShareEstimatesModal({ target, onClose, onShared }) {
   const unset = preview?.unset_cells ?? 0
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
-      onClick={e => e.target === e.currentTarget && onClose()}
-    >
-      <div className="bg-surface border border-border rounded-xl w-full max-w-lg flex flex-col max-h-[90vh]">
-        <div className="flex items-center justify-between px-5 pt-5 pb-0 shrink-0">
-          <h2 className="text-foreground text-base font-semibold">
-            Share estimates with {target.studio_name ?? 'studio'}
-          </h2>
-          <button onClick={onClose} className="text-muted hover:text-foreground text-xl cursor-pointer leading-none">×</button>
-        </div>
-
-        <div className="px-5 pt-4 pb-5 flex flex-col gap-4 overflow-y-auto">
-          {/* Granularity */}
-          <div className="flex flex-col gap-1.5">
-            <span className="text-muted text-xs">Level of detail to share</span>
-            <div className="flex flex-col gap-1.5">
-              {GRANULARITIES.map(g => (
-                <label
-                  key={g}
-                  className={
-                    'flex items-start gap-2.5 px-3 py-2 rounded-lg border cursor-pointer ' +
-                    (granularity === g ? 'border-accent bg-accent/5' : 'border-border bg-surface hover:bg-surface-2')
-                  }
-                >
-                  <input
-                    type="radio"
-                    name="granularity"
-                    value={g}
-                    checked={granularity === g}
-                    onChange={() => setGranularity(g)}
-                    className="mt-0.5 accent-accent"
-                  />
-                  <span className="flex flex-col gap-0.5">
-                    <span className="text-foreground text-xs font-medium">{GRANULARITY_LABELS[g]}</span>
-                    <span className="text-muted text-xs">{GRANULARITY_HINTS[g]}</span>
-                  </span>
-                </label>
-              ))}
-            </div>
-          </div>
-
-          {/* Expiry + label */}
-          <div className="flex gap-3">
-            <div className="flex flex-col gap-1.5 flex-1">
-              <span className="text-muted text-xs">Expires after (days)</span>
-              <input
-                type="number"
-                min="1"
-                value={expiryDays}
-                onChange={e => setExpiryDays(e.target.value)}
-                placeholder="Never"
-                className="px-2.5 py-1.5 rounded-md border border-border bg-surface text-foreground text-xs focus:outline-none focus:border-accent"
-              />
-            </div>
-            <div className="flex flex-col gap-1.5 flex-[2]">
-              <span className="text-muted text-xs">Label (optional)</span>
-              <input
-                type="text"
-                value={label}
-                onChange={e => setLabel(e.target.value)}
-                placeholder="e.g. Q3 rate card"
-                className="px-2.5 py-1.5 rounded-md border border-border bg-surface text-foreground text-xs focus:outline-none focus:border-accent"
-              />
-            </div>
-          </div>
-
-          {/* Preview */}
-          <div className="flex flex-col gap-1.5">
-            <span className="text-muted text-xs">Preview — exactly what {target.studio_name ?? 'the studio'} will see</span>
-            {loading ? (
-              <p className="text-muted text-xs">Building preview…</p>
-            ) : preview ? (
-              <>
-                {unset > 0 && (
-                  <p className="text-warning text-xs">
-                    {unset} cell{unset !== 1 ? 's' : ''} unset — these will be shared as 0 {preview.snapshot?.unit ?? 'days'}.
-                  </p>
-                )}
-                <EstimateSnapshotView snapshot={preview.snapshot} />
-              </>
-            ) : (
-              <p className="text-muted text-xs">No preview available.</p>
-            )}
-          </div>
-        </div>
-
-        <div className="flex justify-end gap-2 px-5 pb-5 pt-0 shrink-0">
-          <button onClick={onClose} disabled={sharing} className="px-3 py-1.5 rounded-md text-muted text-xs hover:text-foreground cursor-pointer disabled:opacity-40">
-            Cancel
-          </button>
-          <button
-            onClick={share}
-            disabled={sharing || loading || !preview}
-            className="px-3 py-1.5 rounded-md bg-accent text-white text-xs font-medium hover:bg-accent-hover cursor-pointer disabled:opacity-40"
-          >
+    <Modal
+      title={`Share estimates with ${target.studio_name ?? 'studio'}`}
+      onClose={onClose}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose} disabled={sharing}>Cancel</Button>
+          <Button variant="primary" size="lg" onClick={share} disabled={sharing || loading || !preview}>
             {sharing ? 'Sharing…' : 'Share estimates'}
-          </button>
+          </Button>
+        </>
+      }
+    >
+      <div className="flex flex-col gap-4">
+        {/* Granularity */}
+        <div className="flex flex-col gap-1.5">
+          <SectionLabel>Level of detail to share</SectionLabel>
+          <div className="flex flex-col gap-1.5">
+            {GRANULARITIES.map(g => (
+              <label
+                key={g}
+                className={cn(
+                  'flex items-start gap-2.5 px-3 py-2 rounded-lg border cursor-pointer',
+                  granularity === g ? 'border-accent bg-accent-tint' : 'border-border bg-surface hover:bg-surface-2'
+                )}
+              >
+                <input
+                  type="radio"
+                  name="granularity"
+                  value={g}
+                  checked={granularity === g}
+                  onChange={() => setGranularity(g)}
+                  className="mt-0.5 accent-accent"
+                />
+                <span className="flex flex-col gap-0.5">
+                  <span className="text-foreground text-xs font-medium">{GRANULARITY_LABELS[g]}</span>
+                  <span className="text-muted text-xs">{GRANULARITY_HINTS[g]}</span>
+                </span>
+              </label>
+            ))}
+          </div>
+        </div>
+
+        {/* Expiry + label */}
+        <div className="flex gap-3">
+          <Field label="Expires after (days)" className="flex-1">
+            <Input
+              type="number"
+              min="1"
+              value={expiryDays}
+              onChange={e => setExpiryDays(e.target.value)}
+              placeholder="Never"
+            />
+          </Field>
+          <Field label="Label (optional)" className="flex-[2]">
+            <Input
+              type="text"
+              value={label}
+              onChange={e => setLabel(e.target.value)}
+              placeholder="e.g. Q3 rate card"
+            />
+          </Field>
+        </div>
+
+        {/* Preview */}
+        <div className="flex flex-col gap-1.5">
+          <SectionLabel>
+            Preview — exactly what {target.studio_name ?? 'the studio'} will see
+          </SectionLabel>
+          {loading ? (
+            <div className="flex items-center gap-2 text-muted text-xs">
+              <Spinner size={14} /> Building preview…
+            </div>
+          ) : preview ? (
+            <>
+              {unset > 0 && (
+                <p className="text-warning text-xs">
+                  {unset} cell{unset !== 1 ? 's' : ''} unset — these will be shared as 0 {preview.snapshot?.unit ?? 'days'}.
+                </p>
+              )}
+              <EstimateSnapshotView snapshot={preview.snapshot} />
+            </>
+          ) : (
+            <p className="text-muted text-xs">No preview available.</p>
+          )}
         </div>
       </div>
-    </div>
+    </Modal>
   )
 }

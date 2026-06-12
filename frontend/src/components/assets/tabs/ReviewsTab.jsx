@@ -1,20 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ChevronDown, ChevronRight, Paperclip, Trash2, Upload, X } from 'lucide-react'
+import { ChevronDown, ChevronRight, ClipboardList, Paperclip, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { apiFetch, apiUpload, assetAttachmentUrl, reviewAttachmentUrl } from '../../../lib/api'
 import { fmtDate, formatRawFields } from '../../../lib/fields'
-import { cn } from '../../../lib/utils'
+import { Button, EmptyState, Input, SectionLabel, Select, Spinner, StatusDot, Textarea } from '../../ui'
 import AttachmentGallery from '../../media/AttachmentGallery'
-
-const STATUS_STYLES = {
-  pending:            'bg-surface-2 text-muted',
-  approved:           'bg-success/10 text-success',
-  rejected:           'bg-error/10 text-error',
-  in_review:          'bg-accent/10 text-accent',
-  'In Review':        'bg-accent/10 text-accent',
-  'Approved':         'bg-success/10 text-success',
-  'Changes Requested':'bg-error/10 text-error',
-}
 
 // ── Per-review attachment list ─────────────────────────────────────────────────
 
@@ -82,7 +72,8 @@ function ReviewAttachments({ reviewId }) {
               <span className="text-muted truncate">{a.filename}</span>
               <button
                 onClick={() => handleDelete(a.id)}
-                className="text-muted hover:text-red-400 ml-2 shrink-0 cursor-pointer"
+                aria-label="Delete attachment"
+                className="text-muted hover:text-error ml-2 shrink-0 cursor-pointer"
               >
                 <Trash2 size={11} />
               </button>
@@ -92,14 +83,16 @@ function ReviewAttachments({ reviewId }) {
       )}
       <div className="flex items-center gap-2">
         <input ref={inputRef} type="file" multiple className="hidden" onChange={e => handleFiles(e.target.files)} />
-        <button
+        <Button
+          variant="ghost"
+          size="sm"
           onClick={() => inputRef.current?.click()}
           disabled={uploading}
-          className="flex items-center gap-1 text-xs text-muted hover:text-foreground disabled:opacity-50 cursor-pointer"
+          className="px-1"
         >
           <Paperclip size={11} />
           {uploading ? 'Uploading…' : 'Attach file'}
-        </button>
+        </Button>
       </div>
     </div>
   )
@@ -136,39 +129,33 @@ function NewReviewForm({ canonicalId, onCreated, onCancel }) {
   }
 
   return (
-    <div className="rounded-lg border border-border/60 bg-surface-2/40 p-3 flex flex-col gap-2">
-      <input
+    <div className="rounded-lg border border-border bg-surface-2/40 p-3 flex flex-col gap-2">
+      <Input
         autoFocus
         type="text"
         value={form.title}
         onChange={e => setForm(f => ({ ...f, title: e.target.value }))}
         placeholder="Review title…"
-        className="bg-surface border border-border/60 rounded-md px-2.5 py-1.5 text-foreground text-xs outline-none focus:border-accent"
       />
-      <textarea
+      <Textarea
         value={form.description}
         onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
         rows={2}
         placeholder="Description…"
-        className="bg-surface border border-border/60 rounded-md px-2.5 py-1.5 text-foreground text-xs outline-none focus:border-accent resize-none"
+        className="text-xs resize-none"
       />
-      <select
+      <Select
         value={form.status}
         onChange={e => setForm(f => ({ ...f, status: e.target.value }))}
-        className="bg-surface border border-border/60 rounded-md px-2.5 py-1.5 text-foreground text-xs outline-none focus:border-accent cursor-pointer"
       >
         <option value="">No status</option>
         {STATUS_OPTS.map(s => <option key={s} value={s}>{s}</option>)}
-      </select>
+      </Select>
       <div className="flex justify-end gap-2">
-        <button onClick={onCancel} className="text-muted text-xs hover:text-foreground cursor-pointer">Cancel</button>
-        <button
-          onClick={submit}
-          disabled={submitting}
-          className="px-2.5 py-1 rounded-md bg-accent text-white text-xs font-medium hover:bg-accent-hover cursor-pointer disabled:opacity-40"
-        >
+        <Button variant="ghost" size="sm" onClick={onCancel}>Cancel</Button>
+        <Button variant="primary" size="sm" onClick={submit} disabled={submitting}>
           {submitting ? 'Creating…' : 'Create'}
-        </button>
+        </Button>
       </div>
     </div>
   )
@@ -192,10 +179,10 @@ function ReviewCard({ review, onDeleted }) {
   }
 
   return (
-    <div className="rounded-lg border border-border/60 bg-surface-2/40 overflow-hidden">
+    <div className="rounded-lg border border-border bg-surface-2/40 overflow-hidden">
       <button
         onClick={() => setExpanded(o => !o)}
-        className="w-full flex items-start gap-2 p-3 text-left hover:bg-surface-2/60 transition-colors"
+        className="w-full flex items-start gap-2 p-3 text-left hover:bg-surface-2/60 transition-colors cursor-pointer"
       >
         <span className="mt-0.5 shrink-0 text-muted">
           {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
@@ -206,28 +193,27 @@ function ReviewCard({ review, onDeleted }) {
           </span>
           <div className="flex items-center gap-2 mt-0.5 flex-wrap">
             {review.status && (
-              <span className={cn(
-                'text-xs px-1.5 py-0.5 rounded-full capitalize',
-                STATUS_STYLES[review.status] ?? 'bg-surface-2 text-muted'
-              )}>
-                {review.status.replace(/_/g, ' ')}
-              </span>
+              <StatusDot
+                label={review.status.replace(/_/g, ' ')}
+                className="text-xs text-foreground capitalize"
+              />
             )}
-            <span className="text-muted text-xs">
+            <span className="text-faint text-xs">
               {review.created_by_email} · {fmtDate(review.created_at?.slice(0, 10))}
             </span>
           </div>
         </div>
         <button
           onClick={handleDelete}
-          className="text-muted hover:text-red-400 ml-1 shrink-0 cursor-pointer"
+          aria-label="Delete review"
+          className="text-muted hover:text-error ml-1 shrink-0 cursor-pointer"
         >
           <Trash2 size={12} />
         </button>
       </button>
 
       {expanded && (
-        <div className="px-3 pb-3 border-t border-border/40 flex flex-col gap-2 pt-2">
+        <div className="px-3 pb-3 border-t border-border-soft flex flex-col gap-2 pt-2">
           {review.description && review.title && (
             <p className="text-muted text-xs whitespace-pre-wrap">{review.description}</p>
           )}
@@ -278,23 +264,29 @@ export default function ReviewsTab({ asset }) {
     setReviews(prev => prev.filter(r => r.id !== reviewId))
   }
 
-  if (loading) return <p className="text-muted text-xs p-3">Loading…</p>
+  if (loading) {
+    return (
+      <div className="flex justify-center py-6">
+        <Spinner />
+      </div>
+    )
+  }
 
   return (
     <div className="h-full overflow-y-auto p-3 flex flex-col gap-2">
 
       {/* Asset-level attachments from source tool */}
       {attachmentCount > 0 && (
-        <div className="rounded-lg border border-border/40 overflow-hidden">
+        <div className="rounded-lg border border-border-soft overflow-hidden">
           <button
             onClick={() => setAttachmentsOpen(o => !o)}
-            className="w-full flex items-center justify-between px-3 py-2 text-xs text-muted hover:text-foreground hover:bg-surface-2/40 transition-colors"
+            className="w-full flex items-center justify-between px-3 py-2 text-xs text-muted hover:text-foreground hover:bg-surface-2 transition-colors cursor-pointer"
           >
-            <span>Asset Attachments ({attachmentCount})</span>
+            <span>Asset Attachments <span className="text-faint tabular-nums">({attachmentCount})</span></span>
             {attachmentsOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
           </button>
           {attachmentsOpen && (
-            <div className="px-3 pb-3 flex flex-col gap-3 border-t border-border/40">
+            <div className="px-3 pb-3 flex flex-col gap-3 border-t border-border-soft">
               {attachmentGroups.map((group, i) => (
                 <AttachmentGallery key={i} label={group.label} attachments={group.items} />
               ))}
@@ -305,16 +297,13 @@ export default function ReviewsTab({ asset }) {
 
       {/* Reviews header + new button */}
       <div className="flex items-center justify-between px-0.5">
-        <span className="text-muted text-xs font-medium uppercase tracking-wide">
-          Reviews {reviews?.length ? `(${reviews.length})` : ''}
-        </span>
+        <SectionLabel>
+          Reviews {reviews?.length ? <span className="text-faint tabular-nums">({reviews.length})</span> : ''}
+        </SectionLabel>
         {!showForm && (
-          <button
-            onClick={() => setShowForm(true)}
-            className="text-xs text-accent hover:text-accent-hover cursor-pointer"
-          >
+          <Button variant="ghost" size="sm" onClick={() => setShowForm(true)}>
             + New
-          </button>
+          </Button>
         )}
       </div>
 
@@ -327,7 +316,7 @@ export default function ReviewsTab({ asset }) {
       )}
 
       {reviews === null || reviews.length === 0 ? (
-        !showForm && <p className="text-muted text-xs px-0.5">No reviews yet.</p>
+        !showForm && <EmptyState icon={ClipboardList} title="No reviews yet." />
       ) : (
         reviews.map(r => (
           <ReviewCard key={r.id} review={r} onDeleted={handleDeleted} />

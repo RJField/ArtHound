@@ -1,9 +1,12 @@
 import { useState, useEffect, useMemo } from 'react'
 import { toast } from 'sonner'
+import { Workflow } from 'lucide-react'
 import { apiFetch } from '../lib/api'
 import { getSupabase } from '../lib/supabase'
 import { cn } from '../lib/utils'
 import PageContainer from '../components/PageContainer'
+import { Button, Field, Input, Modal, Pill, StatusDot, Spinner, EmptyState, PageHeader } from '../components/ui'
+import { craftColor } from '../lib/statusColors'
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -102,32 +105,41 @@ function StepFormModal({ steps, editStep, onClose, onSaved }) {
   }
 
   return (
-    <Overlay onClose={onClose}>
-      <form onSubmit={handleSave} className="flex flex-col gap-4 w-full max-w-md">
-        <h2 className="text-foreground text-base font-semibold">
-          {isEdit ? 'Edit Workflow Step' : 'Add Workflow Step'}
-        </h2>
-
+    <Modal
+      title={isEdit ? 'Edit Workflow Step' : 'Add Workflow Step'}
+      onClose={onClose}
+      width="max-w-md"
+      footer={
+        <>
+          <Button variant="ghost" size="lg" onClick={onClose}>Cancel</Button>
+          <Button variant="primary" size="lg" type="submit" form="workflow-step-form" disabled={busy}>
+            {busy ? 'Saving…' : 'Save'}
+          </Button>
+        </>
+      }
+    >
+      <form id="workflow-step-form" onSubmit={handleSave} className="flex flex-col gap-4">
         <Field label="Name">
-          <input
+          <Input
+            size="lg"
             autoFocus
             value={name}
             onChange={e => setName(e.target.value)}
-            className={input()}
           />
         </Field>
 
         <Field label="Craft">
-          <input
+          <Input
+            size="lg"
             value={craft}
             onChange={e => setCraft(e.target.value)}
             placeholder="e.g. Animation, Lighting…"
-            className={input()}
           />
         </Field>
 
         {others.length > 0 && (
-          <Field label="Depends on">
+          <div className="flex flex-col gap-1">
+            <span className="text-xs text-muted">Depends on</span>
             <div className="flex flex-col gap-1 max-h-40 overflow-y-auto">
               {others.map(s => {
                 const blocked = forbidden.has(s.id)
@@ -145,22 +157,15 @@ function StepFormModal({ steps, editStep, onClose, onSaved }) {
                       className="accent-accent"
                     />
                     <span className="text-foreground text-sm">{s.name}</span>
-                    {blocked && <span className="text-muted text-xs ml-auto">cycle</span>}
+                    {blocked && <span className="text-faint text-xs ml-auto">cycle</span>}
                   </label>
                 )
               })}
             </div>
-          </Field>
+          </div>
         )}
-
-        <div className="flex gap-2 justify-end pt-2">
-          <button type="button" onClick={onClose} className={btnGhost()}>Cancel</button>
-          <button type="submit" disabled={busy} className={btnPrimary()}>
-            {busy ? 'Saving…' : 'Save'}
-          </button>
-        </div>
       </form>
-    </Overlay>
+    </Modal>
   )
 }
 
@@ -172,17 +177,21 @@ function ConfirmModal({ message, confirmLabel = 'Remove', onClose, onConfirm }) 
     finally { setBusy(false) }
   }
   return (
-    <Overlay onClose={onClose}>
-      <div className="flex flex-col gap-5 w-full max-w-sm">
-        <p className="text-foreground text-sm">{message}</p>
-        <div className="flex gap-2 justify-end">
-          <button onClick={onClose} className={btnGhost()}>Cancel</button>
-          <button onClick={handle} disabled={busy} className={btnDanger()}>
+    <Modal
+      title="Confirm removal"
+      onClose={onClose}
+      width="max-w-sm"
+      footer={
+        <>
+          <Button variant="ghost" size="lg" onClick={onClose}>Cancel</Button>
+          <Button variant="danger" size="lg" onClick={handle} disabled={busy}>
             {busy ? 'Removing…' : confirmLabel}
-          </button>
-        </div>
-      </div>
-    </Overlay>
+          </Button>
+        </>
+      }
+    >
+      <p className="text-foreground text-sm">{message}</p>
+    </Modal>
   )
 }
 
@@ -287,33 +296,35 @@ export default function Workflows() {
 
   return (
     <PageContainer width="lg" className="p-6 gap-4">
-      {/* Toolbar */}
-      <div className="flex items-center gap-2">
-        <h1 className="text-foreground text-lg font-semibold mr-2">Workflow Steps</h1>
-        <button onClick={() => setModal('add')} className={btnSecondary()}>+ Add</button>
-        <button
-          onClick={() => setModal('edit')}
-          disabled={selected.size !== 1}
-          className={btnSecondary()}
-        >
-          Edit
-        </button>
-        <button
-          onClick={() => setModal('remove')}
-          disabled={noneSelected}
-          className={btnSecondary()}
-        >
-          {removeLabel}
-        </button>
-        <div className="flex-1" />
-        <button onClick={downloadCsv} className={btnGhost()}>Download CSV</button>
-      </div>
+      <PageHeader
+        title="Workflow Steps"
+        actions={
+          <>
+            <Button onClick={() => setModal('add')}>+ Add</Button>
+            <Button onClick={() => setModal('edit')} disabled={selected.size !== 1}>
+              Edit
+            </Button>
+            <Button onClick={() => setModal('remove')} disabled={noneSelected}>
+              {removeLabel}
+            </Button>
+            <Button variant="ghost" onClick={downloadCsv}>Download CSV</Button>
+          </>
+        }
+      />
 
       {/* List */}
-      {loading && <p className="text-muted text-sm">Loading…</p>}
+      {loading && (
+        <div className="flex justify-center py-10">
+          <Spinner />
+        </div>
+      )}
 
       {!loading && steps.length === 0 && (
-        <p className="text-muted text-sm">No workflow steps yet — click + Add to create one.</p>
+        <EmptyState
+          icon={Workflow}
+          title="No workflow steps yet"
+          hint="Click + Add to create one."
+        />
       )}
 
       {!loading && steps.length > 0 && (
@@ -334,10 +345,16 @@ export default function Workflows() {
                     onChange={() => toggleAll(groupIds)}
                     className="accent-accent cursor-pointer"
                   />
-                  <span className="text-foreground text-sm font-medium">
-                    {craft === '—' ? 'Unassigned' : craft}
-                  </span>
-                  <span className="text-muted text-xs">{groupSteps.length} step{groupSteps.length !== 1 ? 's' : ''}</span>
+                  {craft === '—' ? (
+                    <span className="text-foreground text-sm font-medium">Unassigned</span>
+                  ) : (
+                    <StatusDot
+                      label={craft}
+                      color={craftColor(craft)}
+                      className="text-foreground text-sm font-medium"
+                    />
+                  )}
+                  <span className="text-faint text-xs tabular-nums">{groupSteps.length} step{groupSteps.length !== 1 ? 's' : ''}</span>
                 </div>
                 <div className="flex flex-col gap-1">
                   {groupSteps.map(s => (
@@ -347,8 +364,8 @@ export default function Workflows() {
                       className={cn(
                         'flex items-start gap-3 px-4 py-3 rounded-lg border cursor-pointer transition-colors',
                         selected.has(s.id)
-                          ? 'border-accent bg-surface-2'
-                          : 'border-border bg-surface hover:border-border hover:bg-surface-2'
+                          ? 'border-accent bg-accent-tint'
+                          : 'border-border bg-surface hover:bg-surface-2'
                       )}
                     >
                       <input
@@ -362,11 +379,9 @@ export default function Workflows() {
                         <span className="text-foreground text-sm font-medium">{s.name}</span>
                         {s.depends_on.length > 0 && (
                           <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
-                            <span className="text-muted text-xs">Needs</span>
+                            <span className="text-faint text-xs">Needs</span>
                             {s.depends_on.map(d => (
-                              <span key={d.id} className="px-2 py-0.5 rounded-full bg-surface-3 text-muted text-xs">
-                                {d.name}
-                              </span>
+                              <Pill key={d.id} tone="neutral">{d.name}</Pill>
                             ))}
                           </div>
                         )}
@@ -399,33 +414,3 @@ export default function Workflows() {
     </PageContainer>
   )
 }
-
-// ── Shared primitives (local to this file) ─────────────────────────────────
-
-function Overlay({ onClose, children }) {
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
-      onClick={e => e.target === e.currentTarget && onClose()}
-    >
-      <div className="bg-surface border border-border rounded-xl p-6 w-full max-w-md">
-        {children}
-      </div>
-    </div>
-  )
-}
-
-function Field({ label, children }) {
-  return (
-    <div className="flex flex-col gap-1">
-      <label className="text-muted text-xs">{label}</label>
-      {children}
-    </div>
-  )
-}
-
-const input        = () => 'bg-surface-2 border border-border rounded-lg px-3 py-2 text-foreground text-sm outline-none focus:border-accent w-full'
-const btnPrimary   = () => 'px-3 py-1.5 rounded-md bg-accent text-white text-xs font-medium hover:bg-accent-hover transition-colors cursor-pointer disabled:opacity-40'
-const btnDanger    = () => 'px-3 py-1.5 rounded-md bg-error text-white text-xs font-medium hover:opacity-80 transition-opacity cursor-pointer disabled:opacity-40'
-const btnSecondary = () => 'px-3 py-1.5 rounded-md bg-surface-2 text-foreground text-xs hover:bg-surface-3 transition-colors cursor-pointer disabled:opacity-40'
-const btnGhost     = () => 'px-3 py-1.5 rounded-md text-muted text-xs hover:text-foreground transition-colors cursor-pointer'
