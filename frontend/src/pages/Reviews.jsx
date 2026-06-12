@@ -510,7 +510,7 @@ export default function Reviews() {
   const [loading, setLoading]       = useState(true)
   const [filters, setFilters]       = useState({ status: new Set() })
   const [showNew, setShowNew]       = useState(false)
-  const [showPromote, setShowPromote] = useState(false)
+  const [promoteTarget, setPromoteTarget] = useState(null)  // internal review (or {id}) to promote
   const [editing, setEditing]       = useState(false)
   const [editForm, setEditForm]     = useState({})
 
@@ -580,8 +580,20 @@ export default function Reviews() {
   }
 
   function handlePromoted() {
-    setShowPromote(false)
-    setScopeTab('cross_org') // reload via the tab effect; the promoted copy lives there
+    setPromoteTarget(null)
+    if (scopeTab === 'cross_org') load()
+    else setScopeTab('cross_org') // reload via the tab effect; the promoted copy lives there
+  }
+
+  async function acceptReview(review) {
+    if (!window.confirm('Accept this delivery? The review becomes a permanent, immutable record.')) return
+    try {
+      const updated = await apiFetch(`/api/reviews/${review.id}/accept`, { method: 'POST' })
+      setReviews(prev => prev.map(r => (r.id === review.id ? { ...r, ...updated } : r)))
+      toast.success('Delivery accepted')
+    } catch (err) {
+      toast.error(err.message)
+    }
   }
 
   async function setStatus(review, status) {
@@ -681,6 +693,7 @@ export default function Reviews() {
                       {r.is_author ? 'Sent' : 'Received'}
                     </Pill>
                   )}
+                  {r.accepted_at && <Pill tone="success">Accepted</Pill>}
                   <span className="text-muted text-xs">{date}</span>
                 </div>
               </div>
@@ -728,11 +741,30 @@ export default function Reviews() {
                       Save
                     </Button>
                   </>
+                ) : selected.accepted_at ? (
+                  <Pill tone="success">
+                    Accepted {new Date(selected.accepted_at).toLocaleDateString()}
+                  </Pill>
                 ) : (
                   <>
+                    {role === 'studio' && selected.scope === 'cross_org' && (
+                      <Button variant="primary" size="sm" onClick={() => acceptReview(selected)}>
+                        Accept delivery
+                      </Button>
+                    )}
                     {role === 'vendor' && selected.scope === 'internal' && (
-                      <Button variant="ghost" size="sm" onClick={() => setShowPromote(true)}>
+                      <Button variant="ghost" size="sm" onClick={() => setPromoteTarget(selected)}>
                         Promote
+                      </Button>
+                    )}
+                    {role === 'vendor' && selected.scope === 'cross_org' && selected.is_author
+                      && selected.promoted_from_review_id && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setPromoteTarget({ id: selected.promoted_from_review_id })}
+                      >
+                        Submit revision
                       </Button>
                     )}
                     {selected.is_author !== false && (
@@ -795,7 +827,7 @@ export default function Reviews() {
                     <FieldRow label="Description" value={selected.description} span="full" />
                     <div className="flex items-center gap-3 py-2">
                       <span className="text-faint text-xs w-28 shrink-0">Status</span>
-                      {selected.scope === 'cross_org' ? (
+                      {selected.scope === 'cross_org' && !selected.accepted_at ? (
                         // Either link party may transition a cross-org review (review_set_status RPC).
                         <Select
                           value={selected.status || ''}
@@ -818,8 +850,20 @@ export default function Reviews() {
               </div>
             </div>
 
+            {/* Revision lineage */}
+            {selected.revision_of_review_id && (
+              <p className="text-faint text-xs -mt-2">
+                Supersedes a previous submission on this link.
+              </p>
+            )}
+
             {/* Comments */}
-            <CommentThread key={selected.id} reviewId={selected.id} scope={selected.scope} />
+            <CommentThread
+              key={selected.id}
+              reviewId={selected.id}
+              scope={selected.scope}
+              readOnly={!!selected.accepted_at}
+            />
 
           </div>
         )}
@@ -832,10 +876,10 @@ export default function Reviews() {
           isVendor={role === 'vendor'}
         />
       )}
-      {showPromote && selected && (
+      {promoteTarget && (
         <PromoteModal
-          review={selected}
-          onClose={() => setShowPromote(false)}
+          review={promoteTarget}
+          onClose={() => setPromoteTarget(null)}
           onPromoted={handlePromoted}
         />
       )}

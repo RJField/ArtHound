@@ -203,6 +203,7 @@ class ReviewCreate(BaseModel):
     status: Optional[str] = None
     link_id: Optional[str] = None  # set → cross-org review on that link
     step_def_id: Optional[str] = None  # protocol step this submission fulfils (requires link_id)
+    revision_of_review_id: Optional[str] = None  # prior cross-org review this supersedes (requires link_id)
 
 
 class PromoteRequest(BaseModel):
@@ -899,6 +900,23 @@ async def create_review(body: ReviewCreate, user: CurrentUser = Depends(get_curr
         if not (sd and sd.is_success and sd.json()):
             raise HTTPException(status_code=422, detail="Step does not belong to this link's review protocol")
 
+    # An ad-hoc revision must supersede a visible cross-org review on the SAME link.
+    if body.revision_of_review_id:
+        if not body.link_id:
+            raise HTTPException(status_code=422, detail="revision_of_review_id requires link_id")
+        prior = await db_client.get(
+            _url("/rest/v1/asset_reviews"),
+            params={
+                "select": "id",
+                "id": f"eq.{body.revision_of_review_id}",
+                "scope": "eq.cross_org",
+                "link_id": f"eq.{body.link_id}",
+            },
+            headers=_headers(),
+        )
+        if not prior.is_success or not prior.json():
+            raise HTTPException(status_code=422, detail="Prior review not found on this link")
+
     r = await db_client.post(
         _url("/rest/v1/asset_reviews"),
         json={
@@ -909,6 +927,7 @@ async def create_review(body: ReviewCreate, user: CurrentUser = Depends(get_curr
             "scope": "cross_org" if body.link_id else "internal",
             "link_id": body.link_id or None,
             "step_def_id": body.step_def_id or None,
+            "revision_of_review_id": body.revision_of_review_id or None,
             "title": body.title or None,
             "description": body.description or None,
             "status": body.status or None,
@@ -1071,6 +1090,32 @@ async def set_review_status(
             pass
         raise HTTPException(status_code=400, detail=detail)
     return {"ok": True}
+
+
+@router.post("/{review_id}/accept")
+async def accept_review(review_id: str, user: CurrentUser = Depends(get_current_user)):
+    """Formal delivery acceptance (studio party, active link) via the review_accept DEFINER RPC:
+    validates earlier protocol steps, freezes the snapshot, stamps accepted_at/by, sets status
+    'Approved'. The review subtree becomes immutable."""
+    _resolve_org(user)
+    await _fetch_visible_review(review_id)
+
+    r = await db_client.post(
+        _url("/rest/v1/rpc/review_accept"),
+        json={"p_review_id": review_id},
+        headers=_headers(),
+    )
+    if not r.is_success:
+        detail = "Acceptance failed"
+        try:
+            detail = r.json().get("message") or detail
+        except Exception:  # noqa: BLE001
+            pass
+        raise HTTPException(status_code=400, detail=detail)
+
+    accepted = await _fetch_visible_review(review_id)
+    enriched = await _enrich([accepted], user)
+    return enriched[0]
 
 
 # ── Comment CRUD ──────────────────────────────────────────────────────────────

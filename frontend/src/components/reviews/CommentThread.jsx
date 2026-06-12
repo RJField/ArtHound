@@ -8,9 +8,10 @@ import { Button, Pill, SectionLabel, Select, Spinner, Textarea } from '../ui'
 // Threaded comments on a review with visibility lanes. Internal reviews have one
 // (internal) lane; cross-org reviews (scope="cross_org") add the shared lane: a lane
 // picker on compose, a Shared pill on shared comments, and a one-way Share action on
-// your own internal comments. Render with key={reviewId} when the same instance can
-// switch reviews — state resets via remount, not in-effect setState.
-export default function CommentThread({ reviewId, scope = 'internal' }) {
+// your own internal comments. readOnly (accepted reviews are frozen) hides all write
+// affordances. Render with key={reviewId} when the same instance can switch reviews —
+// state resets via remount, not in-effect setState.
+export default function CommentThread({ reviewId, scope = 'internal', readOnly = false }) {
   const { session } = useAuth()
   const myUserId = session?.user?.id ?? null
   const crossOrg = scope === 'cross_org'
@@ -117,7 +118,7 @@ export default function CommentThread({ reviewId, scope = 'internal' }) {
                 {c.edited_at && <span className="text-faint text-xs shrink-0">(edited)</span>}
                 {c.visibility === 'shared' && <Pill tone="accent">Shared</Pill>}
                 {crossOrg && c.visibility === 'internal' && <Pill>Internal</Pill>}
-                {mine && !editing && (
+                {mine && !editing && !readOnly && (
                   <div className="ml-auto flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
                     {crossOrg && c.visibility === 'internal' && (
                       <Button
@@ -173,26 +174,28 @@ export default function CommentThread({ reviewId, scope = 'internal' }) {
         })}
       </div>
 
-      <div className="flex flex-col gap-2 mt-2 pt-2 border-t border-border-soft">
-        <Textarea
-          value={draft}
-          onChange={e => setDraft(e.target.value)}
-          rows={2}
-          placeholder="Write a comment…"
-          className="resize-none"
-        />
-        <div className="flex items-center justify-end gap-2">
-          {crossOrg && (
-            <Select value={lane} onChange={e => setLane(e.target.value)} aria-label="Comment visibility">
-              <option value="internal">Internal</option>
-              <option value="shared">Shared</option>
-            </Select>
-          )}
-          <Button variant="primary" size="sm" onClick={post} disabled={posting || !draft.trim()}>
-            {posting ? 'Posting…' : 'Comment'}
-          </Button>
+      {!readOnly && (
+        <div className="flex flex-col gap-2 mt-2 pt-2 border-t border-border-soft">
+          <Textarea
+            value={draft}
+            onChange={e => setDraft(e.target.value)}
+            rows={2}
+            placeholder="Write a comment…"
+            className="resize-none"
+          />
+          <div className="flex items-center justify-end gap-2">
+            {crossOrg && (
+              <Select value={lane} onChange={e => setLane(e.target.value)} aria-label="Comment visibility">
+                <option value="internal">Internal</option>
+                <option value="shared">Shared</option>
+              </Select>
+            )}
+            <Button variant="primary" size="sm" onClick={post} disabled={posting || !draft.trim()}>
+              {posting ? 'Posting…' : 'Comment'}
+            </Button>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   )
 }
