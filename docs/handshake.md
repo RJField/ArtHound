@@ -257,4 +257,4 @@ Two-step flow:
 
 **Audit trail is append-only.** Cancelled invites and links are never deleted, only status-updated. The `link_cancellation_audit` and `link_cancellation_dispatches` tables provide a full record of what was revoked and when.
 
-**Review collaboration mode is set at invite time.** It's stored on the invite and copied to the link. Currently only `none` (simple delivery) is live, `isolated` and `collaborative` are stubbed in the schema and UI. Cross-org review visibility (studios sharing reviews with vendors, joint review threads) is a known open gap tracked separately; see [Reviews, Known Gaps](reviews.md#known-gaps).
+**Review collaboration mode is vestigial (since 2026-06-12).** `review_collaboration_mode` is still set at invite time and copied to the link, but nothing reads it anymore. Cross-org review behaviour is now configured on the link itself: ad-hoc cross-org reviews are always available on an active link, and the studio's required-submission sequence is the link's review protocol (`review_protocol_def_id`, editable from the Vendors page). See [Asset Reviews](reviews.md).

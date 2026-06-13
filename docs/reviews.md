@@ -1,137 +1,161 @@
 # Asset Reviews
 
-_Last updated: 2026-05-11_
+_Last updated: 2026-06-13. Covers the cross-org review system v2 (P0–P3), built 2026-06-12.
+Design source of truth: [docs/plans/cross-org-reviews.md](plans/cross-org-reviews.md)._
 
-Reviews are ArtHound-native structured feedback records attached to canonical assets. They are not synced to or from any source tool, they exist only in ArtHound's database. Both studios and vendors can create reviews on assets they have access to, and reviews support file attachments stored in Supabase Storage.
+Reviews are ArtHound-native records attached to canonical assets — never synced to or from any
+source tool. They are the **method and record of sign-off and delivery** for an asset, serving
+three routines:
+
+1. **Internal** daily craft/team review (single org, never shared).
+2. **Cross-org collaboration** — ad-hoc vendor→studio submissions and the link's required
+   protocol submissions.
+3. **Formal delivery** — a cross-org review the studio accepts, freezing an immutable record.
 
 ---
 
 ## Concepts
 
-**Review**: a titled, described, status-bearing record attached to a canonical asset. Created by a user of either org type. Has its own lifecycle independent of any source tool record.
+**Scope**: `internal` (default; visible only to the authoring org) or `cross_org` (lives on a
+studio↔vendor link; visible to both parties). Scope, link, and provenance columns are immutable
+after creation (trigger-enforced).
 
-**Author org**: the org that created the review, identified by `author_org_type` (`studio` or `vendor`) + `author_org_id`. This pair controls who can edit or delete the review.
+**Promotion**: the ONE path an internal review crosses the org wall. The `promote_review` RPC
+creates a **new** cross-org review (`promoted_from_review_id`) as an ACID trimmed copy — the
+author selects which fields, comments, and attachments cross (payload-template mental model).
+The internal review stays private forever. Trim selections can be saved as vendor-owned
+**trim templates** (`review_trim_templates`), optionally per link.
 
-**Status**: a free-text field with conventional values: `pending`, `in_review`, `approved`, `changes_requested`. Not validated by the API, studios and vendors can use any status label.
+**Comment lanes**: every comment has `visibility ∈ internal | shared`. Internal reviews allow
+only the internal lane. On cross-org reviews both orgs get both lanes; the compose default is
+**internal everywhere** (sharing is always an explicit choice). A comment can be flipped
+internal→shared once (one-way, trigger-enforced, event-logged). Promotion copies selected
+internal comments across in the shared lane with provenance (`copied_from_comment_id`).
 
-**Review attachment**: a file uploaded directly to a review (distinct from asset attachments that come from the source tool). Stored at `attachments/reviews/{review_id}/{uuid}_{filename}` in Supabase Storage. Only the uploader can delete their own attachments.
+**Multi-asset**: `review_assets` is an m2m junction holding every linked asset (the primary
+`canonical_asset_id` stays NOT NULL on the review and is mirrored into the junction).
 
----
+**Link protocol (required submissions)**: the studio assigns ONE `review_workflow_def` to a link
+(`studio_vendor_links.review_protocol_def_id`); its ordered `review_step_def` rows are the
+required submissions per dispatched asset. Vendors fulfil a step by submitting/promoting a
+cross-org review tagged with `step_def_id`. The **requirements checklist** is computed at read
+time (`GET /api/reviews/requirements?linkId=`): live-dispatched assets × steps; *fulfilled* = a
+tagged review exists; *complete* = its status is `Approved`. Tags outside the link's protocol are
+inert. Steps are archived, never deleted (tagged reviews keep their FK).
+`protocol_acknowledged_at/by` are stubs for the future explicit vendor-acceptance flow.
 
-## Access Rules
+**Acceptance**: the `review_accept` RPC (studio party, active link) freezes the formal delivery:
+validates earlier protocol steps are fulfilled for the asset, assembles `frozen_snapshot`
+(review fields + studio-side asset data + **shared-lane comments only** + attachment refs by
+storage path, no byte copy), stamps `accepted_at/by`, sets status `Approved`. Accepted reviews
+are **fully immutable** — trigger blocks all updates (including RPC/system paths) and every user
+write policy requires an unaccepted parent.
 
-**Studios** can review any asset in their own org's `canonical_assets`.
+**Revision chain**: re-delivery = a new review. Re-promoting the same internal review on the same
+link auto-links `revision_of_review_id` to the latest prior copy; ad-hoc revisions pass
+`revision_of_review_id` at create (validated against the same link). The prior stays frozen.
 
-**Vendors** can review assets they have received via a non-revoked payload dispatch. The review creation endpoint checks `payload_dispatches` to verify the vendor has an active dispatch for that asset.
+**Events**: `review_events` is the append-only audit trail (created / updated / status_changed /
+comment_added / comment_shared / promoted / attachment_added / requirement_tagged / accepted /
+revision_created). No user INSERT policy — routes write events under `system_identity()`; RPCs
+write them in-transaction.
 
-**Editing and deletion** are scoped to the creating org: `author_org_type + author_org_id` must match the caller's identity. Individual attachment deletion is additionally scoped to the uploading user's email.
-
----
-
-## Review Lifecycle
-
-```
-POST /api/reviews           → create review (studio or vendor)
-GET  /api/reviews           → list reviews (optionally filter by canonicalAssetId)
-GET  /api/reviews/{id}      → single review with asset metadata
-PATCH /api/reviews/{id}     → update title, description, status
-DELETE /api/reviews/{id}    → delete review (creator org only)
-
-POST /api/reviews/{id}/attachments              → upload file
-GET  /api/reviews/{id}/attachments              → list attachments (metadata only)
-GET  /api/reviews/{id}/attachments/{aid}/content → stream file
-DELETE /api/reviews/{id}/attachments/{aid}      → delete (uploader only)
-```
-
-File uploads are limited to 100 MB. Files are stored to Supabase Storage and their metadata (filename, storage path, content type, file size, uploader email) is recorded in `review_attachments`.
-
----
-
-## Database Schema
-
-### `asset_reviews`
-
-```
-id                  uuid PK
-studio_id           uuid → studios (the studio that owns the asset)
-canonical_asset_id  uuid → canonical_assets
-author_org_type     text (studio | vendor)
-author_org_id       uuid
-title               text
-description         text
-status              text
-created_by_email    text NOT NULL
-created_at          timestamptz
-```
-
-RLS:
-- Studio members can select, insert, and update reviews where `studio_id` matches their studio
-- Only the creator (matched by `created_by_email`) can delete
-
-### `review_attachments`
-
-```
-id              uuid PK
-review_id       uuid → asset_reviews (ON DELETE CASCADE)
-studio_id       uuid → studios
-author_org_type text (studio | vendor)
-author_org_id   uuid
-filename        text NOT NULL
-storage_path    text NOT NULL
-content_type    text
-file_size       bigint
-uploaded_by     text NOT NULL   (email)
-created_at      timestamptz
-```
-
-RLS:
-- Studio members can select attachments where `studio_id` matches
-- Vendor members can select attachments where `author_org_type = vendor` and `author_org_id` matches their vendor
-- Only the uploader can delete (matched by `uploaded_by` email)
+**Status**: free text; current UI vocabulary `Pending / In Review / Approved / Changes Requested`.
+Org-definable status defs are deferred.
 
 ---
 
-## Frontend Components
+## Security model
 
-Reviews are surfaced in the Asset Viewer's Reviews tab (`frontend/src/components/assets/tabs/ReviewsTab.jsx`).
+User-context RLS is the primary boundary (post-RLS-flip); partner actions go through
+`SECURITY DEFINER` RPCs owned by `arthound_rpc`.
 
-The tab has two distinct sections:
+- `asset_reviews` SELECT: authored by your org, OR `cross_org` on a link your org is party to
+  (**any** link status — delivered records stay readable after cancellation; writes require an
+  active link). Studios do NOT blanket-see vendor-authored reviews on their assets (the v1
+  `ar_sel` over-breadth was fixed in migration `20260612000002`).
+- INSERT: own org as author; cross-org additionally requires an active link whose studio matches
+  the review's studio (`is_link_party_for_studio`).
+- UPDATE/DELETE: owner org only, unaccepted only; partner status transitions via the
+  `review_set_status` RPC.
+- Child tables (`review_assets`, `review_comments`, `review_events`, `review_attachments`) ride
+  the parent review's visibility via EXISTS — the parent's RLS is the single source of truth.
+- Comments: shared lane visible to any org that can see the parent; internal lane author-org
+  only. Lane rules and the one-way flip are enforced in policy + trigger.
+- Promoted attachments reference the SAME storage path (no byte copy); blob deletion first checks
+  for other referencing rows under `system_identity()` (`copied_from_attachment_id` carries
+  provenance).
+- All review tables: FORCE RLS; registered in `scripts/rls_grant_audit.py`; persona-matrix
+  coverage (`authored-or-linked` checks for both personas).
 
-**Asset Attachments**: a read-only gallery of files that came from the source tool (Airtable/Jira fields), shown at the top as a collapsible section. These use the asset attachment proxy endpoint, not the review attachment endpoint.
+**RPCs** (all `arthound_rpc`-owned, secdef, `search_path=''`, EXECUTE for `authenticated` only):
+`promote_review(uuid, uuid, jsonb, text, uuid)`, `review_set_status(uuid, text)`,
+`review_set_link_protocol(uuid, uuid)`, `review_accept(uuid)`. Note: `promote_review`'s old 4-arg
+signature was DROPPED when `p_step_def_id` was added — PostgREST cannot dispatch overloads.
 
-**Reviews section**: lists all reviews for the asset with a count badge. Includes a collapsible `NewReviewForm` for creating reviews inline.
+---
 
-### `ReviewCard`
+## API surface
 
-Each review renders as a collapsible card showing: title, status badge, creator email, creation date, and (when expanded) full description and `ReviewAttachments`.
+```
+GET    /api/reviews?scope=internal|cross_org|all   → list (cross_org = inbox/outbox via RLS;
+                                                     all = everything visible; default = authored)
+POST   /api/reviews                                → create; link_id ⇒ cross-org; optional
+                                                     step_def_id, revision_of_review_id
+GET    /api/reviews/{id}                           → single (visibility-fetched) + asset context
+PATCH  /api/reviews/{id}                           → owner edits (title/description/status)
+DELETE /api/reviews/{id}                           → creator only, unaccepted only
+POST   /api/reviews/{id}/promote                   → promote_review RPC {link_id, trim, step_def_id}
+POST   /api/reviews/{id}/status                    → review_set_status RPC (either party)
+POST   /api/reviews/{id}/accept                    → review_accept RPC (studio party)
 
-Status badge colours:
-- `pending`, gray
-- `approved`, green
-- `in_review`, accent (blue)
-- `changes_requested` / `rejected`, red
+GET/POST       /api/reviews/{id}/comments          → thread (RLS filters lanes)
+PATCH/DELETE   /api/reviews/{id}/comments/{cid}    → author edits; visibility:'shared' = lane flip
+GET            /api/reviews/{id}/events            → audit history
 
-### `ReviewAttachments`
+GET/POST/PATCH/DELETE /api/reviews/trim-templates  → vendor-owned promote defaults
+GET/POST/PATCH/DELETE /api/reviews/protocols       → studio protocol CRUD (+ /seed-default)
+POST   /api/reviews/links/{link_id}/protocol       → assign/clear the link's protocol (RPC)
+GET    /api/reviews/requirements?linkId=           → computed checklist (both parties)
 
-Inline attachment widget within a review card. Supports:
-- Drag-and-drop multi-file upload (each file sent individually)
-- Delete button per file (uploader only)
-- Gallery rendering via the shared `AttachmentGallery` → `MediaLightbox` viewer chain (same as source tool attachments)
+POST/GET/DELETE /api/reviews/{id}/attachments[...] → upload/list/stream/delete (100 MB cap)
+```
+
+Asset context per side (`_enrich`): studios resolve from `replicated_assets`; vendors resolve
+from their received dispatch `payload_data`. Each side sees their own view of the canonical
+asset. Responses carry `is_author` for UI gating.
+
+---
+
+## Frontend
+
+- **Reviews page** (`frontend/src/pages/Reviews.jsx`): Internal / Cross-org tabs; Sent/Received
+  and Accepted pills; partner status select; Promote / Submit revision / Accept delivery actions;
+  vendor "send to studio" + fulfilment-tag selects on create.
+- **Shared components** (`frontend/src/components/reviews/`): `CommentThread` (lanes, one-way
+  Share, readOnly when accepted), `PromoteModal` (trim checkboxes, templates, requirement tag),
+  `ProtocolModal` (studio ordered-list editor, seed default), `RequirementsChecklist`
+  (fixed-density table, both connections pages).
+- **Connections pages**: the studio's `/vendors` page (`VendorConnections.jsx`) hosts the
+  protocol editor + checklist + real Open Reviews; the vendor's `/studios` page
+  (`StudioConnections.jsx`) shows a Review-protocol pill + expandable requirements per link.
+  (Page names refer to the counterparty.)
+- **Asset Viewer** Reviews tab fetches `scope=all` so partner-shared reviews appear on the asset.
 
 ---
 
 ## Relationship to the Handshake
 
-The studio↔vendor handshake includes a `review_collaboration_mode` field (`none` / `isolated` / `collaborative`) agreed at invite time. Currently only `none` (simple delivery, each org sees only their own reviews) is implemented. `isolated` and `collaborative` modes,  modes, where studios share reviews with vendors and/or reviews are jointly visible, are schema-stubbed but not yet built.
-
-See [Handshake, Design Decisions](handshake.md) for the rationale behind setting review mode at invite time.
+The link's `review_collaboration_mode` (`none`/`isolated`/`collaborative`) is **vestigial**: ad
+hoc cross-org reviews are always available on an active link (requirement), and the real
+cross-org review configuration is the link's protocol (`review_protocol_def_id`). The column is
+kept but unread.
 
 ---
 
-## Known Gaps
+## Deferred
 
-**Cross-org review visibility**: studios cannot currently share reviews with vendors and vendors cannot see studio reviews on a dispatched asset. The `review_collaboration_mode` flag on the link record provides the intended control surface, but the RLS and UI for sharing are not yet implemented.
-
-**Review field visibility customization**: the metadata shown alongside a review in the detail panel is filtered heuristically. There is no per-studio configuration for which asset meta fields appear in the review context.
-
-**No notification on new review**: reviewers receive no in-app or email notification when a new review is posted on an asset they are watching.
+Per-record grants (`review_grant`; the schema is grant-compatible), org-definable statuses
+(`review_status_def`), explicit vendor protocol acceptance (stub columns shipped), vendor-owned
+protocols, stages/actors on step defs, studio↔studio reviews, notifications (→ notification
+system TODO), cadence scheduling, per-studio review field visibility config (pre-existing TODO).

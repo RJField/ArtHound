@@ -87,7 +87,7 @@ An in-app AI assistant powered by Claude Haiku. Before each turn it fetches live
 
 ### [Studio/Vendor Handshake](docs/handshake.md)
 
-The prerequisite gate for payload dispatch. Studios send invites to vendors by searching their unique handle; vendors preview the studio's payload templates and accept, triggering the creation of an active link and an optional field mapping setup step. Either party can cancel a link, which immediately revokes all outstanding (non-ingested) dispatches and writes a full audit trail. The `review_collaboration_mode` set at invite time (`none`, `isolated`, `collaborative`) controls review visibility between orgs; currently only `none` is live.
+The prerequisite gate for payload dispatch. Studios send invites to vendors by searching their unique handle; vendors preview the studio's payload templates and accept, triggering the creation of an active link and an optional field mapping setup step. Either party can cancel a link, which immediately revokes all outstanding (non-ingested) dispatches and writes a full audit trail. Cross-org review behaviour is configured on the link via its review protocol (see Asset Reviews); the legacy `review_collaboration_mode` field set at invite time is vestigial and unread.
 
 ### [Asset Payload Dispatch](docs/payload.md)
 
@@ -99,7 +99,7 @@ Attachments from source tools (images, video, PDFs, documents) are surfaced inli
 
 ### [Asset Reviews](docs/reviews.md)
 
-ArtHound-native structured feedback records attached to canonical assets. They are not synced to or from any source tool and exist only in ArtHound's database. Both studios and vendors can create reviews on assets they have access to (studios on their own assets, vendors on dispatched assets). Reviews support file attachments stored in Supabase Storage, independent of the source-tool attachment pipeline. The `review_collaboration_mode` on the studio-vendor link is intended to control cross-org review visibility; that feature is not yet implemented.
+ArtHound-native records attached to canonical assets — the method and record of sign-off and delivery. They are not synced to or from any source tool and exist only in ArtHound's database. Reviews carry threaded comments with visibility lanes (internal/shared, default private), file attachments, and an append-only audit trail. Vendors keep fully private internal reviews and **promote** them across the org wall as trimmed copies (field/comment/attachment selection, payload-template style, saveable as templates); ad-hoc cross-org review requests are always available on an active link. Studios define **required submissions** per link via an ordered review protocol, which vendors see as a computed per-asset checklist and fulfil by tagged submissions. Formal delivery ends in the studio **accepting** a review, which freezes an immutable snapshot (shared-lane content + asset data + attachment refs); re-delivery chains as new linked revisions. Enforcement is user-context RLS plus `SECURITY DEFINER` RPCs for every cross-org mutation.
 
 ### [Member Management and Org Hub](docs/members.md)
 

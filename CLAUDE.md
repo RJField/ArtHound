@@ -134,9 +134,16 @@ Migrations live in `supabase/migrations/` and are applied in filename order. All
 - `failed_ingests`, quarantine for records where external write succeeded but canonical link failed; used by `/retry-canonical`
 - `vendor_studio_ingest_templates`, vendor ingest template snapshots per studio link
 
-**Reviews & attachments:**
-- `asset_reviews`, ArtHound-native reviews (not synced to/from any source tool)
-- `review_attachments`, files attached to reviews
+**Reviews & attachments** (cross-org review system v2, see `docs/reviews.md` + `docs/plans/cross-org-reviews.md`):
+- `asset_reviews`, ArtHound-native reviews (never synced). `scope ∈ internal|cross_org`; cross-org rows carry `link_id`. Internal reviews cross the org wall ONLY via the `promote_review` RPC (trimmed copy, `promoted_from_review_id`). Accepted reviews (`accepted_at` + `frozen_snapshot`) are fully immutable; re-delivery = new review via `revision_of_review_id`. Identity/provenance columns are trigger-guarded immutable
+- `review_assets`, m2m asset junction (primary `canonical_asset_id` stays NOT NULL on the review and is mirrored in)
+- `review_comments`, threaded comments with visibility lanes (`internal|shared`, default internal everywhere; one-way flip, trigger-enforced). `frozen_snapshot` must only ever contain shared-lane comments — it is visible to both link parties
+- `review_events`, append-only audit; NO user INSERT policy — routes write via `system_identity()`, RPCs in-transaction
+- `review_trim_templates`, vendor-owned promotion trim configs (payload_templates analogue)
+- `review_workflow_def` / `review_step_def`, org-scoped link protocols (required submissions; org-scope stack convention). Link FK `studio_vendor_links.review_protocol_def_id`; steps archive, never delete. The requirements checklist is computed at read (`/api/reviews/requirements`); out-of-protocol step tags are inert
+- Review RPCs (all `arthound_rpc`-owned DEFINER): `promote_review`, `review_set_status`, `review_set_link_protocol`, `review_accept`. Never overload an RPC signature — PostgREST cannot dispatch overloads; DROP the old signature first
+- `review_attachments`, files attached to reviews. Promoted copies reference the SAME storage path (`copied_from_attachment_id` provenance); blob deletion must first check for other rows referencing the path (done under `system_identity()` in `delete_attachment`)
+- `studio_vendor_links.review_collaboration_mode` is vestigial — kept but unread
 - `attachment_copy_jobs`, `attachment_refs`, copy-on-demand attachment pipeline to Supabase Storage
 
 **Meta / schema classification:**
