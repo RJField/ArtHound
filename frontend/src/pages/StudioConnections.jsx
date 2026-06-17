@@ -4,6 +4,7 @@ import { Building2 } from 'lucide-react'
 import { apiFetch } from '../lib/api'
 import ShareEstimatesModal from '../components/ShareEstimatesModal'
 import EstimateSnapshotView, { GRANULARITY_LABELS } from '../components/EstimateSnapshotView'
+import RequirementsChecklist from '../components/reviews/RequirementsChecklist'
 import PageContainer from '../components/PageContainer'
 import {
   Button, Select, Modal, Pill, Card, PageHeader, SectionLabel, EmptyState, Spinner,
@@ -325,6 +326,7 @@ export default function StudioConnections() {
   const [cancelTarget, setCancelTarget]   = useState(null)  // { link, studioName }
   const [shareTarget, setShareTarget]     = useState(null)  // { link_id, studio_name }
   const [expandedShare, setExpandedShare] = useState(null)  // dispatch_id
+  const [expandedRequirements, setExpandedRequirements] = useState(null)  // link_id
   const [revoking, setRevoking]           = useState(null)  // dispatch_id
 
   const load = useCallback(async () => {
@@ -459,40 +461,63 @@ export default function StudioConnections() {
                 const studioName = studio.name ?? 'Unknown Studio'
                 const tpl        = templates[link.studio_id]
                 const tplKnown   = link.studio_id in templates
+                const hasProtocol = !!link.review_protocol_def_id
+                const reqsOpen    = expandedRequirements === link.id
                 return (
-                  <Card key={link.id} pad={false} className="flex items-center justify-between gap-4 px-4 py-3">
-                    <div className="flex flex-col gap-0.5 min-w-0">
-                      <span className="text-foreground text-sm font-medium truncate">{studioName}</span>
-                      <div className="flex items-center gap-2 text-xs text-muted">
-                        <span>{REVIEW_MODE_LABELS[link.review_collaboration_mode] ?? link.review_collaboration_mode}</span>
-                        <Dot />
-                        <span>Connected {new Date(link.created_at).toLocaleDateString()}</span>
-                        {tplKnown && (
-                          <>
-                            <Dot />
-                            {tpl
-                              ? <Pill tone="accent">Template saved</Pill>
-                              : <Pill tone="neutral">No mapping yet</Pill>
-                            }
-                          </>
+                  <Card key={link.id} pad={false} className="flex flex-col">
+                    <div className="flex items-center justify-between gap-4 px-4 py-3">
+                      <div className="flex flex-col gap-0.5 min-w-0">
+                        <span className="text-foreground text-sm font-medium truncate">{studioName}</span>
+                        <div className="flex items-center gap-2 text-xs text-muted">
+                          <span>{REVIEW_MODE_LABELS[link.review_collaboration_mode] ?? link.review_collaboration_mode}</span>
+                          <Dot />
+                          <span>Connected {new Date(link.created_at).toLocaleDateString()}</span>
+                          {tplKnown && (
+                            <>
+                              <Dot />
+                              {tpl
+                                ? <Pill tone="accent">Template saved</Pill>
+                                : <Pill tone="neutral">No mapping yet</Pill>
+                              }
+                            </>
+                          )}
+                          {hasProtocol && (
+                            <>
+                              <Dot />
+                              <Pill tone="info">Review protocol</Pill>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        {hasProtocol && (
+                          <Button
+                            size="sm"
+                            onClick={() => setExpandedRequirements(reqsOpen ? null : link.id)}
+                          >
+                            {reqsOpen ? 'Hide requirements' : 'Requirements'}
+                          </Button>
                         )}
+                        <Button
+                          size="sm"
+                          onClick={() => setShareTarget({ link_id: link.id, studio_name: studioName })}
+                        >
+                          Share estimates
+                        </Button>
+                        <Button
+                          variant="danger"
+                          size="sm"
+                          onClick={() => setCancelTarget({ link, studioName })}
+                        >
+                          Cancel
+                        </Button>
                       </div>
                     </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                      <Button
-                        size="sm"
-                        onClick={() => setShareTarget({ link_id: link.id, studio_name: studioName })}
-                      >
-                        Share estimates
-                      </Button>
-                      <Button
-                        variant="danger"
-                        size="sm"
-                        onClick={() => setCancelTarget({ link, studioName })}
-                      >
-                        Cancel
-                      </Button>
-                    </div>
+                    {reqsOpen && (
+                      <div className="px-4 pb-3 border-t border-border-soft pt-3">
+                        <RequirementsChecklist linkId={link.id} />
+                      </div>
+                    )}
                   </Card>
                 )
               })}

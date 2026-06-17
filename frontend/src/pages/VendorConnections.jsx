@@ -5,6 +5,8 @@ import { apiFetch } from '../lib/api'
 import { cn } from '../lib/utils'
 import InviteVendorModal from '../components/InviteVendorModal'
 import PayloadTemplateModal from '../components/PayloadTemplateModal'
+import ProtocolModal from '../components/reviews/ProtocolModal'
+import RequirementsChecklist from '../components/reviews/RequirementsChecklist'
 import EstimateSnapshotView, { GRANULARITY_LABELS } from '../components/EstimateSnapshotView'
 import PageContainer from '../components/PageContainer'
 import {
@@ -306,7 +308,10 @@ export default function VendorConnections() {
   const [templates, setTemplates] = useState([])
   const [inbox, setInbox]         = useState([])   // estimate shares received from vendors
   const [outbox, setOutbox]       = useState([])   // shared-asset dispatches
+  const [crossOrgReviews, setCrossOrgReviews] = useState([])
   const [loading, setLoading]     = useState(true)
+  const [protocolModal, setProtocolModal] = useState(false)
+  const [checklistKey, setChecklistKey]   = useState(0)  // bump to refetch after protocol save
 
   const [selectedVendorId, setSelectedVendorId] = useState(null)
   const [expandedEstimate, setExpandedEstimate] = useState(null)  // dispatch_id
@@ -322,18 +327,20 @@ export default function VendorConnections() {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const [l, inv, tmpl, ib, ob] = await Promise.all([
+      const [l, inv, tmpl, ib, ob, xr] = await Promise.all([
         apiFetch('/api/handshake/links'),
         apiFetch('/api/handshake/invites/sent'),
         apiFetch('/api/payloads/templates'),
         apiFetch('/api/estimate-shares/inbox').catch(() => []),
         apiFetch('/api/payloads/outbox').catch(() => []),
+        apiFetch('/api/reviews?scope=cross_org').catch(() => []),
       ])
       setLinks(l)
       setInvites(inv)
       setTemplates(tmpl)
       setInbox(ib)
       setOutbox(ob)
+      setCrossOrgReviews(xr)
     } catch (err) {
       toast.error(err.message)
     } finally {
@@ -371,8 +378,10 @@ export default function VendorConnections() {
     [inbox, selectedLink, selectedVendorId]
   )
 
-  // Reviews carry no vendor association in the schema yet — always empty for now.
-  const vendorReviews = []
+  const vendorReviews = useMemo(
+    () => crossOrgReviews.filter(r => selectedLink && r.link_id === selectedLink.id),
+    [crossOrgReviews, selectedLink]
+  )
 
   async function cancelLink() {
     const { link } = cancelTarget
@@ -529,6 +538,20 @@ export default function VendorConnections() {
       {!loading && selectedLink && (
         <>
           <SharedAssets shares={vendorShares} revoking={revoking} onRevoke={revokeShare} />
+          <section className="flex flex-col gap-3">
+            <SectionHeader
+              title="Required Submissions"
+              action={
+                <Button size="sm" onClick={() => setProtocolModal(true)}>
+                  Edit protocol
+                </Button>
+              }
+            />
+            <RequirementsChecklist
+              key={`${selectedLink.id}-${checklistKey}`}
+              linkId={selectedLink.id}
+            />
+          </section>
           <OpenReviews reviews={vendorReviews} />
           <ReceivedEstimates
             estimates={vendorEstimates}
@@ -647,6 +670,18 @@ export default function VendorConnections() {
         <InviteVendorModal
           onClose={() => setInviteOpen(false)}
           onInvited={load}
+        />
+      )}
+
+      {protocolModal && selectedLink && (
+        <ProtocolModal
+          link={selectedLink}
+          onClose={() => setProtocolModal(false)}
+          onSaved={() => {
+            setProtocolModal(false)
+            setChecklistKey(k => k + 1)
+            load()
+          }}
         />
       )}
 

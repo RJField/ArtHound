@@ -176,9 +176,14 @@ def check_studio(studio):
     _visibility("studio · replicated_assets own-only", h, "replicated_assets",
                 ["owner_type", "owner_id"],
                 lambda r: r["owner_type"] == "studio" and r["owner_id"] == sid)
-    _visibility("studio · asset_reviews own-only", h, "asset_reviews",
-                ["studio_id", "author_org_type", "author_org_id"],
-                lambda r: r["studio_id"] == sid or (r.get("author_org_type") == "studio" and r.get("author_org_id") == sid))
+    # Cross-org reviews v2 (20260612000002): authored-by-my-org OR cross_org on a link I'm party to.
+    # Vendor-authored reviews on the studio's assets are NO LONGER visible (the ar_sel fix).
+    my_link_ids = {l["id"] for l in _rows(H_SERVICE, "studio_vendor_links", "id,studio_id")
+                   if l["studio_id"] == sid}
+    _visibility("studio · asset_reviews authored-or-linked", h, "asset_reviews",
+                ["studio_id", "author_org_type", "author_org_id", "scope", "link_id"],
+                lambda r: (r.get("author_org_type") == "studio" and r.get("author_org_id") == sid)
+                       or (r.get("scope") == "cross_org" and r.get("link_id") in my_link_ids))
     _visibility("studio · payload_dispatches sender-only", h, "payload_dispatches",
                 ["sender_studio_id", "recipient_vendor_id"],
                 lambda r: r["sender_studio_id"] == sid)
@@ -224,6 +229,13 @@ def check_vendor(vendor):
     _visibility("vendor · estimate_matrix base+override", h, "estimate_matrix",
                 ["studio_id", "vendor_id", "link_id"],
                 lambda r: r["vendor_id"] == vid)
+    # Cross-org reviews v2: same shape as the studio check — own-authored OR cross_org on my link.
+    my_link_ids = {l["id"] for l in _rows(H_SERVICE, "studio_vendor_links", "id,vendor_id")
+                   if l["vendor_id"] == vid}
+    _visibility("vendor · asset_reviews authored-or-linked", h, "asset_reviews",
+                ["author_org_type", "author_org_id", "scope", "link_id"],
+                lambda r: (r.get("author_org_type") == "vendor" and r.get("author_org_id") == vid)
+                       or (r.get("scope") == "cross_org" and r.get("link_id") in my_link_ids))
 
 
 def _assert_override_hidden(name: str, override_id: str, studio_user: str) -> None:

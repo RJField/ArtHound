@@ -8,6 +8,7 @@ import WorkTab        from './tabs/WorkTab'
 import ReviewsTab     from './tabs/ReviewsTab'
 import BugsTab        from './tabs/BugsTab'
 import AttachmentsTab from './tabs/AttachmentsTab'
+import AgentTab       from './tabs/AgentTab'
 
 const TABS = [
   { id: 'details',     label: 'Details',     Component: DetailsTab },
@@ -15,6 +16,7 @@ const TABS = [
   { id: 'work',        label: 'Work',        Component: WorkTab },
   { id: 'reviews',     label: 'Reviews',     Component: ReviewsTab },
   { id: 'bugs',        label: 'Bugs',        Component: BugsTab },
+  { id: 'agent',       label: 'Agent',       Component: AgentTab },
 ]
 
 export default function AssetDetailPanel({ asset, schema, workRefreshKey }) {
