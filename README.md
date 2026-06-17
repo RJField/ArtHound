@@ -53,6 +53,10 @@ Supabase Storage is a separate service with its own access control, so the table
 
 `scripts/rls_persona_matrix.py` is a standalone correctness guard that mints a JWT per persona and asserts the row-visibility contract for every tenancy-critical table by hitting PostgREST directly, so it exercises the live policies regardless of the application flag. It checks own-org visibility for studios and vendors, cross-org denial, the link-authorized counterparty read, the system identity, anon deny-all, and that no route imports the break-glass path. Keep it green before any policy change ships. The full design and migration history live in [docs/plans/rls-migration.md](docs/plans/rls-migration.md).
 
+### External agents (MCP)
+
+External AI agents reach ArtHound through an MCP server (`/mcp`), not the REST API — but an agent is **not a fifth identity**. It authenticates with an API key that resolves to a dedicated service-account member (`member_role='agent'`) of one org; the server mints a short-lived user token for that principal, so every tool call runs under the **User** identity and the same RLS as a human member, never service-role. Within-org scope (read vs write, tool allowlist) and per-credential rate limits are enforced at the app layer, and writes carry mandatory actor attribution. See [docs/mcp.md](docs/mcp.md). `scripts/test_agent_scoping.py` guards the cross-org scoping.
+
 ---
 
 ## Documentation
@@ -112,6 +116,10 @@ Studios model hypothetical production schedules ("when can we ship?" or "what ca
 ### [LoreBot](docs/lorebot.md)
 
 A proof-of-concept document-reading assistant. Given a canonical asset (studio) or a dispatch (vendor), LoreBot reads the attached files from Supabase Storage (PDFs, text, images) and answers questions about their content using Claude Haiku with vision. PDFs are extracted via `pypdf`, and up to four images are passed as base64 vision blocks. Attachments must be copied to Storage before chat begins; a replication endpoint triggers the copy synchronously. Prompt caching is applied to the attachment context. Explicitly marked PoC, not for use with confidential data.
+
+### [MCP Server](docs/mcp.md)
+
+Exposes ArtHound's canonical production data to external AI agents over the Model Context Protocol, mounted at `/mcp` (FastMCP, Streamable HTTP). Agents authenticate with an API key that maps to a service-account member of one org, so all tool access runs under that org's RLS (identity model A1) — no new policy surface, no service-role. Thirteen versioned `paw_v1_*` tools return PAW-shaped objects (products, assets, work, estimates, schedule, workflow, asset timeline) plus three lightweight, actor-attributed writes (risk flags, human-review requests, estimate-adjustment proposals) that create paper-trail records — never mutating production state — surfaced in the app's Asset viewer **Agent** tab and the home **Agent activity** widget. Read-heavy by design; the surface deliberately excludes any raw-query/SQL tool. Per-credential token-bucket rate limiting. Scenario-planner tools and a `submit_work_record` write are planned but not yet built. Design + phase history: [docs/plans/mcp-server.md](docs/plans/mcp-server.md).
 
 ### [Synthetic Data Generator](docs/synthetic.md)
 

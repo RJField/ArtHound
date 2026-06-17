@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { apiFetch } from '../lib/api'
 import PageContainer from '../components/PageContainer'
+import AgentActivityWidget from '../components/AgentActivityWidget'
 import { PageHeader, SectionLabel, Skeleton } from '../components/ui'
 import { cn } from '../lib/utils'
 
@@ -74,6 +75,8 @@ export default function VendorHome() {
           highlight={inviteCount > 0}
         />
       </div>
+
+      <AgentActivityWidget />
     </PageContainer>
   )
 }

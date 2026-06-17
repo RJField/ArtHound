@@ -79,6 +79,10 @@ Sync is triggered on login (via `AuthContext.jsx`) and by a background polling l
 
 **`[IGNORE]` field convention:** Any source field whose name begins with `[IGNORE]` (case-insensitive) is auto-suppressed at classification time, `ingest_suppressed=True`, `display_tier="hidden"`, excluded from `meta`. Studios use this prefix to mark internal plumbing fields (link-back columns, formula sources) that should never appear in the ArtHound UI or be ingested into replicated records.
 
+## MCP Server (external agent access)
+
+`mcp_server/` exposes ArtHound data to external AI agents over the Model Context Protocol, mounted at `/mcp` in `main.py` (FastMCP, Streamable HTTP). Agents authenticate with an API key (`scripts/agent_keys.py`) that resolves to a `member_role='agent'` service-account member of one org (identity model A1) — so **all tool DB access runs under the agent's bound JWT and the existing RLS, never service-role**. Within-org scope (read/write, tool allowlist) is enforced in `mcp_server/context.py:tool_call`. Tools are versioned `paw_v1_*` and PAW-shaped; writes carry mandatory `actor_type`/`actor_ref` and abort rather than persist an orphan. Agent-written records (flags/review-requests/estimate-proposals) surface in the UI via `/api/agent-activity` (Asset viewer **Agent** tab + home widget). Full reference: [docs/mcp.md](docs/mcp.md); design + phases: [docs/plans/mcp-server.md](docs/plans/mcp-server.md). Do not add a `raw_query`/SQL tool or service-role access to this surface.
+
 ## Frontend Conventions
 
 **Component library:** All UI is built from the primitives in `frontend/src/components/ui/` (import via the barrel: `Button`, `Input`, `Select`, `Textarea`, `Field`, `Modal`, `Pill`, `StatusDot`, `Tabs`, `Card`, `KV`, `Table`/`Th`/`Tr`/`Td`, `EmptyState`, `Spinner`, `Skeleton`, `Dropdown`, `PageHeader`, `SectionLabel`). Never hand-roll buttons, inputs, modal overlays, badges, or table styling in feature code. Full usage rules live in `docs/ui-redesign/MIGRATION.md`. Key invariants:
@@ -148,6 +152,12 @@ Migrations live in `supabase/migrations/` and are applied in filename order. All
 
 **Meta / schema classification:**
 - `field_bucket_override_log`, `schema_drift_events`, meta bucket classification and drift tracking
+
+**Agent access (MCP)** (see `docs/mcp.md`):
+- `agent_credentials`, API key (sha256 hash) → org + principal member + `scopes` + expiry/revoke. RLS+FORCE, system-only + `REVOKE` from anon/authenticated (key hashes never reach a user token)
+- `agent_access_log`, append-only agent identity/tool audit (system-write)
+- `asset_flags`, `review_requests`, `estimate_adjustment_proposals`, agent-write paper-trail records (own-org RLS via `is_my_org`; `actor_type`/`actor_ref`; read/triaged via `/api/agent-activity`). `estimate_adjustment_proposals.canonical_asset_id` is nullable by design (estimate tier is above any asset — estimate_share carve-out)
+- `studio_members`/`vendor_members.member_role` CHECK includes `'agent'` (the non-human service-account seat)
 
 ## Multi-tenancy
 
