@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from lib.attachments import _storage_api_url, _storage_headers
 from lib.auth import CurrentUser, get_current_user
 from lib.db import db_client, _url, _headers
+from lib.system_auth import system_identity
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -38,6 +39,45 @@ def _require_studio_id(user: CurrentUser) -> str:
     if not user.studio_id:
         raise HTTPException(status_code=403, detail="No studio linked to this account")
     return user.studio_id
+
+
+# ── Event log ─────────────────────────────────────────────────────────────────
+
+async def _log_event(
+    review_id: str,
+    subject_type: str,
+    subject_id: Optional[str],
+    event_type: str,
+    user: CurrentUser,
+    org_type: str,
+    org_id: str,
+    detail: Optional[dict] = None,
+) -> None:
+    """Append to review_events as arthound_system (the table has no user INSERT policy by design).
+    Best-effort: an event-write failure is logged loudly but never fails the action it records."""
+    try:
+        async with system_identity():
+            r = await db_client.post(
+                _url("/rest/v1/review_events"),
+                json={
+                    "review_id": review_id,
+                    "subject_type": subject_type,
+                    "subject_id": subject_id,
+                    "event_type": event_type,
+                    "actor_user_id": user.id,
+                    "actor_org_type": org_type,
+                    "actor_org_id": org_id,
+                    "detail": detail or {},
+                },
+                headers=_headers({"Prefer": "return=minimal"}),
+            )
+            if not r.is_success:
+                log.error(
+                    "review event write failed review=%s type=%s: %s",
+                    review_id, event_type, r.text[:200],
+                )
+    except Exception as exc:
+        log.error("review event write failed review=%s type=%s: %s", review_id, event_type, exc)
 
 
 # ── Meta enrichment ───────────────────────────────────────────────────────────
@@ -113,7 +153,15 @@ async def _enrich(reviews: list[dict], user: CurrentUser) -> list[dict]:
         meta = await _fetch_vendor_asset_meta(user.vendor_id, asset_ids)
     else:
         meta = {}
-    return [{**rv, "asset": meta.get(rv["canonical_asset_id"])} for rv in reviews]
+    org_type, org_id = _resolve_org(user)
+    return [
+        {
+            **rv,
+            "asset": meta.get(rv["canonical_asset_id"]),
+            "is_author": rv.get("author_org_type") == org_type and rv.get("author_org_id") == org_id,
+        }
+        for rv in reviews
+    ]
 
 
 # ── Storage helpers ───────────────────────────────────────────────────────────
@@ -153,12 +201,68 @@ class ReviewCreate(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
     status: Optional[str] = None
+    link_id: Optional[str] = None  # set → cross-org review on that link
+    step_def_id: Optional[str] = None  # protocol step this submission fulfils (requires link_id)
+    revision_of_review_id: Optional[str] = None  # prior cross-org review this supersedes (requires link_id)
+
+
+class PromoteRequest(BaseModel):
+    link_id: str
+    trim: Optional[dict] = None  # {"fields": {...}, "comment_ids": [...], "attachment_ids": [...]}
+    step_def_id: Optional[str] = None  # protocol step this promotion fulfils
+
+
+class StepDefIn(BaseModel):
+    id: Optional[str] = None  # present = update existing; absent = create
+    name: str
+    description: Optional[str] = None
+
+
+class ProtocolCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    steps: list[StepDefIn] = []
+
+
+class ProtocolUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    steps: Optional[list[StepDefIn]] = None  # full ordered list; omitted steps are archived
+
+
+class LinkProtocolRequest(BaseModel):
+    protocol_def_id: Optional[str] = None  # null clears the link's protocol
+
+
+class StatusRequest(BaseModel):
+    status: str
+
+
+class TrimTemplateCreate(BaseModel):
+    name: str
+    config: dict
+    link_id: Optional[str] = None
+
+
+class TrimTemplateUpdate(BaseModel):
+    name: Optional[str] = None
+    config: Optional[dict] = None
 
 
 class ReviewUpdate(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
     status: Optional[str] = None
+
+
+class CommentCreate(BaseModel):
+    body: str
+    visibility: str = "internal"
+
+
+class CommentUpdate(BaseModel):
+    body: Optional[str] = None
+    visibility: Optional[str] = None  # one-way: internal → shared only
 
 
 # ── Asset picker endpoint ─────────────────────────────────────────────────────
@@ -256,22 +360,475 @@ async def _vendor_assets(user: CurrentUser) -> list[dict]:
     return [{"id": aid, "name": name} for aid, name in seen.items()]
 
 
+# ── Trim templates (vendor-owned promote defaults; payload_templates analogue) ─
+# Registered BEFORE the /{review_id} routes so the literal path isn't shadowed.
+
+def _require_vendor_id(user: CurrentUser) -> str:
+    if user.role != "vendor" or not user.vendor_id:
+        raise HTTPException(status_code=403, detail="Vendor account required")
+    return user.vendor_id
+
+
+@router.get("/trim-templates")
+async def list_trim_templates(
+    linkId: Optional[str] = Query(None),
+    user: CurrentUser = Depends(get_current_user),
+):
+    vendor_id = _require_vendor_id(user)
+    params: dict = {
+        "select": "*",
+        "vendor_id": f"eq.{vendor_id}",
+        "order": "updated_at.desc",
+    }
+    if linkId:
+        params["or"] = f"(link_id.eq.{linkId},link_id.is.null)"
+    r = await db_client.get(
+        _url("/rest/v1/review_trim_templates"), params=params, headers=_headers()
+    )
+    if not r.is_success:
+        raise HTTPException(status_code=502, detail="Failed to fetch templates")
+    return r.json()
+
+
+@router.post("/trim-templates")
+async def create_trim_template(
+    body: TrimTemplateCreate, user: CurrentUser = Depends(get_current_user)
+):
+    vendor_id = _require_vendor_id(user)
+    if not body.name.strip():
+        raise HTTPException(status_code=422, detail="Template name is empty")
+    r = await db_client.post(
+        _url("/rest/v1/review_trim_templates"),
+        json={
+            "vendor_id": vendor_id,
+            "link_id": body.link_id or None,
+            "name": body.name,
+            "config": body.config,
+        },
+        headers=_headers({"Prefer": "return=representation"}),
+    )
+    if not r.is_success or not r.json():
+        raise HTTPException(status_code=502, detail="Failed to create template")
+    return r.json()[0]
+
+
+@router.patch("/trim-templates/{template_id}")
+async def update_trim_template(
+    template_id: str, body: TrimTemplateUpdate, user: CurrentUser = Depends(get_current_user)
+):
+    vendor_id = _require_vendor_id(user)
+    patch: dict = {}
+    if body.name is not None:
+        patch["name"] = body.name
+    if body.config is not None:
+        patch["config"] = body.config
+    if not patch:
+        return {"ok": True}
+    from datetime import datetime, timezone
+    patch["updated_at"] = datetime.now(timezone.utc).isoformat()
+    r = await db_client.patch(
+        _url("/rest/v1/review_trim_templates"),
+        params={"id": f"eq.{template_id}", "vendor_id": f"eq.{vendor_id}"},
+        json=patch,
+        headers=_headers({"Prefer": "return=representation"}),
+    )
+    if not r.is_success or not r.json():
+        raise HTTPException(status_code=404, detail="Template not found")
+    return r.json()[0]
+
+
+@router.delete("/trim-templates/{template_id}")
+async def delete_trim_template(
+    template_id: str, user: CurrentUser = Depends(get_current_user)
+):
+    vendor_id = _require_vendor_id(user)
+    r = await db_client.delete(
+        _url("/rest/v1/review_trim_templates"),
+        params={"id": f"eq.{template_id}", "vendor_id": f"eq.{vendor_id}"},
+        headers=_headers({"Prefer": "return=representation"}),
+    )
+    if not r.is_success:
+        raise HTTPException(status_code=502, detail="Failed to delete template")
+    if not r.json():
+        raise HTTPException(status_code=404, detail="Template not found")
+    return {"ok": True}
+
+
+# ── Review protocols (studio-defined required submissions, P2) ────────────────
+# Org-scoped review_workflow_def + ordered review_step_def rows; the link references ONE def as its
+# sanctioned protocol. v1 authoring is studio-side. Literal paths — registered before /{review_id}.
+
+DEFAULT_PROTOCOL = {
+    "name": "Delivery Review",
+    "description": "Default submission sequence for vendor deliveries.",
+    "steps": [
+        {"name": "WIP Review", "description": "Work-in-progress check before final delivery."},
+        {"name": "Final Delivery", "description": "Formal delivery submission for studio sign-off."},
+    ],
+}
+
+
+async def _fetch_protocol_steps(def_ids: list[str]) -> dict:
+    """archived_at-null steps for the given defs, sorted, grouped by workflow_def_id."""
+    if not def_ids:
+        return {}
+    r = await db_client.get(
+        _url("/rest/v1/review_step_def"),
+        params={
+            "select": "id,workflow_def_id,name,description,sort",
+            "workflow_def_id": f"in.({','.join(def_ids)})",
+            "archived_at": "is.null",
+            "order": "sort.asc",
+        },
+        headers=_headers(),
+    )
+    grouped: dict = {}
+    if r.is_success:
+        for s in r.json():
+            grouped.setdefault(s["workflow_def_id"], []).append(s)
+    return grouped
+
+
+@router.get("/protocols")
+async def list_protocols(user: CurrentUser = Depends(get_current_user)):
+    studio_id = _require_studio_id(user)
+    r = await db_client.get(
+        _url("/rest/v1/review_workflow_def"),
+        params={
+            "select": "*",
+            "studio_id": f"eq.{studio_id}",
+            "archived_at": "is.null",
+            "order": "created_at.asc",
+        },
+        headers=_headers(),
+    )
+    if not r.is_success:
+        raise HTTPException(status_code=502, detail="Failed to fetch protocols")
+    defs = r.json()
+    steps = await _fetch_protocol_steps([d["id"] for d in defs])
+    return [{**d, "steps": steps.get(d["id"], [])} for d in defs]
+
+
+async def _insert_steps(def_id: str, steps: list[StepDefIn], start_sort: int = 0) -> None:
+    if not steps:
+        return
+    r = await db_client.post(
+        _url("/rest/v1/review_step_def"),
+        json=[
+            {
+                "workflow_def_id": def_id,
+                "name": s.name,
+                "description": s.description or None,
+                "sort": start_sort + i,
+            }
+            for i, s in enumerate(steps)
+        ],
+        headers=_headers({"Prefer": "return=minimal"}),
+    )
+    if not r.is_success:
+        raise HTTPException(status_code=502, detail="Failed to save protocol steps")
+
+
+@router.post("/protocols")
+async def create_protocol(body: ProtocolCreate, user: CurrentUser = Depends(get_current_user)):
+    studio_id = _require_studio_id(user)
+    if not body.name.strip():
+        raise HTTPException(status_code=422, detail="Protocol name is empty")
+    r = await db_client.post(
+        _url("/rest/v1/review_workflow_def"),
+        json={"studio_id": studio_id, "name": body.name, "description": body.description or None},
+        headers=_headers({"Prefer": "return=representation"}),
+    )
+    if not r.is_success or not r.json():
+        raise HTTPException(status_code=502, detail="Failed to create protocol")
+    d = r.json()[0]
+    await _insert_steps(d["id"], body.steps)
+    steps = await _fetch_protocol_steps([d["id"]])
+    return {**d, "steps": steps.get(d["id"], [])}
+
+
+@router.post("/protocols/seed-default")
+async def seed_default_protocol(user: CurrentUser = Depends(get_current_user)):
+    """Create the prescriptive baseline protocol for this studio (idempotent by name)."""
+    studio_id = _require_studio_id(user)
+    existing = await db_client.get(
+        _url("/rest/v1/review_workflow_def"),
+        params={
+            "select": "id",
+            "studio_id": f"eq.{studio_id}",
+            "name": f"eq.{DEFAULT_PROTOCOL['name']}",
+            "archived_at": "is.null",
+        },
+        headers=_headers(),
+    )
+    if existing.is_success and existing.json():
+        raise HTTPException(status_code=409, detail="Default protocol already exists")
+    return await create_protocol(
+        ProtocolCreate(
+            name=DEFAULT_PROTOCOL["name"],
+            description=DEFAULT_PROTOCOL["description"],
+            steps=[StepDefIn(**s) for s in DEFAULT_PROTOCOL["steps"]],
+        ),
+        user,
+    )
+
+
+@router.patch("/protocols/{protocol_id}")
+async def update_protocol(
+    protocol_id: str, body: ProtocolUpdate, user: CurrentUser = Depends(get_current_user)
+):
+    studio_id = _require_studio_id(user)
+
+    patch: dict = {}
+    if body.name is not None:
+        if not body.name.strip():
+            raise HTTPException(status_code=422, detail="Protocol name is empty")
+        patch["name"] = body.name
+    if body.description is not None:
+        patch["description"] = body.description or None
+    if patch:
+        from datetime import datetime, timezone
+        patch["updated_at"] = datetime.now(timezone.utc).isoformat()
+        r = await db_client.patch(
+            _url("/rest/v1/review_workflow_def"),
+            params={"id": f"eq.{protocol_id}", "studio_id": f"eq.{studio_id}", "archived_at": "is.null"},
+            json=patch,
+            headers=_headers({"Prefer": "return=representation"}),
+        )
+        if not r.is_success or not r.json():
+            raise HTTPException(status_code=404, detail="Protocol not found")
+    else:
+        # Ownership check even when only steps change.
+        r = await db_client.get(
+            _url("/rest/v1/review_workflow_def"),
+            params={"select": "id", "id": f"eq.{protocol_id}", "studio_id": f"eq.{studio_id}", "archived_at": "is.null"},
+            headers=_headers(),
+        )
+        if not r.is_success or not r.json():
+            raise HTTPException(status_code=404, detail="Protocol not found")
+
+    if body.steps is not None:
+        # Replace semantics on the ORDERED list: update kept steps (by id), archive omitted ones,
+        # insert new ones. Steps are archived, never deleted — tagged reviews keep their FK.
+        current = await _fetch_protocol_steps([protocol_id])
+        current_ids = {s["id"] for s in current.get(protocol_id, [])}
+        kept_ids = {s.id for s in body.steps if s.id}
+
+        for sort, s in enumerate(body.steps):
+            if s.id:
+                if s.id not in current_ids:
+                    raise HTTPException(status_code=422, detail="Unknown step id in list")
+                ur = await db_client.patch(
+                    _url("/rest/v1/review_step_def"),
+                    params={"id": f"eq.{s.id}", "workflow_def_id": f"eq.{protocol_id}"},
+                    json={"name": s.name, "description": s.description or None, "sort": sort},
+                    headers=_headers({"Prefer": "return=minimal"}),
+                )
+                if not ur.is_success:
+                    raise HTTPException(status_code=502, detail="Failed to update step")
+        new_steps = [(i, s) for i, s in enumerate(body.steps) if not s.id]
+        for sort, s in new_steps:
+            await _insert_steps(protocol_id, [s], start_sort=sort)
+        to_archive = current_ids - kept_ids
+        if to_archive:
+            from datetime import datetime, timezone
+            ar = await db_client.patch(
+                _url("/rest/v1/review_step_def"),
+                params={"id": f"in.({','.join(to_archive)})", "workflow_def_id": f"eq.{protocol_id}"},
+                json={"archived_at": datetime.now(timezone.utc).isoformat()},
+                headers=_headers({"Prefer": "return=minimal"}),
+            )
+            if not ar.is_success:
+                raise HTTPException(status_code=502, detail="Failed to archive removed steps")
+
+    steps = await _fetch_protocol_steps([protocol_id])
+    return {"id": protocol_id, "steps": steps.get(protocol_id, [])}
+
+
+@router.delete("/protocols/{protocol_id}")
+async def archive_protocol(protocol_id: str, user: CurrentUser = Depends(get_current_user)):
+    studio_id = _require_studio_id(user)
+    links = await db_client.get(
+        _url("/rest/v1/studio_vendor_links"),
+        params={"select": "id", "review_protocol_def_id": f"eq.{protocol_id}", "status": "eq.active", "limit": "1"},
+        headers=_headers(),
+    )
+    if links.is_success and links.json():
+        raise HTTPException(status_code=409, detail="Protocol is assigned to an active link — unassign it first")
+    from datetime import datetime, timezone
+    r = await db_client.patch(
+        _url("/rest/v1/review_workflow_def"),
+        params={"id": f"eq.{protocol_id}", "studio_id": f"eq.{studio_id}", "archived_at": "is.null"},
+        json={"archived_at": datetime.now(timezone.utc).isoformat()},
+        headers=_headers({"Prefer": "return=representation"}),
+    )
+    if not r.is_success or not r.json():
+        raise HTTPException(status_code=404, detail="Protocol not found")
+    return {"ok": True}
+
+
+@router.post("/links/{link_id}/protocol")
+async def set_link_protocol(
+    link_id: str, body: LinkProtocolRequest, user: CurrentUser = Depends(get_current_user)
+):
+    """Assign/clear the link's sanctioned protocol via the review_set_link_protocol DEFINER RPC
+    (links have no user write policy)."""
+    _require_studio_id(user)
+    r = await db_client.post(
+        _url("/rest/v1/rpc/review_set_link_protocol"),
+        json={"p_link_id": link_id, "p_def_id": body.protocol_def_id},
+        headers=_headers(),
+    )
+    if not r.is_success:
+        detail = "Failed to set link protocol"
+        try:
+            detail = r.json().get("message") or detail
+        except Exception:  # noqa: BLE001
+            pass
+        raise HTTPException(status_code=400, detail=detail)
+    return {"ok": True}
+
+
+# ── Requirements checklist (computed; both parties) ───────────────────────────
+
+@router.get("/requirements")
+async def get_requirements(
+    linkId: str = Query(...), user: CurrentUser = Depends(get_current_user)
+):
+    """Per dispatched asset on the link × each protocol step → the latest cross-org review tagged
+    with that step. fulfilled = a tagged review exists; complete = its status is 'Approved'.
+    Computed at read time — no materialized state. Tags outside the link's protocol are ignored."""
+    _resolve_org(user)
+
+    lr = await db_client.get(
+        _url("/rest/v1/studio_vendor_links"),
+        params={
+            "select": "id,studio_id,vendor_id,status,review_protocol_def_id,protocol_acknowledged_at",
+            "id": f"eq.{linkId}",
+        },
+        headers=_headers(),
+    )
+    if not lr.is_success or not lr.json():
+        raise HTTPException(status_code=404, detail="Link not found")
+    link = lr.json()[0]
+
+    if not link["review_protocol_def_id"]:
+        return {"protocol": None, "steps": [], "assets": [], "acknowledged_at": None}
+
+    dr = await db_client.get(
+        _url("/rest/v1/review_workflow_def"),
+        params={"select": "id,name,description", "id": f"eq.{link['review_protocol_def_id']}"},
+        headers=_headers(),
+    )
+    protocol = dr.json()[0] if dr.is_success and dr.json() else None
+    steps_by_def = await _fetch_protocol_steps([link["review_protocol_def_id"]])
+    steps = steps_by_def.get(link["review_protocol_def_id"], [])
+    step_ids = {s["id"] for s in steps}
+
+    # Live-dispatched assets on this link (visible to both parties via pd_sel).
+    pd = await db_client.get(
+        _url("/rest/v1/payload_dispatches"),
+        params={
+            "select": "payload_data",
+            "sender_studio_id": f"eq.{link['studio_id']}",
+            "recipient_vendor_id": f"eq.{link['vendor_id']}",
+            "revoked_at": "is.null",
+        },
+        headers=_headers(),
+    )
+    asset_ids: list[str] = []
+    seen: set = set()
+    if pd.is_success:
+        for dispatch in pd.json():
+            payload = dispatch.get("payload_data") or {}
+            entries = [a.get("asset_global_id") for a in (payload.get("assets") or [])]
+            entries.append(payload.get("asset_global_id"))
+            for aid in entries:
+                if aid and aid not in seen:
+                    seen.add(aid)
+                    asset_ids.append(aid)
+
+    # Tagged cross-org reviews on this link, newest first → first hit per (asset, step) wins.
+    rr = await db_client.get(
+        _url("/rest/v1/asset_reviews"),
+        params={
+            "select": "id,canonical_asset_id,step_def_id,status,created_at",
+            "link_id": f"eq.{linkId}",
+            "scope": "eq.cross_org",
+            "step_def_id": "not.is.null",
+            "order": "created_at.desc",
+        },
+        headers=_headers(),
+    )
+    latest: dict = {}
+    if rr.is_success:
+        for rv in rr.json():
+            if rv["step_def_id"] not in step_ids:
+                continue  # forged/foreign or archived-protocol tag — inert
+            key = (rv["canonical_asset_id"], rv["step_def_id"])
+            latest.setdefault(key, rv)
+
+    if user.role == "studio" and user.studio_id:
+        meta = await _fetch_studio_asset_meta(user.studio_id, asset_ids)
+    elif user.role == "vendor" and user.vendor_id:
+        meta = await _fetch_vendor_asset_meta(user.vendor_id, asset_ids)
+    else:
+        meta = {}
+
+    assets = []
+    for aid in asset_ids:
+        reqs = []
+        for s in steps:
+            rv = latest.get((aid, s["id"]))
+            reqs.append({
+                "step_def_id": s["id"],
+                "step_name": s["name"],
+                "review_id": rv["id"] if rv else None,
+                "review_status": rv["status"] if rv else None,
+                "fulfilled": rv is not None,
+                "complete": bool(rv and rv.get("status") == "Approved"),
+            })
+        assets.append({
+            "canonical_asset_id": aid,
+            "name": (meta.get(aid) or {}).get("name") or aid,
+            "requirements": reqs,
+        })
+
+    return {
+        "protocol": protocol,
+        "steps": steps,
+        "assets": assets,
+        "acknowledged_at": link.get("protocol_acknowledged_at"),
+    }
+
+
 # ── Review CRUD ───────────────────────────────────────────────────────────────
 
 @router.get("")
 @router.get("/")
 async def list_reviews(
     canonicalAssetId: Optional[str] = Query(None),
+    scope: Optional[str] = Query(None),
     user: CurrentUser = Depends(get_current_user),
 ):
     org_type, org_id = _resolve_org(user)
 
-    params: dict = {
-        "select": "*",
-        "author_org_type": f"eq.{org_type}",
-        "author_org_id": f"eq.{org_id}",
-        "order": "created_at.desc",
-    }
+    params: dict = {"select": "*", "order": "created_at.desc"}
+    if scope == "cross_org":
+        # No author filter: RLS (ar_sel) returns own-authored + link-partner cross-org reviews —
+        # this IS the cross-org inbox/outbox.
+        params["scope"] = "eq.cross_org"
+    elif scope == "internal":
+        params["scope"] = "eq.internal"
+        params["author_org_type"] = f"eq.{org_type}"
+        params["author_org_id"] = f"eq.{org_id}"
+    elif scope == "all":
+        # Everything the caller's RLS view exposes: own-authored + link-party cross-org.
+        pass
+    else:
+        # Legacy default: everything the org authored (both scopes).
+        params["author_org_type"] = f"eq.{org_type}"
+        params["author_org_id"] = f"eq.{org_id}"
     if canonicalAssetId:
         params["canonical_asset_id"] = f"eq.{canonicalAssetId}"
 
@@ -319,6 +876,47 @@ async def create_review(body: ReviewCreate, user: CurrentUser = Depends(get_curr
             raise HTTPException(status_code=404, detail="Asset not found")
         studio_id = ca_r.json()[0]["studio_id"]
 
+    # A fulfilment tag on an ad-hoc create must point at a live step of the link's protocol.
+    # (Defense beyond this check: the requirements computation ignores out-of-protocol tags.)
+    if body.step_def_id:
+        if not body.link_id:
+            raise HTTPException(status_code=422, detail="step_def_id requires link_id")
+        lk = await db_client.get(
+            _url("/rest/v1/studio_vendor_links"),
+            params={"select": "review_protocol_def_id", "id": f"eq.{body.link_id}"},
+            headers=_headers(),
+        )
+        proto_id = lk.json()[0]["review_protocol_def_id"] if lk.is_success and lk.json() else None
+        sd = await db_client.get(
+            _url("/rest/v1/review_step_def"),
+            params={
+                "select": "id",
+                "id": f"eq.{body.step_def_id}",
+                "workflow_def_id": f"eq.{proto_id}",
+                "archived_at": "is.null",
+            },
+            headers=_headers(),
+        ) if proto_id else None
+        if not (sd and sd.is_success and sd.json()):
+            raise HTTPException(status_code=422, detail="Step does not belong to this link's review protocol")
+
+    # An ad-hoc revision must supersede a visible cross-org review on the SAME link.
+    if body.revision_of_review_id:
+        if not body.link_id:
+            raise HTTPException(status_code=422, detail="revision_of_review_id requires link_id")
+        prior = await db_client.get(
+            _url("/rest/v1/asset_reviews"),
+            params={
+                "select": "id",
+                "id": f"eq.{body.revision_of_review_id}",
+                "scope": "eq.cross_org",
+                "link_id": f"eq.{body.link_id}",
+            },
+            headers=_headers(),
+        )
+        if not prior.is_success or not prior.json():
+            raise HTTPException(status_code=422, detail="Prior review not found on this link")
+
     r = await db_client.post(
         _url("/rest/v1/asset_reviews"),
         json={
@@ -326,6 +924,10 @@ async def create_review(body: ReviewCreate, user: CurrentUser = Depends(get_curr
             "canonical_asset_id": body.canonical_asset_id,
             "author_org_type": org_type,
             "author_org_id": org_id,
+            "scope": "cross_org" if body.link_id else "internal",
+            "link_id": body.link_id or None,
+            "step_def_id": body.step_def_id or None,
+            "revision_of_review_id": body.revision_of_review_id or None,
             "title": body.title or None,
             "description": body.description or None,
             "status": body.status or None,
@@ -335,20 +937,35 @@ async def create_review(body: ReviewCreate, user: CurrentUser = Depends(get_curr
         headers=_headers({"Prefer": "return=representation"}),
     )
     if not r.is_success:
+        # RLS ar_ins rejects a cross-org insert when the link isn't active/yours/this studio's.
+        if body.link_id and ("42501" in r.text or r.status_code in (401, 403)):
+            raise HTTPException(status_code=403, detail="Link is not active or does not match this asset's studio")
         raise HTTPException(status_code=502, detail="Failed to create review")
 
     rows = r.json()
     if not rows:
         raise HTTPException(status_code=502, detail="Review created but not returned")
+    review = rows[0]
 
-    enriched = await _enrich([rows[0]], user)
+    # Mirror the primary asset into the m2m junction (multi-asset reads go via review_assets).
+    jr = await db_client.post(
+        _url("/rest/v1/review_assets"),
+        json={"review_id": review["id"], "canonical_asset_id": body.canonical_asset_id},
+        headers=_headers({"Prefer": "return=minimal"}),
+    )
+    if not jr.is_success:
+        log.error("review_assets mirror insert failed review=%s: %s", review["id"], jr.text[:200])
+
+    await _log_event(review["id"], "review", review["id"], "created", user, org_type, org_id)
+
+    enriched = await _enrich([review], user)
     return enriched[0]
 
 
 @router.get("/{review_id}")
 async def get_review(review_id: str, user: CurrentUser = Depends(get_current_user)):
-    org_type, org_id = _resolve_org(user)
-    review = await _fetch_review(review_id, org_type, org_id)
+    _resolve_org(user)
+    review = await _fetch_visible_review(review_id)
     enriched = await _enrich([review], user)
     return enriched[0]
 
@@ -358,7 +975,7 @@ async def update_review(
     review_id: str, body: ReviewUpdate, user: CurrentUser = Depends(get_current_user)
 ):
     org_type, org_id = _resolve_org(user)
-    await _fetch_review(review_id, org_type, org_id)  # ownership check
+    existing = await _fetch_review(review_id, org_type, org_id)  # ownership check
 
     patch: dict = {}
     if body.title is not None:
@@ -379,6 +996,17 @@ async def update_review(
         )
         if not r.is_success:
             raise HTTPException(status_code=502, detail="Failed to update review")
+
+        if "status" in patch and patch["status"] != existing.get("status"):
+            await _log_event(
+                review_id, "review", review_id, "status_changed", user, org_type, org_id,
+                detail={"from": existing.get("status"), "to": patch["status"]},
+            )
+        else:
+            await _log_event(
+                review_id, "review", review_id, "updated", user, org_type, org_id,
+                detail={"fields": [k for k in patch if k != "updated_at"]},
+            )
     return {"ok": True}
 
 
@@ -403,12 +1031,238 @@ async def delete_review(review_id: str, user: CurrentUser = Depends(get_current_
     return {"ok": True}
 
 
+# ── Promotion + cross-org status ──────────────────────────────────────────────
+
+@router.post("/{review_id}/promote")
+async def promote_review(
+    review_id: str, body: PromoteRequest, user: CurrentUser = Depends(get_current_user)
+):
+    """Promote an internal review to a cross-org review on a link — the ONE path a review
+    crosses the org wall. All validation + the trimmed copy happen atomically in the
+    promote_review DEFINER RPC (in-fn authz: author-org member, active link, studio match)."""
+    org_type, org_id = _resolve_org(user)
+    await _fetch_review(review_id, org_type, org_id)  # owner gate for a clean 404
+
+    r = await db_client.post(
+        _url("/rest/v1/rpc/promote_review"),
+        json={
+            "p_review_id": review_id,
+            "p_link_id": body.link_id,
+            "p_trim": body.trim or {},
+            "p_actor_email": user.email,
+            "p_step_def_id": body.step_def_id,
+        },
+        headers=_headers(),
+    )
+    if not r.is_success:
+        detail = "Promotion failed"
+        try:
+            detail = r.json().get("message") or detail
+        except Exception:  # noqa: BLE001
+            pass
+        raise HTTPException(status_code=400, detail=detail)
+
+    new_id = r.json()
+    new_review = await _fetch_visible_review(new_id)
+    enriched = await _enrich([new_review], user)
+    return enriched[0]
+
+
+@router.post("/{review_id}/status")
+async def set_review_status(
+    review_id: str, body: StatusRequest, user: CurrentUser = Depends(get_current_user)
+):
+    """Cross-org status transition (either link party, active link) via the review_set_status
+    DEFINER RPC. Owner-org edits on internal reviews keep using PATCH."""
+    _resolve_org(user)
+    await _fetch_visible_review(review_id)
+
+    r = await db_client.post(
+        _url("/rest/v1/rpc/review_set_status"),
+        json={"p_review_id": review_id, "p_status": body.status},
+        headers=_headers(),
+    )
+    if not r.is_success:
+        detail = "Status update failed"
+        try:
+            detail = r.json().get("message") or detail
+        except Exception:  # noqa: BLE001
+            pass
+        raise HTTPException(status_code=400, detail=detail)
+    return {"ok": True}
+
+
+@router.post("/{review_id}/accept")
+async def accept_review(review_id: str, user: CurrentUser = Depends(get_current_user)):
+    """Formal delivery acceptance (studio party, active link) via the review_accept DEFINER RPC:
+    validates earlier protocol steps, freezes the snapshot, stamps accepted_at/by, sets status
+    'Approved'. The review subtree becomes immutable."""
+    _resolve_org(user)
+    await _fetch_visible_review(review_id)
+
+    r = await db_client.post(
+        _url("/rest/v1/rpc/review_accept"),
+        json={"p_review_id": review_id},
+        headers=_headers(),
+    )
+    if not r.is_success:
+        detail = "Acceptance failed"
+        try:
+            detail = r.json().get("message") or detail
+        except Exception:  # noqa: BLE001
+            pass
+        raise HTTPException(status_code=400, detail=detail)
+
+    accepted = await _fetch_visible_review(review_id)
+    enriched = await _enrich([accepted], user)
+    return enriched[0]
+
+
+# ── Comment CRUD ──────────────────────────────────────────────────────────────
+# Visibility lanes (P0: internal only in practice — 'shared' requires a cross-org parent, which
+# lands in P1). RLS enforces lane + authorship; the route mirrors those checks for clean errors.
+
+@router.get("/{review_id}/comments")
+async def list_comments(review_id: str, user: CurrentUser = Depends(get_current_user)):
+    _resolve_org(user)
+    await _fetch_visible_review(review_id)
+
+    r = await db_client.get(
+        _url("/rest/v1/review_comments"),
+        params={"select": "*", "review_id": f"eq.{review_id}", "order": "created_at.asc"},
+        headers=_headers(),
+    )
+    if not r.is_success:
+        raise HTTPException(status_code=502, detail="Failed to fetch comments")
+    return r.json()
+
+
+@router.post("/{review_id}/comments")
+async def create_comment(
+    review_id: str, body: CommentCreate, user: CurrentUser = Depends(get_current_user)
+):
+    org_type, org_id = _resolve_org(user)
+    review = await _fetch_visible_review(review_id)
+
+    if not body.body.strip():
+        raise HTTPException(status_code=422, detail="Comment body is empty")
+    if body.visibility not in ("internal", "shared"):
+        raise HTTPException(status_code=422, detail="Invalid visibility")
+    if body.visibility == "shared" and review.get("scope") != "cross_org":
+        raise HTTPException(status_code=400, detail="Shared comments require a cross-org review")
+
+    r = await db_client.post(
+        _url("/rest/v1/review_comments"),
+        json={
+            "review_id": review_id,
+            "author_org_type": org_type,
+            "author_org_id": org_id,
+            "author_user_id": user.id,
+            "author_email": user.email,
+            "body": body.body,
+            "visibility": body.visibility,
+        },
+        headers=_headers({"Prefer": "return=representation"}),
+    )
+    if not r.is_success or not r.json():
+        raise HTTPException(status_code=502, detail="Failed to create comment")
+    comment = r.json()[0]
+
+    await _log_event(review_id, "comment", comment["id"], "comment_added", user, org_type, org_id)
+    return comment
+
+
+@router.patch("/{review_id}/comments/{comment_id}")
+async def update_comment(
+    review_id: str,
+    comment_id: str,
+    body: CommentUpdate,
+    user: CurrentUser = Depends(get_current_user),
+):
+    org_type, org_id = _resolve_org(user)
+    review = await _fetch_visible_review(review_id)
+
+    patch: dict = {}
+    if body.body is not None:
+        if not body.body.strip():
+            raise HTTPException(status_code=422, detail="Comment body is empty")
+        patch["body"] = body.body
+    if body.visibility is not None:
+        if body.visibility != "shared":
+            raise HTTPException(status_code=400, detail="Visibility can only move internal → shared")
+        if review.get("scope") != "cross_org":
+            raise HTTPException(status_code=400, detail="Shared comments require a cross-org review")
+        patch["visibility"] = "shared"
+
+    if not patch:
+        return {"ok": True}
+
+    # edited_at / shared_at are stamped by the review_comment_guard trigger.
+    r = await db_client.patch(
+        _url("/rest/v1/review_comments"),
+        params={
+            "id": f"eq.{comment_id}",
+            "review_id": f"eq.{review_id}",
+            "author_user_id": f"eq.{user.id}",
+        },
+        json=patch,
+        headers=_headers({"Prefer": "return=representation"}),
+    )
+    if not r.is_success or not r.json():
+        raise HTTPException(status_code=404, detail="Comment not found or you are not the author")
+    comment = r.json()[0]
+
+    if "visibility" in patch:
+        await _log_event(review_id, "comment", comment_id, "comment_shared", user, org_type, org_id)
+    return comment
+
+
+@router.delete("/{review_id}/comments/{comment_id}")
+async def delete_comment(
+    review_id: str, comment_id: str, user: CurrentUser = Depends(get_current_user)
+):
+    _resolve_org(user)
+    await _fetch_visible_review(review_id)
+
+    r = await db_client.delete(
+        _url("/rest/v1/review_comments"),
+        params={
+            "id": f"eq.{comment_id}",
+            "review_id": f"eq.{review_id}",
+            "author_user_id": f"eq.{user.id}",
+        },
+        headers=_headers({"Prefer": "return=representation"}),
+    )
+    if not r.is_success:
+        raise HTTPException(status_code=502, detail="Failed to delete comment")
+    if not r.json():
+        raise HTTPException(status_code=404, detail="Comment not found or you are not the author")
+    return {"ok": True}
+
+
+# ── Event history ─────────────────────────────────────────────────────────────
+
+@router.get("/{review_id}/events")
+async def list_events(review_id: str, user: CurrentUser = Depends(get_current_user)):
+    _resolve_org(user)
+    await _fetch_visible_review(review_id)
+
+    r = await db_client.get(
+        _url("/rest/v1/review_events"),
+        params={"select": "*", "review_id": f"eq.{review_id}", "order": "created_at.asc"},
+        headers=_headers(),
+    )
+    if not r.is_success:
+        raise HTTPException(status_code=502, detail="Failed to fetch events")
+    return r.json()
+
+
 # ── Attachment CRUD ───────────────────────────────────────────────────────────
 
 @router.get("/{review_id}/attachments")
 async def list_attachments(review_id: str, user: CurrentUser = Depends(get_current_user)):
-    org_type, org_id = _resolve_org(user)
-    await _fetch_review(review_id, org_type, org_id)
+    _resolve_org(user)
+    await _fetch_visible_review(review_id)
 
     r = await db_client.get(
         _url("/rest/v1/review_attachments"),
@@ -431,9 +1285,10 @@ async def upload_attachment(
     user: CurrentUser = Depends(get_current_user),
 ):
     # §7 STORAGE GATE (write side): authorize via a user-context review read (RLS `ar_sel`) BEFORE
-    # uploading any bytes — a caller who can't see the review can't attach to it.
+    # uploading any bytes — a caller who can't see the review can't attach to it. Visibility-based:
+    # a link partner may attach to a shared cross-org review (rat_ins still binds the row to their org).
     org_type, org_id = _resolve_org(user)
-    review = await _fetch_review(review_id, org_type, org_id)
+    review = await _fetch_visible_review(review_id)
 
     data = await file.read()
     if len(data) > 100 * 1024 * 1024:
@@ -460,12 +1315,19 @@ async def upload_attachment(
             "content_type": content_type,
             "file_size": len(data),
             "uploaded_by": user.email,
+            "uploaded_by_user_id": user.id,
         },
         headers=_headers({"Prefer": "return=representation"}),
     )
     if not r.is_success or not r.json():
         raise HTTPException(status_code=502, detail="Failed to save attachment record")
-    return r.json()[0]
+    attachment = r.json()[0]
+
+    await _log_event(
+        review_id, "attachment", attachment["id"], "attachment_added", user, org_type, org_id,
+        detail={"filename": attachment.get("filename")},
+    )
+    return attachment
 
 
 @router.get("/{review_id}/attachments/{attachment_id}/content")
@@ -474,12 +1336,12 @@ async def serve_attachment(
     attachment_id: str,
     user: CurrentUser = Depends(get_current_user),
 ):
-    # §7 STORAGE GATE: two user-context reads authorize the byte stream below. `_fetch_review` (RLS
-    # `ar_sel`) hides a review the caller's org can't see; the review_attachments read (RLS `rat_sel`)
-    # hides the attachment row. Either invisible → 404 before any blob is fetched. Both run as the
-    # caller (`_headers()`); the byte stream itself is the §0c service-role carve-out.
-    org_type, org_id = _resolve_org(user)
-    await _fetch_review(review_id, org_type, org_id)
+    # §7 STORAGE GATE: two user-context reads authorize the byte stream below. The visibility fetch
+    # (RLS `ar_sel`) hides a review the caller's org can't see; the review_attachments read (RLS
+    # `rat_sel`) hides the attachment row. Either invisible → 404 before any blob is fetched. Both
+    # run as the caller (`_headers()`); the byte stream itself is the §0c service-role carve-out.
+    _resolve_org(user)
+    await _fetch_visible_review(review_id)
 
     r = await db_client.get(
         _url("/rest/v1/review_attachments"),
@@ -518,13 +1380,13 @@ async def delete_attachment(
     attachment_id: str,
     user: CurrentUser = Depends(get_current_user),
 ):
-    org_type, org_id = _resolve_org(user)
-    await _fetch_review(review_id, org_type, org_id)
+    _resolve_org(user)
+    await _fetch_visible_review(review_id)
 
     r = await db_client.get(
         _url("/rest/v1/review_attachments"),
         params={
-            "select": "id,storage_path,uploaded_by",
+            "select": "id,storage_path,uploaded_by,uploaded_by_user_id",
             "id": f"eq.{attachment_id}",
             "review_id": f"eq.{review_id}",
         },
@@ -534,13 +1396,41 @@ async def delete_attachment(
         raise HTTPException(status_code=404, detail="Attachment not found")
 
     att = r.json()[0]
-    if att["uploaded_by"] != user.email:
+    # Spoof-resistant uploader check; email fallback only for legacy rows predating the column.
+    is_uploader = (
+        att.get("uploaded_by_user_id") == user.id
+        if att.get("uploaded_by_user_id")
+        else att["uploaded_by"] == user.email
+    )
+    if not is_uploader:
         raise HTTPException(status_code=403, detail="Only the uploader can delete this attachment")
 
+    # Promoted copies reference the SAME storage path (no byte copy) — only delete the blob when no
+    # OTHER row still points at it. Checked as arthound_system: the other referencing row may live on
+    # a review outside the caller's RLS view.
+    blob_shared = False
     try:
-        await _storage_delete(att["storage_path"])
+        async with system_identity():
+            refs = await db_client.get(
+                _url("/rest/v1/review_attachments"),
+                params={
+                    "select": "id",
+                    "storage_path": f"eq.{att['storage_path']}",
+                    "id": f"neq.{attachment_id}",
+                    "limit": "1",
+                },
+                headers=_headers(),
+            )
+            blob_shared = refs.is_success and bool(refs.json())
     except Exception as exc:
-        log.warning("storage delete failed for %s: %s", att["storage_path"], exc)
+        log.warning("shared-blob check failed for %s (keeping blob): %s", att["storage_path"], exc)
+        blob_shared = True  # fail safe: never delete a possibly-referenced blob
+
+    if not blob_shared:
+        try:
+            await _storage_delete(att["storage_path"])
+        except Exception as exc:
+            log.warning("storage delete failed for %s: %s", att["storage_path"], exc)
 
     await db_client.delete(
         _url("/rest/v1/review_attachments"),
@@ -553,6 +1443,7 @@ async def delete_attachment(
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
 async def _fetch_review(review_id: str, org_type: str, org_id: str) -> dict:
+    """Owner-org fetch: the review must be AUTHORED by the caller's org. Gate for edits/promotion."""
     r = await db_client.get(
         _url("/rest/v1/asset_reviews"),
         params={
@@ -561,6 +1452,20 @@ async def _fetch_review(review_id: str, org_type: str, org_id: str) -> dict:
             "author_org_type": f"eq.{org_type}",
             "author_org_id": f"eq.{org_id}",
         },
+        headers=_headers(),
+    )
+    if not r.is_success or not r.json():
+        raise HTTPException(status_code=404, detail="Review not found")
+    return r.json()[0]
+
+
+async def _fetch_visible_review(review_id: str) -> dict:
+    """Visibility fetch: any review the caller's RLS view exposes — own-org authored, or a
+    cross-org review on a link their org is party to (ar_sel). Gate for reads, comments,
+    attachments on shared reviews. Runs as the caller (§7 storage-gate contract holds)."""
+    r = await db_client.get(
+        _url("/rest/v1/asset_reviews"),
+        params={"select": "*", "id": f"eq.{review_id}"},
         headers=_headers(),
     )
     if not r.is_success or not r.json():

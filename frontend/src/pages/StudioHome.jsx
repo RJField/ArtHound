@@ -4,6 +4,7 @@ import { useAuth } from '../contexts/AuthContext'
 import { apiFetch } from '../lib/api'
 import NumbersBotModal from '../components/NumbersBotModal'
 import LoreBotModal from '../components/LoreBotModal'
+import AgentActivityWidget from '../components/AgentActivityWidget'
 import PageContainer from '../components/PageContainer'
 import { Button, Pill, Card, PageHeader, SectionLabel, Skeleton } from '../components/ui'
 import { cn } from '../lib/utils'
@@ -158,6 +159,8 @@ export default function StudioHome() {
           onClick={() => navigate('/vendors')}
         />
       </div>
+
+      <AgentActivityWidget />
 
       {/* ScentHounds panel */}
       <Card className="flex flex-col gap-4">

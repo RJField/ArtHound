@@ -46,8 +46,16 @@ from routes.members import router as members_router
 from routes.admin import router as admin_router
 from routes.scenario import router as scenario_router
 from routes.estimate_share import router as estimate_share_router
+from routes.agent_activity import router as agent_activity_router
+from mcp_server import build_mcp
 
 log = logging.getLogger(__name__)
+
+# MCP server (docs/plans/mcp-server.md) — built at import so its session manager exists before the
+# lifespan runs and before the sub-app is mounted. streamable_http_app() lazily creates the session
+# manager, which the lifespan must enter via `mcp.session_manager.run()`.
+_mcp = build_mcp()
+_mcp_app = _mcp.streamable_http_app()
 
 
 async def _poll_loop() -> None:
@@ -487,23 +495,26 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         log.warning("Startup: failed to reset stuck scenario sessions: %s", exc)
 
-    poll_task        = asyncio.create_task(_poll_loop())
-    nightly_task     = asyncio.create_task(_nightly_full_sync_loop())
-    drain_task       = asyncio.create_task(_attachment_drain_loop())
-    purge_task       = asyncio.create_task(_attachment_purge_loop())
-    drift_task       = asyncio.create_task(_schema_drift_loop())
-    trim_task        = asyncio.create_task(_sync_log_trim_loop())
-    scenario_gen_task     = asyncio.create_task(_scenario_generation_loop())
-    scenario_cleanup_task = asyncio.create_task(_scenario_cleanup_loop())
-    yield
-    poll_task.cancel()
-    nightly_task.cancel()
-    drain_task.cancel()
-    purge_task.cancel()
-    drift_task.cancel()
-    trim_task.cancel()
-    scenario_gen_task.cancel()
-    scenario_cleanup_task.cancel()
+    # The MCP streamable-HTTP transport needs its session manager running for the serving lifetime
+    # (required even in stateless mode — otherwise tool requests hit "Task group is not initialized").
+    async with _mcp.session_manager.run():
+        poll_task        = asyncio.create_task(_poll_loop())
+        nightly_task     = asyncio.create_task(_nightly_full_sync_loop())
+        drain_task       = asyncio.create_task(_attachment_drain_loop())
+        purge_task       = asyncio.create_task(_attachment_purge_loop())
+        drift_task       = asyncio.create_task(_schema_drift_loop())
+        trim_task        = asyncio.create_task(_sync_log_trim_loop())
+        scenario_gen_task     = asyncio.create_task(_scenario_generation_loop())
+        scenario_cleanup_task = asyncio.create_task(_scenario_cleanup_loop())
+        yield
+        poll_task.cancel()
+        nightly_task.cancel()
+        drain_task.cancel()
+        purge_task.cancel()
+        drift_task.cancel()
+        trim_task.cancel()
+        scenario_gen_task.cancel()
+        scenario_cleanup_task.cancel()
     await db_client.aclose()
 
 
@@ -565,6 +576,11 @@ app.include_router(members_router,        prefix="/api")
 app.include_router(admin_router,          prefix="/api/admin")
 app.include_router(scenario_router,       prefix="/api/scenario",    dependencies=_auth)
 app.include_router(estimate_share_router, prefix="/api/estimate-shares", dependencies=_auth)
+app.include_router(agent_activity_router, prefix="/api/agent-activity", dependencies=_auth)
+
+# MCP server (docs/plans/mcp-server.md) — mounted before the SPA catch-all so /mcp resolves here.
+# Auth is the agent API key (resource-server mode), independent of the app's JWT _auth dependency.
+app.mount("/mcp", _mcp_app)
 
 
 _REPLICATED_TABLE: dict[str, str] = {

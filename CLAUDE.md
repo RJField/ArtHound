@@ -79,6 +79,10 @@ Sync is triggered on login (via `AuthContext.jsx`) and by a background polling l
 
 **`[IGNORE]` field convention:** Any source field whose name begins with `[IGNORE]` (case-insensitive) is auto-suppressed at classification time, `ingest_suppressed=True`, `display_tier="hidden"`, excluded from `meta`. Studios use this prefix to mark internal plumbing fields (link-back columns, formula sources) that should never appear in the ArtHound UI or be ingested into replicated records.
 
+## MCP Server (external agent access)
+
+`mcp_server/` exposes ArtHound data to external AI agents over the Model Context Protocol, mounted at `/mcp` in `main.py` (FastMCP, Streamable HTTP). Agents authenticate with an API key (`scripts/agent_keys.py`) that resolves to a `member_role='agent'` service-account member of one org (identity model A1) — so **all tool DB access runs under the agent's bound JWT and the existing RLS, never service-role**. Within-org scope (read/write, tool allowlist) is enforced in `mcp_server/context.py:tool_call`. Tools are versioned `paw_v1_*` and PAW-shaped; writes carry mandatory `actor_type`/`actor_ref` and abort rather than persist an orphan. Agent-written records (flags/review-requests/estimate-proposals) surface in the UI via `/api/agent-activity` (Asset viewer **Agent** tab + home widget). Full reference: [docs/mcp.md](docs/mcp.md); design + phases: [docs/plans/mcp-server.md](docs/plans/mcp-server.md). Do not add a `raw_query`/SQL tool or service-role access to this surface.
+
 ## Frontend Conventions
 
 **Component library:** All UI is built from the primitives in `frontend/src/components/ui/` (import via the barrel: `Button`, `Input`, `Select`, `Textarea`, `Field`, `Modal`, `Pill`, `StatusDot`, `Tabs`, `Card`, `KV`, `Table`/`Th`/`Tr`/`Td`, `EmptyState`, `Spinner`, `Skeleton`, `Dropdown`, `PageHeader`, `SectionLabel`). Never hand-roll buttons, inputs, modal overlays, badges, or table styling in feature code. Full usage rules live in `docs/ui-redesign/MIGRATION.md`. Key invariants:
@@ -134,13 +138,26 @@ Migrations live in `supabase/migrations/` and are applied in filename order. All
 - `failed_ingests`, quarantine for records where external write succeeded but canonical link failed; used by `/retry-canonical`
 - `vendor_studio_ingest_templates`, vendor ingest template snapshots per studio link
 
-**Reviews & attachments:**
-- `asset_reviews`, ArtHound-native reviews (not synced to/from any source tool)
-- `review_attachments`, files attached to reviews
+**Reviews & attachments** (cross-org review system v2, see `docs/reviews.md` + `docs/plans/cross-org-reviews.md`):
+- `asset_reviews`, ArtHound-native reviews (never synced). `scope ∈ internal|cross_org`; cross-org rows carry `link_id`. Internal reviews cross the org wall ONLY via the `promote_review` RPC (trimmed copy, `promoted_from_review_id`). Accepted reviews (`accepted_at` + `frozen_snapshot`) are fully immutable; re-delivery = new review via `revision_of_review_id`. Identity/provenance columns are trigger-guarded immutable
+- `review_assets`, m2m asset junction (primary `canonical_asset_id` stays NOT NULL on the review and is mirrored in)
+- `review_comments`, threaded comments with visibility lanes (`internal|shared`, default internal everywhere; one-way flip, trigger-enforced). `frozen_snapshot` must only ever contain shared-lane comments — it is visible to both link parties
+- `review_events`, append-only audit; NO user INSERT policy — routes write via `system_identity()`, RPCs in-transaction
+- `review_trim_templates`, vendor-owned promotion trim configs (payload_templates analogue)
+- `review_workflow_def` / `review_step_def`, org-scoped link protocols (required submissions; org-scope stack convention). Link FK `studio_vendor_links.review_protocol_def_id`; steps archive, never delete. The requirements checklist is computed at read (`/api/reviews/requirements`); out-of-protocol step tags are inert
+- Review RPCs (all `arthound_rpc`-owned DEFINER): `promote_review`, `review_set_status`, `review_set_link_protocol`, `review_accept`. Never overload an RPC signature — PostgREST cannot dispatch overloads; DROP the old signature first
+- `review_attachments`, files attached to reviews. Promoted copies reference the SAME storage path (`copied_from_attachment_id` provenance); blob deletion must first check for other rows referencing the path (done under `system_identity()` in `delete_attachment`)
+- `studio_vendor_links.review_collaboration_mode` is vestigial — kept but unread
 - `attachment_copy_jobs`, `attachment_refs`, copy-on-demand attachment pipeline to Supabase Storage
 
 **Meta / schema classification:**
 - `field_bucket_override_log`, `schema_drift_events`, meta bucket classification and drift tracking
+
+**Agent access (MCP)** (see `docs/mcp.md`):
+- `agent_credentials`, API key (sha256 hash) → org + principal member + `scopes` + expiry/revoke. RLS+FORCE, system-only + `REVOKE` from anon/authenticated (key hashes never reach a user token)
+- `agent_access_log`, append-only agent identity/tool audit (system-write)
+- `asset_flags`, `review_requests`, `estimate_adjustment_proposals`, agent-write paper-trail records (own-org RLS via `is_my_org`; `actor_type`/`actor_ref`; read/triaged via `/api/agent-activity`). `estimate_adjustment_proposals.canonical_asset_id` is nullable by design (estimate tier is above any asset — estimate_share carve-out)
+- `studio_members`/`vendor_members.member_role` CHECK includes `'agent'` (the non-human service-account seat)
 
 ## Multi-tenancy
 

@@ -403,7 +403,7 @@ async def list_links(user: CurrentUser = Depends(get_current_user)):
         params = {
             "studio_id": f"eq.{user.studio_id}",
             "status":    "eq.active",
-            "select":    "id,vendor_id,review_collaboration_mode,created_at",
+            "select":    "id,vendor_id,review_collaboration_mode,review_protocol_def_id,created_at",
             "order":     "created_at.desc",
         }
         r = await db_client.get(_url("/rest/v1/studio_vendor_links"), params=params, headers=_headers())
@@ -420,7 +420,7 @@ async def list_links(user: CurrentUser = Depends(get_current_user)):
         params = {
             "vendor_id": f"eq.{user.vendor_id}",
             "status":    "eq.active",
-            "select":    "id,studio_id,review_collaboration_mode,created_at",
+            "select":    "id,studio_id,review_collaboration_mode,review_protocol_def_id,created_at",
             "order":     "created_at.desc",
         }
         r = await db_client.get(_url("/rest/v1/studio_vendor_links"), params=params, headers=_headers())

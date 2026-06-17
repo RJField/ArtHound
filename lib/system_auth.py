@@ -84,6 +84,25 @@ def _load_es256_signer() -> tuple[object, str | None] | None:
     return _es256_signer
 
 
+def sign_server_token(claims: dict) -> tuple[str, str]:
+    """Sign arbitrary claims with the server's token signer and return (token, alg).
+
+    The signer is the same ES256 standby key Supabase publishes in the project JWKS (or the HS256
+    fallback over SUPABASE_JWT_SECRET) — so PostgREST verifies anything signed here. This is the ONE
+    place the server mints DB-bound tokens; both the system identity (below) and the MCP agent identity
+    (lib/agent_auth.py) go through it, so there is a single signer + a single deprecation-watch path.
+
+    Caller owns the claim set (role/aud/sub/exp/…). This function only applies the signature.
+    """
+    signer = _load_es256_signer()
+    if signer is not None:
+        key_obj, kid = signer
+        headers = {"kid": kid} if kid else None
+        return pyjwt.encode(claims, key_obj, algorithm="ES256", headers=headers), "ES256"
+    secret = os.environ["SUPABASE_JWT_SECRET"]
+    return pyjwt.encode(claims, secret, algorithm="HS256"), "HS256"
+
+
 def _mint() -> tuple[str, float]:
     now = int(time.time())
     exp = now + _TTL_SECONDS
@@ -95,16 +114,7 @@ def _mint() -> tuple[str, float]:
         "exp": exp,
         "jti": uuid.uuid4().hex,        # logged (never the token itself) for mint auditing
     }
-    signer = _load_es256_signer()
-    if signer is not None:
-        key_obj, kid = signer
-        headers = {"kid": kid} if kid else None
-        token = pyjwt.encode(claims, key_obj, algorithm="ES256", headers=headers)
-        alg = "ES256"
-    else:
-        secret = os.environ["SUPABASE_JWT_SECRET"]
-        token = pyjwt.encode(claims, secret, algorithm="HS256")
-        alg = "HS256"
+    token, alg = sign_server_token(claims)
     log.info("Minted system token alg=%s jti=%s exp=%d", alg, claims["jti"], exp)
     return token, exp
 

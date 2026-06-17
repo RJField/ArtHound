@@ -53,6 +53,10 @@ Supabase Storage is a separate service with its own access control, so the table
 
 `scripts/rls_persona_matrix.py` is a standalone correctness guard that mints a JWT per persona and asserts the row-visibility contract for every tenancy-critical table by hitting PostgREST directly, so it exercises the live policies regardless of the application flag. It checks own-org visibility for studios and vendors, cross-org denial, the link-authorized counterparty read, the system identity, anon deny-all, and that no route imports the break-glass path. Keep it green before any policy change ships. The full design and migration history live in [docs/plans/rls-migration.md](docs/plans/rls-migration.md).
 
+### External agents (MCP)
+
+External AI agents reach ArtHound through an MCP server (`/mcp`), not the REST API — but an agent is **not a fifth identity**. It authenticates with an API key that resolves to a dedicated service-account member (`member_role='agent'`) of one org; the server mints a short-lived user token for that principal, so every tool call runs under the **User** identity and the same RLS as a human member, never service-role. Within-org scope (read vs write, tool allowlist) and per-credential rate limits are enforced at the app layer, and writes carry mandatory actor attribution. See [docs/mcp.md](docs/mcp.md). `scripts/test_agent_scoping.py` guards the cross-org scoping.
+
 ---
 
 ## Documentation
@@ -87,7 +91,7 @@ An in-app AI assistant powered by Claude Haiku. Before each turn it fetches live
 
 ### [Studio/Vendor Handshake](docs/handshake.md)
 
-The prerequisite gate for payload dispatch. Studios send invites to vendors by searching their unique handle; vendors preview the studio's payload templates and accept, triggering the creation of an active link and an optional field mapping setup step. Either party can cancel a link, which immediately revokes all outstanding (non-ingested) dispatches and writes a full audit trail. The `review_collaboration_mode` set at invite time (`none`, `isolated`, `collaborative`) controls review visibility between orgs; currently only `none` is live.
+The prerequisite gate for payload dispatch. Studios send invites to vendors by searching their unique handle; vendors preview the studio's payload templates and accept, triggering the creation of an active link and an optional field mapping setup step. Either party can cancel a link, which immediately revokes all outstanding (non-ingested) dispatches and writes a full audit trail. Cross-org review behaviour is configured on the link via its review protocol (see Asset Reviews); the legacy `review_collaboration_mode` field set at invite time is vestigial and unread.
 
 ### [Asset Payload Dispatch](docs/payload.md)
 
@@ -99,7 +103,7 @@ Attachments from source tools (images, video, PDFs, documents) are surfaced inli
 
 ### [Asset Reviews](docs/reviews.md)
 
-ArtHound-native structured feedback records attached to canonical assets. They are not synced to or from any source tool and exist only in ArtHound's database. Both studios and vendors can create reviews on assets they have access to (studios on their own assets, vendors on dispatched assets). Reviews support file attachments stored in Supabase Storage, independent of the source-tool attachment pipeline. The `review_collaboration_mode` on the studio-vendor link is intended to control cross-org review visibility; that feature is not yet implemented.
+ArtHound-native records attached to canonical assets — the method and record of sign-off and delivery. They are not synced to or from any source tool and exist only in ArtHound's database. Reviews carry threaded comments with visibility lanes (internal/shared, default private), file attachments, and an append-only audit trail. Vendors keep fully private internal reviews and **promote** them across the org wall as trimmed copies (field/comment/attachment selection, payload-template style, saveable as templates); ad-hoc cross-org review requests are always available on an active link. Studios define **required submissions** per link via an ordered review protocol, which vendors see as a computed per-asset checklist and fulfil by tagged submissions. Formal delivery ends in the studio **accepting** a review, which freezes an immutable snapshot (shared-lane content + asset data + attachment refs); re-delivery chains as new linked revisions. Enforcement is user-context RLS plus `SECURITY DEFINER` RPCs for every cross-org mutation.
 
 ### [Member Management and Org Hub](docs/members.md)
 
@@ -112,6 +116,10 @@ Studios model hypothetical production schedules ("when can we ship?" or "what ca
 ### [LoreBot](docs/lorebot.md)
 
 A proof-of-concept document-reading assistant. Given a canonical asset (studio) or a dispatch (vendor), LoreBot reads the attached files from Supabase Storage (PDFs, text, images) and answers questions about their content using Claude Haiku with vision. PDFs are extracted via `pypdf`, and up to four images are passed as base64 vision blocks. Attachments must be copied to Storage before chat begins; a replication endpoint triggers the copy synchronously. Prompt caching is applied to the attachment context. Explicitly marked PoC, not for use with confidential data.
+
+### [MCP Server](docs/mcp.md)
+
+Exposes ArtHound's canonical production data to external AI agents over the Model Context Protocol, mounted at `/mcp` (FastMCP, Streamable HTTP). Agents authenticate with an API key that maps to a service-account member of one org, so all tool access runs under that org's RLS (identity model A1) — no new policy surface, no service-role. Thirteen versioned `paw_v1_*` tools return PAW-shaped objects (products, assets, work, estimates, schedule, workflow, asset timeline) plus three lightweight, actor-attributed writes (risk flags, human-review requests, estimate-adjustment proposals) that create paper-trail records — never mutating production state — surfaced in the app's Asset viewer **Agent** tab and the home **Agent activity** widget. Read-heavy by design; the surface deliberately excludes any raw-query/SQL tool. Per-credential token-bucket rate limiting. Scenario-planner tools and a `submit_work_record` write are planned but not yet built. Design + phase history: [docs/plans/mcp-server.md](docs/plans/mcp-server.md).
 
 ### [Synthetic Data Generator](docs/synthetic.md)
 
